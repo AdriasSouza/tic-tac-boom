@@ -139,6 +139,7 @@ npm install zustand
 ---
 
 
+
 ## Configuração obrigatória
 
 Três ajustes. **Sem eles o app não roda** — os dois primeiros falham de forma silenciosa.
