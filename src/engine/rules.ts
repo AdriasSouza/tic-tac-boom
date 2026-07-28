@@ -1,0 +1,346 @@
+import { getChannel } from '@/engine/rng';
+import type { CardDefinition, CardId } from '@/engine/cards/definitions';
+
+/**
+ * Modelo de domínio do Tic Tac Boom.
+ *
+ * Este arquivo é a **fonte de verdade** das regras: tipos, constantes e funções
+ * puras. Não conhece React, nem Zustand, nem a WebView.
+ *
+ * O `gameStore` consome daqui e reexporta por conveniência, mas a direção da
+ * dependência é só uma: `store → engine`. Nada em `src/engine/` importa de
+ * `src/store/`.
+ */
+
+/* -------------------------------------------------------------------------- */
+/*                                    TIPOS                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Símbolo desenhado no tabuleiro. */
+export type Mark = 'X' | 'O';
+
+/** Quem controla as peças. O Player sempre joga de 'X', a Máquina de 'O'. */
+export type Combatant = 'PLAYER' | 'MACHINE';
+
+/**
+ * Regra caótica ativa no tabuleiro.
+ * - NORMAL:       jogo da velha infinito padrão.
+ * - RANDOM_FADE:  em vez da peça mais antiga, uma peça aleatória do jogador some.
+ * - BLOCKED_CELL: uma célula fica interditada e não aceita jogadas.
+ */
+export type ChaosRule = 'NORMAL' | 'RANDOM_FADE' | 'BLOCKED_CELL';
+
+/** Fase da partida — controla o que a UI pode ou não disparar. */
+export type MatchStatus = 'IDLE' | 'PLAYING' | 'ROUND_OVER' | 'MATCH_OVER';
+
+/** Peça ocupando uma célula do tabuleiro. */
+export interface Piece {
+  owner: Combatant;
+  mark: Mark;
+  /** Turno global em que foi jogada. É isso que define quem é "a mais velha". */
+  turnPlaced: number;
+}
+
+/** Célula do tabuleiro: uma peça ou vazia. */
+export type BoardCell = Piece | null;
+
+/** Tabuleiro 3x3 achatado em um array de 9 posições (índices 0..8). */
+export type Board = BoardCell[];
+
+/**
+ * Carta na mão.
+ *
+ * O `uid` existe porque a mão pode conter duas cartas do mesmo `cardId`, e sem
+ * identidade estável não há como (a) endereçar *qual* delas foi jogada, nem
+ * (b) dar `key` estável ao React — o que quebra as layout animations do
+ * Reanimated ao remover uma carta do meio do leque.
+ */
+export interface HandCard {
+  uid: string;
+  cardId: CardId;
+}
+
+/**
+ * Ação aguardando um alvo.
+ *
+ * Enquanto isto não for `null` o tabuleiro está em **modo mira**: toques em
+ * células resolvem a carta em vez de posicionar peça.
+ */
+export type PendingAction = {
+  type: 'PLAY_CARD';
+  uid: string;
+  cardId: CardId;
+};
+
+/**
+ * Linha do log de combate exibida no ChaosTerminal.
+ *
+ * O `id` monotônico é o que permite ao terminal imprimir só o que ainda não
+ * viu — comparar conteúdo falharia com mensagens repetidas legítimas
+ * ("demolir :: célula 4" duas vezes seguidas).
+ */
+export interface LogLine {
+  id: number;
+  text: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                   ESTADO                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Estado completo de uma partida.
+ *
+ * Mora na engine, e não no store, porque é o **modelo de domínio**: efeitos de
+ * carta, gatilhos de armadilha e a IA operam sobre ele sem nunca tocar em
+ * Zustand. O store é apenas o recipiente reativo que o hospeda.
+ */
+export interface GameState {
+  /** 9 células. `null` = vazia. */
+  board: Board;
+  /** De quem é a vez. */
+  turn: Combatant;
+  /** Contador global de jogadas. Serve de "timestamp" para a fila de peças. */
+  turnCount: number;
+
+  playerHp: number;
+  machineHp: number;
+
+  /** Regra caótica em vigor no tabuleiro. */
+  activeRule: ChaosRule;
+  /** Célula interditada enquanto `activeRule === 'BLOCKED_CELL'`. */
+  blockedCell: number | null;
+
+  /**
+   * Mão do jogador. Os dados da carta (nome, efeito, arte) vêm do
+   * `CARD_REGISTRY`, então o estado fica leve e serializável.
+   */
+  playerHand: HandCard[];
+
+  /**
+   * Contador de `uid`. Mora no estado (e não num contador de módulo) para o
+   * determinismo sobreviver a hot reload e a save/restore da partida.
+   */
+  nextCardUid: number;
+
+  /** Carta aguardando alvo. `null` = tabuleiro em modo normal. */
+  pendingAction: PendingAction | null;
+
+  /**
+   * Armadilhas viradas na mesa, por combatente.
+   *
+   * Dois campos espelhando `playerHp`/`machineHp` em vez de um
+   * `Record<Combatant, …>`: os seletores devolvem a mesma referência de array
+   * enquanto nada muda daquele lado — um `Record` recriado obrigaria
+   * `useShallow` em todo consumidor.
+   */
+  playerTraps: HandCard[];
+  machineTraps: HandCard[];
+
+  /**
+   * Última armadilha revelada. Efêmero, só para a UI anunciar o disparo — sem
+   * isso uma armadilha detona de forma completamente invisível.
+   */
+  lastRevealedTrap: { uid: string; cardId: CardId; owner: Combatant } | null;
+
+  /**
+   * Log de combate — buffer circular de `LOG_LIMIT` linhas.
+   *
+   * Mora no estado, e não direto na WebView, para sobreviver a recarregamento
+   * da página: quando o renderer do Android reinicia, o terminal reimprime o
+   * histórico em vez de aparecer vazio.
+   */
+  terminalLog: LogLine[];
+  nextLogId: number;
+
+  /**
+   * Combatente que ganhou um turno extra. A alternância é pulada na PRÓXIMA
+   * jogada dele e a flag é consumida.
+   */
+  extraTurnPending: Combatant | null;
+
+  status: MatchStatus;
+  /** Quem venceu a rodada atual (resetado ao iniciar a próxima). */
+  roundWinner: Combatant | null;
+  /** Linha vencedora — a UI usa para animar o traço/explosão. */
+  winningLine: readonly [number, number, number] | null;
+  /** Quem venceu a partida inteira (zerou o HP do oponente). */
+  matchWinner: Combatant | null;
+
+  /** Índice da peça removida na última jogada. Efêmero, só para animação. */
+  lastVanishedIndex: number | null;
+
+  /**
+   * Seed que gerou toda a aleatoriedade desta partida. Exiba no fim de jogo:
+   * com ela o jogador reproduz a partida inteira em `startMatch(seed)`.
+   */
+  matchSeed: number;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                 CONSTANTES                                  */
+/* -------------------------------------------------------------------------- */
+
+/** Máximo de peças que cada jogador mantém no tabuleiro (regra do "infinito"). */
+export const MAX_PIECES_PER_PLAYER = 3;
+
+/** Vidas iniciais de cada lado. */
+export const INITIAL_HP = 5;
+
+/** Dano padrão aplicado ao perdedor de uma rodada. Cartas podem alterar. */
+export const ROUND_DAMAGE = 1;
+
+/** Teto de cartas na mão do jogador. */
+export const HAND_LIMIT = 5;
+
+/** Teto de armadilhas armadas por combatente. */
+export const TRAP_LIMIT = 3;
+
+/** Linhas retidas no log de combate. Buffer circular. */
+export const LOG_LIMIT = 40;
+
+/** Combinações vencedoras no grid achatado. */
+export const WIN_LINES: readonly (readonly [number, number, number])[] = [
+  [0, 1, 2],
+  [3, 4, 5],
+  [6, 7, 8], // linhas
+  [0, 3, 6],
+  [1, 4, 7],
+  [2, 5, 8], // colunas
+  [0, 4, 8],
+  [2, 4, 6], // diagonais
+] as const;
+
+/** Mapeia o combatente para o símbolo que ele desenha. */
+export const MARK_BY_COMBATANT: Record<Combatant, Mark> = {
+  PLAYER: 'X',
+  MACHINE: 'O',
+};
+
+/** Tabuleiro vazio. Função, não constante: array compartilhado seria mutável. */
+export const createEmptyBoard = (): Board => Array<BoardCell>(9).fill(null);
+
+/* -------------------------------------------------------------------------- */
+/*                              CONSULTAS PURAS                                */
+/* -------------------------------------------------------------------------- */
+
+/** O oponente de um combatente. */
+export function opponentOf(combatant: Combatant): Combatant {
+  return combatant === 'PLAYER' ? 'MACHINE' : 'PLAYER';
+}
+
+/** Índices ocupados do tabuleiro, opcionalmente filtrados por dono. */
+export function occupiedIndexes(state: GameState, owner?: Combatant): number[] {
+  const out: number[] = [];
+  state.board.forEach((cell, index) => {
+    if (cell && (owner === undefined || cell.owner === owner)) out.push(index);
+  });
+  return out;
+}
+
+/** Índices ocupados por um combatente, do mais antigo ao mais novo. */
+export function getPieceIndexes(board: Board, owner: Combatant): number[] {
+  return board
+    .map((cell, index) => ({ cell, index }))
+    .filter((entry): entry is { cell: Piece; index: number } => entry.cell?.owner === owner)
+    .sort((a, b) => a.cell.turnPlaced - b.cell.turnPlaced)
+    .map((entry) => entry.index);
+}
+
+/**
+ * Índice da peça mais antiga do combatente, ou `null` se ele ainda não atingiu
+ * o limite. **Puro** — é esta versão que a UI e a IA podem consumir.
+ */
+export function getOldestPieceIndex(board: Board, owner: Combatant): number | null {
+  const indexes = getPieceIndexes(board, owner);
+  return indexes.length < MAX_PIECES_PER_PLAYER ? null : indexes[0];
+}
+
+/** Procura uma linha fechada. Retorna o vencedor e a linha, ou `null`. */
+export function findWinner(
+  board: Board,
+): { winner: Combatant; line: readonly [number, number, number] } | null {
+  for (const line of WIN_LINES) {
+    const [a, b, c] = line;
+    const first = board[a];
+    if (first && board[b]?.owner === first.owner && board[c]?.owner === first.owner) {
+      return { winner: first.owner, line };
+    }
+  }
+  return null;
+}
+
+/**
+ * A jogada é legal?
+ *
+ * Fonte única das guardas de `placeMark`. A UI chama a mesma função para
+ * decidir entre haptic de sucesso e de erro — se a regra mudar, muda aqui e
+ * os dois lados acompanham.
+ */
+export function canPlaceAt(state: GameState, index: number): boolean {
+  if (state.status !== 'PLAYING') return false;
+  // Modo mira sequestra o tabuleiro: nenhuma peça é posicionada até a carta
+  // resolver ou ser cancelada.
+  if (state.pendingAction !== null) return false;
+  if (index < 0 || index > 8) return false;
+  if (state.board[index] !== null) return false;
+  if (state.activeRule === 'BLOCKED_CELL' && state.blockedCell === index) return false;
+  return true;
+}
+
+/**
+ * A célula é alvo legal para esta carta? **Pura** — roda dentro de seletor do
+ * Zustand, uma vez por célula a cada mudança de estado.
+ *
+ * Recebe a `CardDefinition` pronta em vez do `cardId`: assim a engine de regras
+ * não precisa importar o catálogo de cartas, e o grafo de módulos fica sem
+ * ciclos. Quem tem o id resolve o lookup antes de chamar.
+ */
+export function isValidTargetForCard(
+  state: GameState,
+  card: CardDefinition,
+  index: number,
+): boolean {
+  if (index < 0 || index > 8) return false;
+  if (!card.requiresTarget) return false;
+
+  return card.isValidTarget ? card.isValidTarget({ state, caster: 'PLAYER', index }) : true;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                        CONSULTAS DEPENDENTES DE RNG                         */
+/* -------------------------------------------------------------------------- */
+/* Determinísticas dada a seed, mas **consomem** a sequência. Só podem ser
+   chamadas uma vez por evento de jogo — nunca dentro de render ou seletor.   */
+
+/**
+ * Decide qual peça do combatente deve sumir para abrir espaço para a próxima.
+ * Retorna `null` quando ele ainda não atingiu o limite.
+ *
+ * ⚠️ **Impura sob `RANDOM_FADE`** — consome o canal `BOARD`. Use apenas dentro
+ * de `placeMark`. Para a UI existe `selectIsVanishing`, que é puro.
+ */
+export function getVanishingIndex(
+  board: Board,
+  owner: Combatant,
+  rule: ChaosRule = 'NORMAL',
+): number | null {
+  const indexes = getPieceIndexes(board, owner);
+  if (indexes.length < MAX_PIECES_PER_PLAYER) return null;
+
+  if (rule === 'RANDOM_FADE') {
+    return getChannel('BOARD').pick(indexes);
+  }
+
+  return indexes[0]; // menor turnPlaced = mais antiga
+}
+
+/**
+ * Sorteia o índice de uma célula vazia pelo canal `BOARD`.
+ * Retorna `null` se não houver nenhuma.
+ */
+export function pickFreeCell(board: Board): number | null {
+  const free = board.map((cell, i) => (cell === null ? i : -1)).filter((i) => i !== -1);
+  if (free.length === 0) return null;
+  return getChannel('BOARD').pick(free);
+}
