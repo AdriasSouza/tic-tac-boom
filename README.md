@@ -36,8 +36,11 @@ que o jogo bugou.
 Empate por tabuleiro cheio é impossível: 3 + 3 = 6 peças em 9 células.
 
 ### Regras caóticas
-O **Chaos Terminal** (monitor CRT no topo da tela) surta sozinho a cada 5–9 segundos e sorteia
-uma nova regra:
+O **Chaos Terminal** (monitor CRT no topo da tela) troca de regra por **turno global**, não por
+tempo real: cada regra dura 2–4 jogadas de tabuleiro antes de expirar e ser resorteada. Isso é
+proposital — antes o terminal rolava sozinho a cada 5–9 segundos de relógio, o que permitia ao
+jogador simplesmente esperar parado até uma regra ruim passar. Agora só jogar faz o tempo do
+jogo andar. O terminal mostra a contagem regressiva (`Nt`) ao lado do nome da regra.
 
 | Regra | Efeito |
 |---|---|
@@ -46,15 +49,25 @@ uma nova regra:
 | `BLOCKED_CELL` | Uma célula fica interditada e não aceita jogadas |
 
 ### Cartas
+Mão de até 5 cartas, mesa de até 3 armadilhas. Cada lado começa a partida com 2 cartas e recebe
+mais 1 a cada 3 jogadas globais completas (Player e CPU juntos). Cartas são arrastadas para a
+metade superior da tela para serem jogadas.
 
 | Carta | Tipo | Efeito |
 |---|---|---|
-| **DEMOLIR** (`BREAK_PIECE`) | `ACTION` | Entra em modo mira. Você escolhe uma peça no tabuleiro e ela é destruída — inclusive as suas |
+| **DEMOLIR** (`BREAK_PIECE`) | `ACTION` | Modo mira: destrói uma peça do tabuleiro, inclusive as suas |
 | **REBOBINAR** (`EXTRA_TURN`) | `ACTION` | Sua próxima jogada não passa a vez |
-| **MINA** (`BOMB_TRAP`) | `TRAP` | Vai virada para a mesa. Detona se o oponente ocupar o centro: 2 de dano e ele perde a vez |
-
-Mão de até 5 cartas, mesa de até 3 armadilhas. Cartas são arrastadas para a metade superior
-da tela para serem jogadas.
+| **CURAR** (`HEAL_SELF`) | `ACTION` | Recupera 1 HP |
+| **ATAQUE** (`DIRECT_DAMAGE`) | `ACTION` | Causa 1 de dano direto ao oponente |
+| **ESTUDAR** (`DRAW_CARD`) | `ACTION` | Compra 1 carta adicional |
+| **SAQUE** (`HAND_RAID`) | `ACTION` | 50% de chance de roubar uma carta aleatória do oponente; senão, destrói |
+| **PURIFICAR** (`CLEANSE`) | `ACTION` | Remove uma interdição de célula, restaurando a regra normal |
+| **TROCA** (`HAND_SWAP`) | `ACTION` | Troca sua mão inteira pela do oponente |
+| **VIDENTE** (`REVEAL_OLDEST`) | `ACTION` | Revela qual peça do oponente vai sumir na próxima jogada dele |
+| **TRAVAR** (`LOCK_CELL`) | `ACTION` | Modo mira: bloqueia uma célula vazia por 1 turno global |
+| **MINA** (`BOMB_TRAP`) | `TRAP` | Vira na mesa. Detona se o oponente ocupar o centro: 2 de dano e ele perde a vez |
+| **PROTEÇÃO** (`SHIELD_TRAP`) | `TRAP` | Vira na mesa. Impede que uma carta sua seja roubada pelo SAQUE do oponente |
+| **ANTI-MAGIA** (`COUNTER_TRAP`) | `TRAP` | Vira na mesa. Anula a próxima carta de ação jogada pelo oponente |
 
 ---
 
@@ -210,13 +223,20 @@ Dois modos:
 ### HP e dano
 1. Feche uma linha de 3.
 2. ✅ A linha acende em amarelo, um bloco de HP do perdedor pisca branco/vermelho, treme, e o device vibra.
-3. ✅ Após ~1,4s o tabuleiro limpa e quem perdeu começa a rodada seguinte.
+3. ✅ Após ~1,3s o tabuleiro limpa sozinho e quem perdeu começa a rodada seguinte — automático, sem
+   depender de nenhuma tela estar de um jeito específico (a transição vive dentro do próprio
+   `placeMark`, não num `useEffect` da UI).
 
-### Chaos Terminal (ponte WebView)
-1. Espere 5–9 segundos com o app aberto.
+### Chaos Terminal (ponte híbrida WebView/iframe)
+1. Jogue algumas peças (a regra troca a cada 2–4 turnos globais — **não** por tempo real; ficar
+   parado sem jogar não muda mais nada, de propósito).
 2. ✅ O monitor no topo glitcha (separação RGB + tremida) e escreve a nova regra.
-3. ✅ Se sortear `RANDOM_FADE`, **todas** as peças do jogador da vez passam a pulsar.
-4. ✅ Se sortear `BLOCKED_CELL`, uma célula ganha uma barra vermelha e recusa toques.
+3. ✅ Ao lado do nome da regra aparece a contagem regressiva (`Nt`), decrescendo a cada jogada.
+4. ✅ Se sortear `RANDOM_FADE`, **todas** as peças do jogador da vez passam a pulsar.
+5. ✅ Se sortear `BLOCKED_CELL`, uma célula ganha uma barra vermelha e recusa toques.
+6. Rode `npx expo start --web` e abra no navegador.
+7. ✅ O mesmo terminal aparece rodando dentro de um `<iframe>` — mesmo HTML do WebView nativo,
+   sem nenhuma alteração de conteúdo.
 
 Para forçar uma regra sem esperar, no console do Metro:
 ```js
@@ -263,6 +283,9 @@ Abra `/game/cpu`.
 7. Com a máquina já tendo 3 peças, verifique um caso em que fechar a linha exigiria sacrificar
    a peça mais antiga que faz parte dessa mesma linha.
 8. ✅ Ela **não** joga ali — a simulação aplica a regra do infinito antes de decidir.
+9. Jogue até a máquina acumular cartas (a cada 3 turnos globais ela recebe 1, como você).
+10. ✅ Ela usa as cartas sozinha — cura quando o HP dela cai a 2, ataca quando o seu HP cai a 2,
+    arma armadilhas quando tem espaço, e o log mostra a `message` de cada carta jogada por ela.
 
 ### Log de combate
 1. ✅ O terminal mostra a regra ativa no topo e as linhas de log rolando abaixo.
@@ -277,6 +300,19 @@ Abra `/game/cpu`.
 4. ✅ Modal com moldura pixelada e os 3 passos do onboarding.
 5. ✅ Os números do tutorial (3 peças, 5 vidas) vêm das constantes de domínio —
    mudar `MAX_PIECES_PER_PLAYER` atualiza o texto sozinho.
+6. Toque em **CRÉDITOS**.
+7. ✅ Modal com a bio do desenvolvedor, na mesma moldura pixelada.
+
+### Header e menu de pause
+1. Dentro de uma partida, observe o cabeçalho: logo "TIC TAC **BOOM**" + botão de pause.
+2. Toque no botão de pause.
+3. ✅ Modal com **RETOMAR**, **REINICIAR PARTIDA** e **SAIR PARA O MENU**.
+4. ✅ Com o modal aberto, toques no tabuleiro não fazem nada — `isPaused` bloqueia `canPlaceAt`.
+5. No modo `/game/cpu`, pause bem no meio do "pensamento" da máquina (0,8–1,5s após sua jogada).
+6. ✅ Ela não joga enquanto pausado. Toque em **RETOMAR**.
+7. ✅ A CPU recomeça a decisão do zero e joga normalmente.
+8. Toque em **REINICIAR PARTIDA**.
+9. ✅ Nova partida, HP restaurado, log limpo — sem duplicar a mão inicial.
 
 ### Fim de partida
 1. Jogue até um lado zerar as 5 vidas.
@@ -400,23 +436,29 @@ desenhadas com `View` (`borderRadius: 0`).
 
 ### ✅ Implementado
 - Jogo da velha infinito com fila de 3 peças
-- Sistema de HP (5 vidas), rodadas e fim de partida
-- 3 regras caóticas + Chaos Terminal com ponte bidirecional WebView ⇄ Zustand
+- Sistema de HP (5 vidas), rodadas e fim de partida, com **transição automática de rodada** —
+  vive dentro do próprio `placeMark`, não depende de nenhum `useEffect` de tela
+- 3 regras caóticas com **duração por turno global** (2–4 jogadas, não tempo real) + Chaos
+  Terminal híbrido: `<WebView>` nativo e `<iframe>` na web, mesmo HTML sem alteração
+- Distribuição automática de cartas: 2 na mão inicial de cada lado, +1/+1 a cada 3 jogadas globais
 - RNG determinístico por seed, com canais independentes e snapshot/restore
 - HUD com animação de dano (flash + shake + haptics)
-- 3 cartas: 2 de ação, 1 de armadilha
+- **13 cartas**: 10 de ação, 1 armadilha ofensiva (MINA) e 2 armadilhas de defesa (PROTEÇÃO,
+  ANTI-MAGIA) que vetam a carta do oponente antes do efeito resolver
 - Mão arrastável em leque, com layout animations
 - Sistema de mira com destaque de alvos válidos e cancelamento
-- Event Bus para armadilhas, reentrante por fila
-- **IA da CPU** — heurística vencer → bloquear → posicional, com simulação que respeita a
-  regra do infinito
-- **Log de combate** no ChaosTerminal, com auto-scroll e replay após reload da WebView
-- **Tela de título** com animação, onboarding em modal e componentes de UI retrô
+- Event Bus para armadilhas reativas (MINA), reentrante por fila; veto síncrono para as
+  armadilhas de defesa (não podem esperar a fila, têm que agir antes do patch)
+- **IA da CPU** — heurística vencer → bloquear → posicional para o tabuleiro, e uma heurística
+  de prioridade fixa para usar as cartas que compra (cura, ataque, armar armadilha, etc.)
+- **Header + menu de pause** (retomar / reiniciar / sair), com `isPaused` bloqueando o
+  tabuleiro e interrompendo o "pensamento" da CPU de verdade
+- **Log de combate** no ChaosTerminal, com auto-scroll e replay após reload
+- **Tela de título** com animação, onboarding e créditos em modal, componentes de UI retrô
 - **Tela de fim de partida** com placar, reinício e exibição da seed
 - **Engine desacoplada** — `src/engine/` não importa nada de `src/store/`
 
 ### ⛔ Ainda não existe
-- **A CPU não usa cartas nem armadilhas** — só joga no tabuleiro
 - **Sprites de pixel art** — peças, cartas e UI são desenhadas com `View`
 - **Fonte pixelada** — usando monospace do sistema
 - **Áudio** — nenhum som ou trilha
@@ -426,16 +468,20 @@ desenhadas com `View` (`borderRadius: 0`).
 ### 🐛 Limitações conhecidas
 - **Armadilha com mira não é suportada.** O desvio das `TRAP` acontece antes da checagem de
   `requiresTarget`, então uma armadilha que precise escolher célula ao ser armada não guarda o
-  alvo. Precisaria de `targetIndex` dentro do `HandCard` armado.
-- **Fechar uma linha te faz escapar das armadilhas.** `placeMark` não publica evento no caminho
-  de vitória, de propósito — senão a mina aplicaria dano em cima do dano da derrota. É decisão
-  de design, não bug.
+  alvo. Nenhuma das 3 traps atuais precisa disso, mas uma futura precisaria de `targetIndex`
+  dentro do `HandCard` armado.
+- **Fechar uma linha te faz escapar das armadilhas e do veto de contra-ataque.** `placeMark` não
+  publica evento no caminho de vitória, de propósito — senão a mina aplicaria dano em cima do
+  dano da derrota. É decisão de design, não bug.
 - **A CPU pode abrir uma ameaça ao sacrificar a própria peça.** Ela simula a regra do infinito
   para *vencer* e *bloquear*, mas o critério posicional não verifica se remover a peça mais
   antiga libera uma linha para o humano. Corrigir é uma busca de 2 plies (~81 simulações,
   barato) — está fora do escopo de "heurística básica".
-- **A fonte no WebView é independente do app.** `expo-font` não alcança a WebView; usar a
-  Press Start 2P dentro do CRT exige embutir o `.ttf` como base64 num `@font-face`.
+- **A CPU joga no máximo 1 carta por turno**, sempre antes do movimento de tabuleiro — nunca
+  encadeia duas cartas na mesma jogada, mesmo quando nenhuma delas consome o turno.
+- **A fonte no terminal é independente do resto do app.** `expo-font` não alcança o documento do
+  WebView/iframe; usar a Press Start 2P lá dentro exige embutir o `.ttf` como base64 num
+  `@font-face` dentro do próprio HTML.
 
 ---
 

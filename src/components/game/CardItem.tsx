@@ -64,6 +64,12 @@ export interface CardItemProps {
   isDragging: boolean;
   onDragStart: (index: number) => void;
   onDragEnd: () => void;
+  /**
+   * Toque rápido (sem arrastar) numa carta que NÃO está em mira. Abre o modo
+   * foco (`<CardFocusModal />`) — a alternativa amigável ao mouse do fluxo de
+   * arrastar, que não é intuitivo fora de touch.
+   */
+  onFocus: (uid: string) => void;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -97,6 +103,7 @@ function CardItemComponent({
   isDragging,
   onDragStart,
   onDragEnd,
+  onFocus,
 }: CardItemProps) {
   const card = getCard(cardId);
 
@@ -173,6 +180,16 @@ function CardItemComponent({
     useGameStore.getState().clearPendingAction();
   }, []);
 
+  /**
+   * Toque numa carta que NÃO está em mira: abre o modo foco. Alternativa ao
+   * arrastar, pensada para mouse/web — clicar é mais natural que "segurar e
+   * arrastar" com um cursor.
+   */
+  const handleFocusTap = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    onFocus(uid);
+  }, [onFocus, uid]);
+
   /* --- Gestos (100% UI thread) -------------------------------------------- */
 
   const requiresTarget = card.requiresTarget === true;
@@ -239,14 +256,17 @@ function CardItemComponent({
     ],
   );
 
+  // Sempre habilitado (diferente de antes, quando só existia para cancelar a
+  // mira): agora um toque simples SEMPRE faz algo — cancela, se a carta já
+  // está selecionada; senão abre o foco. Nunca mais um "clique morto".
   const tapGesture = useMemo(
     () =>
-      Gesture.Tap()
-        .enabled(isSelected)
-        .onEnd((_event, success) => {
-          if (success) runOnJS(cancelTargeting)();
-        }),
-    [isSelected, cancelTargeting],
+      Gesture.Tap().onEnd((_event, success) => {
+        if (!success) return;
+        if (isSelected) runOnJS(cancelTargeting)();
+        else runOnJS(handleFocusTap)();
+      }),
+    [isSelected, cancelTargeting, handleFocusTap],
   );
 
   // Race: o primeiro a ativar vence. Com o limiar do pan, um toque parado vira

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Pressable,
   StyleSheet,
@@ -12,13 +12,17 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 
 import { CARD_HEIGHT, CardItem } from './CardItem';
+import { CardFocusModal } from '@/components/ui/CardFocusModal';
 import { colors } from '@/theme/colors';
 import { getCard } from '@/engine/cards/registry';
 import {
   selectCanPlayCards,
+  selectCanUseCard,
+  selectHasPendingAcknowledgement,
   selectPendingAction,
   selectPlayerHand,
   useGameStore,
+  type CardId,
 } from '@/store/gameStore';
 
 /* -------------------------------------------------------------------------- */
@@ -68,7 +72,70 @@ export function CardHand({ style }: CardHandProps) {
   const canPlayCards = useGameStore(selectCanPlayCards);
   const pendingAction = useGameStore(selectPendingAction);
   const clearPendingAction = useGameStore((s) => s.clearPendingAction);
+  // Uma armadilha revelada ou carta de espionagem pausando o jogo: nem
+  // arrastar, nem abrir o modo foco fazem sentido enquanto isso está na tela.
+  const hasPendingAcknowledgement = useGameStore(selectHasPendingAcknowledgement);
   const { height } = useWindowDimensions();
+
+  const isTargeting = pendingAction !== null;
+
+  /* --- Modo foco -----------------------------------------------------------
+     Estado local (não vive na store): é puramente apresentacional, não afeta
+     regra de jogo — igual `draggingIndex` logo abaixo.                       */
+  const [focusedUid, setFocusedUid] = useState<string | null>(null);
+  const focusedEntry = focusedUid ? (hand.find((c) => c.uid === focusedUid) ?? null) : null;
+  const canConfirmFocused = useGameStore(
+    useMemo(() => selectCanUseCard(focusedUid ?? ''), [focusedUid]),
+  );
+
+  const handleFocusCard = useCallback(
+    (uid: string) => {
+      // Não abre foco em cima de uma mira já ativa (de outra carta, via
+      // arrasto), nem enquanto uma confirmação manual pausa o jogo — os
+      // dois casos evitariam dois fluxos de resolução disputando a vez.
+      if (isTargeting || hasPendingAcknowledgement) return;
+      setFocusedUid(uid);
+    },
+    [isTargeting, hasPendingAcknowledgement],
+  );
+
+  const handleCancelFocus = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
+    setFocusedUid(null);
+  }, []);
+
+  const handleConfirmFocus = useCallback(() => {
+    if (!focusedEntry) return;
+    const { uid, cardId } = focusedEntry;
+    const card = getCard(cardId);
+
+    if (card.type !== 'TRAP' && card.requiresTarget) {
+      // Carta com alvo: sai do foco e entra em modo mira — o tabuleiro
+      // assume a partir daqui, exatamente como no fluxo de arrastar.
+      const armed = useGameStore.getState().setPendingAction({ type: 'PLAY_CARD', uid, cardId });
+      void Haptics.impactAsync(
+        armed ? Haptics.ImpactFeedbackStyle.Rigid : Haptics.ImpactFeedbackStyle.Soft,
+      );
+      if (!armed) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    } else {
+      // Sem alvo (ou TRAP, que sempre arma direto): resolve na hora.
+      const played = useGameStore.getState().playCard(uid);
+      void Haptics.notificationAsync(
+        played
+          ? Haptics.NotificationFeedbackType.Success
+          : Haptics.NotificationFeedbackType.Error,
+      );
+    }
+
+    setFocusedUid(null);
+  }, [focusedEntry]);
+
+  // A carta pode sair da mão por caminhos que não passam por "cancelar" ou
+  // "confirmar" (ex: SAQUE do oponente rouba ou destrói) — se isso acontecer
+  // com o foco aberto, fecha sozinho em vez de mostrar uma carta fantasma.
+  useEffect(() => {
+    if (focusedUid && !hand.some((c) => c.uid === focusedUid)) setFocusedUid(null);
+  }, [focusedUid, hand]);
 
   /**
    * Metade superior da tela = "jogar no tabuleiro".
@@ -113,8 +180,6 @@ export function CardHand({ style }: CardHandProps) {
     });
   }, [hand.length]);
 
-  const isTargeting = pendingAction !== null;
-
   return (
     <View style={[styles.root, style]}>
       {/* Faixa de instrução — sem ela, o modo mira vira um beco sem saída. */}
@@ -156,16 +221,27 @@ export function CardHand({ style }: CardHandProps) {
                 baseRotation={baseRotation}
                 playZoneBottom={playZoneBottom}
                 // Durante a mira ninguém arrasta: ou resolve, ou cancela.
-                canDrag={canPlayCards && !isTargeting}
+                canDrag={canPlayCards && !isTargeting && !hasPendingAcknowledgement}
                 isSelected={isSelected}
                 isDragging={draggingIndex === index}
                 onDragStart={handleDragStart}
                 onDragEnd={handleDragEnd}
+                onFocus={handleFocusCard}
               />
             );
           })
         )}
       </View>
+
+      {/* Modo foco: alternativa ao arrastar, pensada para mouse/web. */}
+      {focusedEntry && (
+        <CardFocusModal
+          cardId={focusedEntry.cardId}
+          canConfirm={canConfirmFocused}
+          onCancel={handleCancelFocus}
+          onConfirm={handleConfirmFocus}
+        />
+      )}
     </View>
   );
 }

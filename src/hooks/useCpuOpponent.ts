@@ -1,7 +1,14 @@
 import { useEffect } from 'react';
 
 import { describeCpuMove, playCPUTurn, type CpuSignal } from '@/engine/ai/cpu';
-import { selectStatus, selectTurn, selectTurnCount, useGameStore } from '@/store/gameStore';
+import {
+  selectHasPendingAcknowledgement,
+  selectIsPaused,
+  selectStatus,
+  selectTurn,
+  selectTurnCount,
+  useGameStore,
+} from '@/store/gameStore';
 
 export interface UseCpuOpponentOptions {
   /** Desligue no modo hot-seat, onde o lado MACHINE é outro humano. */
@@ -27,6 +34,8 @@ export function useCpuOpponent({
 }: UseCpuOpponentOptions = {}) {
   const turn = useGameStore(selectTurn);
   const status = useGameStore(selectStatus);
+  const isPaused = useGameStore(selectIsPaused);
+  const hasPendingAcknowledgement = useGameStore(selectHasPendingAcknowledgement);
 
   /**
    * `turnCount` é o gatilho, não `turn`.
@@ -40,15 +49,20 @@ export function useCpuOpponent({
 
   useEffect(() => {
     if (!enabled) return;
+    if (isPaused) return; // pausado: nem inicia um novo "pensamento"
+    if (hasPendingAcknowledgement) return; // confirmação manual pendente: espera o jogador clicar "Entendi"
     if (status !== 'PLAYING' || turn !== 'MACHINE') return;
 
     // Cancelamento cooperativo: o atraso da CPU dura até 1,5s e o jogador pode
-    // sair da tela ou reiniciar a partida nesse intervalo.
+    // sair da tela, pausar ou reiniciar a partida nesse intervalo.
     const signal: CpuSignal = { cancelled: false };
 
     void playCPUTurn(
       useGameStore.getState(),
-      { placeMark: (index) => useGameStore.getState().placeMark(index) },
+      {
+        placeMark: (index) => useGameStore.getState().placeMark(index),
+        playCard: (uid, targetIndex) => useGameStore.getState().playMachineCard(uid, targetIndex),
+      },
       {
         signal,
         getState: useGameStore.getState,
@@ -61,8 +75,22 @@ export function useCpuOpponent({
       useGameStore.getState().pushLog(describeCpuMove(decision));
     });
 
+    // Ao pausar, o cleanup cancela o "pensamento" em andamento. Como
+    // `isPaused` está nas dependências, despausar reexecuta o efeito e a CPU
+    // recomeça a decisão do zero — mais simples e seguro do que tentar
+    // pausar/retomar o mesmo `setTimeout` no meio do caminho.
     return () => {
       signal.cancelled = true;
     };
-  }, [enabled, turn, turnCount, status, minDelay, maxDelay, positionalBias]);
+  }, [
+    enabled,
+    turn,
+    turnCount,
+    status,
+    isPaused,
+    hasPendingAcknowledgement,
+    minDelay,
+    maxDelay,
+    positionalBias,
+  ]);
 }

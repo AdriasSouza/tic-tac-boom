@@ -84,6 +84,33 @@ export interface LogLine {
   text: string;
 }
 
+/**
+ * Pausa de confirmação manual — uma armadilha disparou, ou uma carta revelou
+ * informação, e o jogo espera o jogador clicar "Entendi" antes de continuar.
+ *
+ * Substitui um timer automático: dar um tempo fixo (ex: 1.8s) não garante que
+ * o jogador realmente LEU a informação — só que ela ficou na tela por tempo
+ * suficiente. Exigir um clique explícito garante leitura, e além disso não
+ * exclui quem lê mais devagar.
+ */
+export interface PendingAcknowledgement {
+  /** Monotônico — `key` estável na UI e evita reabrir a mesma pausa duas vezes. */
+  id: number;
+  /** Selo curto no topo (ex: "SUA ARMADILHA", "ARMADILHA DO OPONENTE", "ESPIONAGEM"). */
+  subtitle: string;
+  /** Nome em destaque (o nome da carta revelada, ou um título como "MÃO DO OPONENTE"). */
+  title: string;
+  /** Texto explicativo — a `description` da carta, ou uma frase sobre o que foi descoberto. */
+  description: string;
+  /**
+   * Cartas a listar em miniatura, além da principal já descrita em
+   * `title`/`description`. Vazio na maioria dos casos (revelação de
+   * armadilha, Espionagem); usado por Visão Absoluta, que revela a mão
+   * inteira do oponente de uma vez.
+   */
+  revealedCards: CardId[];
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                   ESTADO                                    */
 /* -------------------------------------------------------------------------- */
@@ -138,10 +165,45 @@ export interface GameState {
   machineTraps: HandCard[];
 
   /**
-   * Última armadilha revelada. Efêmero, só para a UI anunciar o disparo — sem
-   * isso uma armadilha detona de forma completamente invisível.
+   * Pausa de confirmação manual em exibição. Não-nula entre o gatilho
+   * (armadilha revelada, carta de espionagem) e o jogador clicar "Entendi".
+   *
+   * Enquanto não for `null`, `canPlaceAt`, `resolveCardPlay` e `setPendingAction`
+   * recusam ação: sem isso, o jogador poderia agir antes do efeito mecânico
+   * (turno extra, dano) ter sido de fato aplicado — o efeito só aplica
+   * quando `acknowledgePending` é chamado.
    */
-  lastRevealedTrap: { uid: string; cardId: CardId; owner: Combatant } | null;
+  pendingAcknowledgement: PendingAcknowledgement | null;
+  nextAcknowledgementId: number;
+
+  /** Mão da máquina — espelha `playerHand`. Nunca exibida na UI (é secreta). */
+  machineHand: HandCard[];
+
+  /**
+   * Turno global (`turnCount`) em que a regra caótica ATUAL reverte para
+   * `NORMAL`. `null` enquanto `activeRule === 'NORMAL'` — o repouso não
+   * expira sozinho, só é interrompido pelo próximo surto agendado (ver
+   * `isChaosSurgeTurn`).
+   *
+   * Duração fixa (`CHAOS_RULE_DURATION_TURNS`, não mais um intervalo
+   * aleatório): o modelo antigo sorteava 2–4 turnos e ponderava a escolha da
+   * regra fortemente a favor de `NORMAL`, o que na prática fazia o caos
+   * "sumir" com frequência e dava a impressão de que nada estava
+   * acontecendo. Cadência fixa e determinística elimina essa ambiguidade.
+   */
+  ruleExpiresAtTurn: number | null;
+
+  /** Dano mais recente aplicado por `takeDamage`. Efêmero, dispara o flash vermelho de tela. */
+  lastDamageEvent: { target: Combatant; amount: number; id: number } | null;
+  nextDamageEventId: number;
+
+  /**
+   * Partida pausada pelo menu de pause.
+   *
+   * Verificado em `canPlaceAt` (bloqueia o tabuleiro) e no hook da CPU
+   * (interrompe o "pensamento" e não inicia um novo turno enquanto pausado).
+   */
+  isPaused: boolean;
 
   /**
    * Log de combate — buffer circular de `LOG_LIMIT` linhas.
@@ -199,6 +261,31 @@ export const TRAP_LIMIT = 3;
 /** Linhas retidas no log de combate. Buffer circular. */
 export const LOG_LIMIT = 40;
 
+/** A cada quantos turnos globais um novo surto de caos troca a regra ativa. */
+export const CHAOS_SURGE_INTERVAL_TURNS = 4;
+
+/** Quantos turnos globais uma regra caótica dura antes de reverter a NORMAL. */
+export const CHAOS_RULE_DURATION_TURNS = 2;
+
+/**
+ * Duração MÍNIMA (em turnos globais) de uma regra aplicada por CARTA (ex:
+ * TRAVAR), distinta de `CHAOS_RULE_DURATION_TURNS` (surto automático do
+ * terminal).
+ *
+ * Precisa ser >= 2, nunca 1 — o "paradoxo do turno": quem lança a carta
+ * ainda vai completar a PRÓPRIA jogada (que soma +1 a `turnCount`) antes do
+ * oponente sequer decidir. Com duração 1, `tickGlobalClock` reverteria a
+ * regra na jogada de quem LANÇOU a carta, e o efeito nunca chegaria a valer
+ * para o adversário — exatamente o bug que isto existe para prevenir.
+ */
+export const CARD_RULE_MIN_DURATION_TURNS = 2;
+
+/** A cada quantas jogadas globais completas cada lado recebe 1 carta. */
+export const AUTO_DRAW_INTERVAL_TURNS = 6;
+
+/** Cartas na mão inicial de cada lado, distribuídas por `startMatch`. */
+export const OPENING_HAND_SIZE = 2;
+
 /** Combinações vencedoras no grid achatado. */
 export const WIN_LINES: readonly (readonly [number, number, number])[] = [
   [0, 1, 2],
@@ -227,6 +314,32 @@ export const createEmptyBoard = (): Board => Array<BoardCell>(9).fill(null);
 /** O oponente de um combatente. */
 export function opponentOf(combatant: Combatant): Combatant {
   return combatant === 'PLAYER' ? 'MACHINE' : 'PLAYER';
+}
+
+/**
+ * Chave de `GameState` que guarda a mão de um combatente.
+ *
+ * Centraliza o ternário `caster === 'PLAYER' ? 'playerHand' : 'machineHand'`
+ * que, sem isso, se repetiria em meia dúzia de lugares no store e nas cartas
+ * — cada repetição é uma chance de trocar `player`/`machine` por engano.
+ */
+export function handKeyFor(combatant: Combatant): 'playerHand' | 'machineHand' {
+  return combatant === 'PLAYER' ? 'playerHand' : 'machineHand';
+}
+
+/** Mesma ideia de `handKeyFor`, para a zona de armadilhas. */
+export function trapsKeyFor(combatant: Combatant): 'playerTraps' | 'machineTraps' {
+  return combatant === 'PLAYER' ? 'playerTraps' : 'machineTraps';
+}
+
+/** HP atual de um combatente. */
+export function hpOf(state: GameState, combatant: Combatant): number {
+  return combatant === 'PLAYER' ? state.playerHp : state.machineHp;
+}
+
+/** Mão atual de um combatente. */
+export function handOf(state: GameState, combatant: Combatant): HandCard[] {
+  return state[handKeyFor(combatant)];
 }
 
 /** Índices ocupados do tabuleiro, opcionalmente filtrados por dono. */
@@ -279,6 +392,11 @@ export function findWinner(
  */
 export function canPlaceAt(state: GameState, index: number): boolean {
   if (state.status !== 'PLAYING') return false;
+  if (state.isPaused) return false;
+  // Uma pausa de confirmação em exibição segura o jogo antes do efeito
+  // (armadilha, carta de espionagem) aplicar de fato — jogar nesta janela
+  // poderia acontecer ANTES do turno extra/dano valer, criando uma corrida.
+  if (state.pendingAcknowledgement !== null) return false;
   // Modo mira sequestra o tabuleiro: nenhuma peça é posicionada até a carta
   // resolver ou ser cancelada.
   if (state.pendingAction !== null) return false;
@@ -300,11 +418,33 @@ export function isValidTargetForCard(
   state: GameState,
   card: CardDefinition,
   index: number,
+  caster: Combatant = 'PLAYER',
 ): boolean {
   if (index < 0 || index > 8) return false;
   if (!card.requiresTarget) return false;
 
-  return card.isValidTarget ? card.isValidTarget({ state, caster: 'PLAYER', index }) : true;
+  return card.isValidTarget ? card.isValidTarget({ state, caster, index }) : true;
+}
+
+/**
+ * A regra caótica atual já deveria ter revertido para NORMAL?
+ *
+ * `ruleExpiresAtTurn === null` significa "sem prazo" (é o caso de `NORMAL`
+ * em repouso — ele não expira sozinho, só o próximo surto agendado o
+ * interrompe), então nunca é considerado expirado.
+ */
+export function isChaosRuleExpired(state: GameState): boolean {
+  return state.ruleExpiresAtTurn !== null && state.turnCount >= state.ruleExpiresAtTurn;
+}
+
+/** É turno de um novo surto de caos (`CHAOS_SURGE_INTERVAL_TURNS` em turnos)? */
+export function isChaosSurgeTurn(turnCount: number): boolean {
+  return turnCount > 0 && turnCount % CHAOS_SURGE_INTERVAL_TURNS === 0;
+}
+
+/** É hora de distribuir a carta automática deste turno global? */
+export function isAutoDrawTurn(turnCount: number): boolean {
+  return turnCount > 0 && turnCount % AUTO_DRAW_INTERVAL_TURNS === 0;
 }
 
 /* -------------------------------------------------------------------------- */

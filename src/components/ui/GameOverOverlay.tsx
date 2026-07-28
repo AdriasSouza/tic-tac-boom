@@ -29,8 +29,6 @@ import { PixelPanel } from './PixelPanel';
 /* -------------------------------------------------------------------------- */
 
 export interface GameOverOverlayProps {
-  /** Cartas a comprar ao reiniciar — mantém a mão inicial igual à da tela. */
-  openingHand?: number;
   hapticsEnabled?: boolean;
 }
 
@@ -48,24 +46,21 @@ export interface GameOverOverlayProps {
  * Cobre a tela inteira e captura todos os toques: com HP zerado o tabuleiro
  * atrás não deve mais aceitar jogada nenhuma.
  */
-export function GameOverOverlay({
-  openingHand = 3,
-  hapticsEnabled = true,
-}: GameOverOverlayProps) {
+export function GameOverOverlay({ hapticsEnabled = true }: GameOverOverlayProps) {
   const matchWinner = useGameStore((s) => s.matchWinner);
 
   if (!matchWinner) return null;
 
   // `key` força remontagem se a partida acabar de novo com outro vencedor —
   // garante que as animações de entrada rodem do zero.
-  return <GameOverContent key={matchWinner} openingHand={openingHand} haptics={hapticsEnabled} />;
+  return <GameOverContent key={matchWinner} haptics={hapticsEnabled} />;
 }
 
 export default GameOverOverlay;
 
 /* -------------------------------------------------------------------------- */
 
-function GameOverContent({ openingHand, haptics }: { openingHand: number; haptics: boolean }) {
+function GameOverContent({ haptics }: { haptics: boolean }) {
   const router = useRouter();
 
   const matchWinner = useGameStore((s) => s.matchWinner);
@@ -73,7 +68,6 @@ function GameOverContent({ openingHand, haptics }: { openingHand: number; haptic
   const machineHp = useGameStore(selectMachineHp);
   const matchSeed = useGameStore(selectMatchSeed);
   const startMatch = useGameStore((s) => s.startMatch);
-  const drawCard = useGameStore((s) => s.drawCard);
 
   const playerWon = matchWinner === 'PLAYER';
   const accent = playerWon ? colors.winGlow : colors.danger;
@@ -136,15 +130,15 @@ function GameOverContent({ openingHand, haptics }: { openingHand: number; haptic
   /* --- Ações -------------------------------------------------------------- */
 
   /**
-   * `startMatch()` recria o estado inicial inteiro — o que já zera
-   * `terminalLog` e reinicia `nextLogId`. O `<ChaosTerminal />` detecta o log
-   * vazio e manda `CLEAR` para a WebView, então o monitor limpa sozinho sem
-   * precisar de uma action dedicada.
+   * `startMatch()` recria o estado inicial inteiro — zera `terminalLog`
+   * (o `<ChaosTerminal />` detecta o log vazio e manda `CLEAR` sozinho) e já
+   * distribui a mão inicial dos dois lados. Nenhuma tela precisa mais lembrar
+   * de chamar `drawCard` depois — antes isso vivia aqui e duplicava a mão se
+   * alguém esquecesse de manter os dois lugares em sincronia.
    */
   const handleRestart = useCallback(() => {
     startMatch();
-    drawCard(openingHand);
-  }, [startMatch, drawCard, openingHand]);
+  }, [startMatch]);
 
   const handleMenu = useCallback(() => {
     router.replace('/');

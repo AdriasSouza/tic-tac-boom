@@ -4,10 +4,12 @@ import { useRouter } from 'expo-router';
 import Animated, { withRepeat, withTiming, withSequence, useSharedValue, useAnimatedStyle } from 'react-native-reanimated';
 import PixelButton from '@/components/ui/PixelButton';
 import HowToPlayModal from '@/components/ui/HowToPlayModal';
+import CreditsModal from '@/components/ui/CreditsModal';
 
 export default function TitleScreen() {
   const router = useRouter();
   const [modalVisible, setModalVisible] = useState(false);
+  const [creditsVisible, setCreditsVisible] = useState(false);
 
   const scale = useSharedValue(1);
 
@@ -42,14 +44,22 @@ export default function TitleScreen() {
         label="Jogar Local" 
         onPress={() => router.push({ pathname: '/game/[mode]', params: { mode: 'local' } })} 
       />
-      <PixelButton 
-        label="Como Jogar" 
-        onPress={() => setModalVisible(true)} 
+      <PixelButton
+        label="Como Jogar"
+        onPress={() => setModalVisible(true)}
+      />
+      <PixelButton
+        label="Créditos"
+        variant="ghost"
+        onPress={() => setCreditsVisible(true)}
       />
     </View>
 
       {modalVisible && (
         <HowToPlayModal visible={modalVisible} onClose={() => setModalVisible(false)} />
+      )}
+      {creditsVisible && (
+        <CreditsModal visible={creditsVisible} onClose={() => setCreditsVisible(false)} />
       )}
     </View>
   );

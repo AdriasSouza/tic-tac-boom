@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef } from 'react';
-import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
-import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import * as Haptics from 'expo-haptics';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import {
   LOG_LIMIT,
   selectActiveRule,
+  selectRuleTurnsLeft,
   selectTerminalLog,
   useGameStore,
   type ChaosRule,
@@ -14,24 +15,24 @@ import {
 /* -------------------------------------------------------------------------- */
 /*                          PROTOCOLO DA PONTE (typed)                         */
 /* -------------------------------------------------------------------------- */
-/* Contrato explícito entre nativo e web. Qualquer mensagem fora destes tipos
-   é descartada — o `onMessage` do WebView aceita string arbitrária, então
-   validar aqui é obrigatório e não paranoia.                                  */
+/* Contrato explícito entre nativo/web e a página CRT. Qualquer mensagem fora
+   destes tipos é descartada — o canal aceita string arbitrária, então validar
+   aqui é obrigatório e não paranoia.                                          */
 
-/** React Native ➜ WebView */
+/** Nativo/Web (host) ➜ página CRT */
 type OutboundMessage =
   | { type: 'SET_RULE'; rule: ChaosRule; label: string }
+  /** Atualiza só o contador de turnos, sem disparar o glitch visual do nome
+      da regra — senão CADA jogada glitcharia a tela, não só as que mudam a
+      regra de fato. */
+  | { type: 'SET_COUNTDOWN'; turnsLeft: number | null }
   /** Acrescenta linhas ao log. Em lote para evitar N injeções seguidas. */
   | { type: 'PRINT'; lines: string[] }
   /** Limpa o log — usado ao reimprimir o histórico depois de um reload. */
-  | { type: 'CLEAR' }
-  /** Agenda o próximo surto. O intervalo vem do RNG semeado, nunca da página. */
-  | { type: 'SCHEDULE_GLITCH'; delay: number };
+  | { type: 'CLEAR' };
 
-/** WebView ➜ React Native */
-type InboundMessage =
-  | { type: 'READY' }
-  | { type: 'GLITCH'; at: number };
+/** Página CRT ➜ Nativo/Web (host) */
+type InboundMessage = { type: 'READY' };
 
 /** Texto exibido no terminal para cada regra caótica. */
 const RULE_LABEL: Record<ChaosRule, string> = {
@@ -44,7 +45,11 @@ const RULE_LABEL: Record<ChaosRule, string> = {
 /*                              PÁGINA CRT (local)                             */
 /* -------------------------------------------------------------------------- */
 /* HTML/CSS/JS 100% offline e estático — nenhuma requisição de rede sai daqui.
-   Fase 2: mover para `assets/web/terminal.html` e carregar via expo-asset.    */
+   O MESMO documento roda dentro de um <WebView> nativo OU de um <iframe> web
+   sem nenhuma alteração: `send()` detecta o ambiente e escolhe o canal certo,
+   e o listener de entrada já aceitava `window.addEventListener('message')`
+   desde a fase da WebView (era o fallback do `ref.postMessage()` no Android),
+   que é exatamente como um `iframe.contentWindow.postMessage(...)` chega.    */
 
 const CRT_HTML = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -93,7 +98,7 @@ const CRT_HTML = `<!DOCTYPE html>
     text-transform: uppercase;
   }
 
-  /* Cabeçalho: rótulo + regra ativa -------------------------------------- */
+  /* Cabeçalho: rótulo + regra ativa + contador --------------------------- */
   .header {
     display: flex;
     align-items: baseline;
@@ -109,6 +114,13 @@ const CRT_HTML = `<!DOCTYPE html>
     font-weight: 700;
     letter-spacing: 2px;
     text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .countdown {
+    margin-left: auto;
+    font-size: 9px;
+    opacity: 0.6;
     white-space: nowrap;
   }
 
@@ -258,6 +270,7 @@ const CRT_HTML = `<!DOCTYPE html>
       <div class="header">
         <span class="label">// chaos</span>
         <span class="rule" id="rule" data-text="BOOTING">BOOTING</span>
+        <span class="countdown" id="countdown"></span>
       </div>
       <div class="log" id="log"></div>
     </div>
@@ -272,16 +285,27 @@ const CRT_HTML = `<!DOCTYPE html>
 
   var RN = window.ReactNativeWebView;
   var ruleEl = document.getElementById('rule');
+  var countdownEl = document.getElementById('countdown');
   var logEl = document.getElementById('log');
   var glitchTimeout = null;
-  var instabilityTimeout = null;
 
   /** Teto de nós no DOM. O buffer real vive no store; aqui é só o visível. */
   var MAX_NODES = 80;
 
-  /** WebView ➜ React Native */
+  // Host ⟵ página. Dois transportes possíveis:
+  // - WebView nativo injeta window.ReactNativeWebView.postMessage;
+  // - iframe web não tem isso — cai para o postMessage padrão do DOM,
+  //   endereçado à janela pai (o host que montou o iframe).
+  // Mesmo HTML, dois ambientes, sem nenhum branch de plataforma aqui dentro.
   function send(payload) {
-    if (RN && RN.postMessage) RN.postMessage(JSON.stringify(payload));
+    var json = JSON.stringify(payload);
+    if (RN && RN.postMessage) {
+      RN.postMessage(json);
+      return;
+    }
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(json, '*');
+    }
   }
 
   function glitch(duration) {
@@ -300,6 +324,10 @@ const CRT_HTML = `<!DOCTYPE html>
     glitch(900);
     // A linha de log da troca de regra vem do store (pushLog), não daqui —
     // uma única fonte de verdade para o histórico.
+  }
+
+  function setCountdown(turnsLeft) {
+    countdownEl.textContent = turnsLeft === null ? '' : turnsLeft + 't';
   }
 
   function print(lines) {
@@ -321,10 +349,9 @@ const CRT_HTML = `<!DOCTYPE html>
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  /**
-   * API global chamada pelo React Native via injectJavaScript.
-   * Mantida em window para sobreviver a qualquer escopo de injeção.
-   */
+  // API global chamada pelo React Native via injectJavaScript (nativo) ou
+  // pelo listener de message abaixo (web). Mantida em window para
+  // sobreviver a qualquer escopo de injeção.
   window.__CHAOS__ = {
     handle: function (raw) {
       var msg;
@@ -337,31 +364,27 @@ const CRT_HTML = `<!DOCTYPE html>
 
       if (msg.type === 'SET_RULE') {
         setRule(msg.rule, msg.label);
+      } else if (msg.type === 'SET_COUNTDOWN') {
+        setCountdown(msg.turnsLeft);
       } else if (msg.type === 'PRINT') {
         print(msg.lines);
       } else if (msg.type === 'CLEAR') {
         logEl.innerHTML = '';
-      } else if (msg.type === 'SCHEDULE_GLITCH') {
-        // O intervalo é DITADO pelo nativo (RNG semeado). A página não sorteia
-        // nada — é só um monitor burro que obedece.
-        clearTimeout(instabilityTimeout);
-        instabilityTimeout = setTimeout(function () {
-          glitch(450);
-          send({ type: 'GLITCH', at: Date.now() });
-        }, msg.delay);
       }
     }
   };
 
-  // Compatibilidade com ref.postMessage() do react-native-webview.
+  // No WebView nativo, ref.postMessage() entrega em document no Android e
+  // em window no iOS — por isso os dois listeners. No iframe web, é o MESMO
+  // listener de window que recebe o contentWindow.postMessage(...) feito
+  // pelo host — nenhum código extra necessário para o caso web.
   function onNativeMessage(event) { window.__CHAOS__.handle(event.data); }
   document.addEventListener('message', onNativeMessage);
   window.addEventListener('message', onNativeMessage);
 
   print(['uplink estabelecido']);
 
-  // Handshake: o nativo responde com SET_RULE, o histórico do log e o
-  // primeiro SCHEDULE_GLITCH.
+  // Handshake: o host responde com SET_RULE, SET_COUNTDOWN e o histórico do log.
   send({ type: 'READY' });
 })();
 </script>
@@ -383,57 +406,112 @@ export interface ChaosTerminalProps {
   /** Altura fixa do monitor em dp. */
   height?: number;
   style?: StyleProp<ViewStyle>;
-  /** Vibra o device quando o terminal surta sozinho. */
+  /** Vibra o device quando a regra caótica muda de verdade. */
   hapticsEnabled?: boolean;
 }
 
 /**
- * Monitor CRT retro renderizado dentro de um WebView, com ponte bidirecional:
+ * Monitor CRT retro com log de combate, ponte bidirecional e renderização
+ * híbrida:
  *
- * - **Nativo ➜ Web:** toda mudança de `activeRule` no Zustand é injetada na
- *   página, que exibe a nova regra com efeito de glitch.
- * - **Web ➜ Nativo:** a página tem um temporizador próprio e, a cada 5–9s,
- *   dispara `triggerTerminalGlitch()` na store.
+ * - **Nativo (iOS/Android):** roda dentro de `<WebView>`, mensagens de entrada
+ *   via `injectJavaScript`, saída via `onMessage`.
+ * - **Web:** roda dentro de um `<iframe srcDoc>` — o mesmo HTML, sem alteração
+ *   — usando `contentWindow.postMessage` para entrada e `window.addEventListener
+ *   ('message')` para saída. É o que permite o jogo rodar no Vercel/Snack.
+ *
+ * A regra caótica agora muda por **turno global**, não por tempo real: o
+ * gameStore chama `applyChaosRule` de dentro de `placeMark` quando
+ * `ruleExpiresAtTurn` é alcançado. O terminal só EXIBE a mudança — não decide
+ * mais quando ela acontece. (Antes, um timer de 5–9s de relógio real deixava
+ * o jogador simplesmente esperar uma regra ruim passar sem jogar.)
  *
  * Decorativo: não captura toques, para não roubar gestos do tabuleiro.
  */
 export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: ChaosTerminalProps) {
+  const isWeb = Platform.OS === 'web';
+
   const webViewRef = useRef<WebView>(null);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   const activeRule = useGameStore(selectActiveRule);
+  const turnsLeft = useGameStore(selectRuleTurnsLeft);
   const terminalLog = useGameStore(selectTerminalLog);
-  const triggerTerminalGlitch = useGameStore((s) => s.triggerTerminalGlitch);
-  const rollTerminalDelay = useGameStore((s) => s.rollTerminalDelay);
 
   /** Maior `id` já impresso. `-1` = nada impresso ainda (ou página recarregou). */
   const lastPrintedIdRef = useRef(-1);
 
   /**
-   * A página só existe depois do `READY`. Injetar antes é no-op silencioso,
-   * então enfileiramos as mensagens e damos flush no handshake.
+   * A página só existe depois do `READY`. Postar antes é descartado (o
+   * listener nem existe ainda), então enfileiramos e damos flush no handshake.
    */
   const isReadyRef = useRef(false);
   const pendingRef = useRef<OutboundMessage[]>([]);
 
-  const post = useCallback((message: OutboundMessage) => {
-    if (!isReadyRef.current) {
-      pendingRef.current.push(message);
-      return;
-    }
-    // JSON.stringify duplo: o interno vira o payload, o externo escapa o
-    // payload como literal de string JS válido dentro do script injetado.
-    const literal = JSON.stringify(JSON.stringify(message));
-    webViewRef.current?.injectJavaScript(
-      `window.__CHAOS__ && window.__CHAOS__.handle(${literal}); true;`,
-    );
-  }, []);
+  /** Host ➜ página. Só a "fiação" muda entre WebView e iframe. */
+  const post = useCallback(
+    (message: OutboundMessage) => {
+      if (!isReadyRef.current) {
+        pendingRef.current.push(message);
+        return;
+      }
 
-  // Nativo ➜ Web: espelha a regra caótica atual no monitor.
+      if (isWeb) {
+        iframeRef.current?.contentWindow?.postMessage(JSON.stringify(message), '*');
+        return;
+      }
+
+      // JSON.stringify duplo: o interno vira o payload, o externo escapa o
+      // payload como literal de string JS válido dentro do script injetado.
+      const literal = JSON.stringify(JSON.stringify(message));
+      webViewRef.current?.injectJavaScript(
+        `window.__CHAOS__ && window.__CHAOS__.handle(${literal}); true;`,
+      );
+    },
+    [isWeb],
+  );
+
+  /** Processa uma mensagem vinda da página (READY, por enquanto só isso). */
+  const handleReady = useCallback(() => {
+    isReadyRef.current = true;
+    const queued = pendingRef.current;
+    pendingRef.current = [];
+    queued.forEach(post);
+
+    // A página nasceu vazia (primeiro load ou crash do renderer): reimprime
+    // o histórico que o store guardou.
+    lastPrintedIdRef.current = -1;
+    const history = useGameStore.getState().terminalLog;
+    if (history.length > 0) {
+      lastPrintedIdRef.current = history[history.length - 1].id;
+      post({ type: 'PRINT', lines: history.map((line) => line.text) });
+    }
+  }, [post]);
+
+  // Nativo/Web ➜ Página: espelha a regra caótica atual no monitor.
   useEffect(() => {
     post({ type: 'SET_RULE', rule: activeRule, label: RULE_LABEL[activeRule] });
   }, [activeRule, post]);
 
-  /* --- Nativo ➜ Web: log de combate ---------------------------------------
+  // Nativo/Web ➜ Página: contador de turnos — SEM disparar o glitch visual.
+  useEffect(() => {
+    post({ type: 'SET_COUNTDOWN', turnsLeft });
+  }, [turnsLeft, post]);
+
+  /**
+   * Haptic na mudança REAL de regra. Ignora o primeiro render (senão vibra
+   * assim que a tela abre, o que não é uma mudança de verdade).
+   */
+  const isFirstRuleRenderRef = useRef(true);
+  useEffect(() => {
+    if (isFirstRuleRenderRef.current) {
+      isFirstRuleRenderRef.current = false;
+      return;
+    }
+    if (hapticsEnabled) void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid);
+  }, [activeRule, hapticsEnabled]);
+
+  /* --- Nativo/Web ➜ Página: log de combate ---------------------------------
      Sincronização incremental por `id`. Imprimir o array inteiro a cada
      mudança duplicaria tudo; comparar por conteúdo falharia com mensagens
      repetidas legítimas ("demolir :: célula 4" duas vezes).
@@ -462,8 +540,9 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
     post({ type: 'PRINT', lines: fresh.map((line) => line.text) });
   }, [terminalLog, post]);
 
-  // Web ➜ Nativo.
-  const handleMessage = useCallback(
+  /* --- Transporte nativo: WebView ------------------------------------------ */
+
+  const handleWebViewMessage = useCallback(
     (event: WebViewMessageEvent) => {
       let message: InboundMessage;
       try {
@@ -471,55 +550,68 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
       } catch {
         return; // payload malformado — descarta
       }
-
-      switch (message?.type) {
-        case 'READY': {
-          isReadyRef.current = true;
-          const queued = pendingRef.current;
-          pendingRef.current = [];
-          queued.forEach(post);
-
-          // A página nasceu vazia (primeiro load ou crash do renderer):
-          // reimprime o histórico que o store guardou.
-          lastPrintedIdRef.current = -1;
-          const history = useGameStore.getState().terminalLog;
-          if (history.length > 0) {
-            lastPrintedIdRef.current = history[history.length - 1].id;
-            post({ type: 'PRINT', lines: history.map((line) => line.text) });
-          }
-
-          // Dá a partida no ciclo de instabilidade.
-          post({ type: 'SCHEDULE_GLITCH', delay: rollTerminalDelay() });
-          break;
-        }
-
-        case 'GLITCH': {
-          if (hapticsEnabled) {
-            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid);
-          }
-          triggerTerminalGlitch();
-          // Reagenda daqui: o loop vive no nativo, onde a seed manda.
-          post({ type: 'SCHEDULE_GLITCH', delay: rollTerminalDelay() });
-          break;
-        }
-      }
+      if (message?.type === 'READY') handleReady();
     },
-    [post, triggerTerminalGlitch, rollTerminalDelay, hapticsEnabled],
+    [handleReady],
   );
 
   /** Se a página recarregar (crash do renderer), o handshake precisa refazer. */
-  const handleLoadStart = useCallback(() => {
+  const handleWebViewLoadStart = useCallback(() => {
     isReadyRef.current = false;
   }, []);
 
+  /* --- Transporte web: iframe ----------------------------------------------
+     `window.addEventListener('message')` no host inteiro, filtrado por
+     `event.source` — sem o filtro, qualquer outro postMessage na página
+     (outra extensão, outro iframe) seria processado por engano.             */
+  useEffect(() => {
+    if (!isWeb) return;
+
+    function handleWindowMessage(event: MessageEvent) {
+      if (event.source !== iframeRef.current?.contentWindow) return;
+
+      let message: InboundMessage;
+      try {
+        message = JSON.parse(event.data as string) as InboundMessage;
+      } catch {
+        return;
+      }
+      if (message?.type === 'READY') handleReady();
+    }
+
+    window.addEventListener('message', handleWindowMessage);
+    return () => window.removeEventListener('message', handleWindowMessage);
+  }, [isWeb, handleReady]);
+
+  const handleIframeLoad = useCallback(() => {
+    isReadyRef.current = false;
+  }, []);
+
+  const containerStyle = useMemo(() => [styles.container, { height }, style], [height, style]);
+
+  if (isWeb) {
+    return (
+      <View style={containerStyle} pointerEvents="none">
+        <iframe
+          ref={iframeRef}
+          srcDoc={CRT_HTML}
+          onLoad={handleIframeLoad}
+          title="chaos-terminal"
+          sandbox="allow-scripts"
+          style={{ width: '100%', height: '100%', border: 'none', backgroundColor: '#000' }}
+        />
+      </View>
+    );
+  }
+
   return (
-    <View style={[styles.container, { height }, style]} pointerEvents="none">
+    <View style={containerStyle} pointerEvents="none">
       <WebView
         ref={webViewRef}
         source={CRT_SOURCE}
         originWhitelist={['*']}
-        onMessage={handleMessage}
-        onLoadStart={handleLoadStart}
+        onMessage={handleWebViewMessage}
+        onLoadStart={handleWebViewLoadStart}
         // Conteúdo é estático e local: nenhuma navegação externa é permitida.
         onShouldStartLoadWithRequest={(request) =>
           request.url === 'about:blank' || request.url.startsWith('data:')

@@ -23,7 +23,17 @@ export type GameEvent =
   | { type: 'CARD_PLAYED'; player: Combatant; cardId: CardId }
   | { type: 'TRAP_ARMED'; player: Combatant; cardId: CardId }
   | { type: 'DAMAGE_TAKEN'; target: Combatant; amount: number }
-  | { type: 'RULE_CHANGED'; rule: ChaosRule };
+  | { type: 'RULE_CHANGED'; rule: ChaosRule }
+  /**
+   * Publicado ANTES do efeito de uma carta `ACTION` resolver — é a janela
+   * onde as traps de defesa (ANTI-MAGIA, PROTEÇÃO) podem vetar a jogada.
+   *
+   * Diferente dos demais eventos (que descrevem algo que já aconteceu), este
+   * é resolvido de forma síncrona por `resolveCounterTraps`, nunca pela fila
+   * assíncrona de `dispatchEvent` — um veto tem que acontecer ANTES do patch
+   * ser aplicado, não depois.
+   */
+  | { type: 'CARD_ABOUT_TO_RESOLVE'; player: Combatant; cardId: CardId };
 
 export type GameEventType = GameEvent['type'];
 
@@ -49,6 +59,7 @@ export function eventActor(event: GameEvent): Combatant | null {
     case 'CARD_DRAWN':
     case 'CARD_PLAYED':
     case 'TRAP_ARMED':
+    case 'CARD_ABOUT_TO_RESOLVE':
       return event.player;
 
     case 'DAMAGE_TAKEN':

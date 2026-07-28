@@ -1,16 +1,8 @@
-import * as Haptics from 'expo-haptics';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
-import Animated, { FadeIn, FadeInDown, FadeOut, ZoomOut } from 'react-native-reanimated';
+import Animated, { FadeInDown, ZoomOut } from 'react-native-reanimated';
 
-import { getCard } from '@/engine/cards/registry';
-import {
-  TRAP_LIMIT,
-  selectLastRevealedTrap,
-  selectTraps,
-  useGameStore,
-  type Combatant,
-} from '@/store/gameStore';
+import { TRAP_LIMIT, selectTraps, useGameStore, type Combatant } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 
 /* -------------------------------------------------------------------------- */
@@ -20,9 +12,6 @@ import { colors } from '@/theme/colors';
 const SLOT_WIDTH = 40;
 const SLOT_HEIGHT = 54;
 
-/** Tempo que o anúncio de armadilha revelada fica na tela. */
-const REVEAL_NOTICE_MS = 2600;
-
 /* -------------------------------------------------------------------------- */
 /*                                    PROPS                                    */
 /* -------------------------------------------------------------------------- */
@@ -31,7 +20,6 @@ export interface TrapZoneProps {
   /** De quem são as armadilhas exibidas. */
   owner?: Combatant;
   style?: StyleProp<ViewStyle>;
-  hapticsEnabled?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -45,33 +33,15 @@ export interface TrapZoneProps {
  * Slots vazios continuam desenhados: comunicam quantas armadilhas ainda cabem
  * sem precisar de texto.
  *
- * Só assina dois valores do store (as armadilhas do dono e a última revelada),
- * então detonar uma armadilha não re-renderiza tabuleiro nem mão.
+ * O anúncio de detonação (nome da carta + haptic) morou aqui antes; agora vive
+ * no `<AcknowledgementModal />`, que mostra a carta ampliada no centro da tela
+ * ANTES do efeito mecânico aplicar — mais visível, e sem duplicar aviso.
+ *
+ * Só assina as armadilhas do dono, então uma detonando não re-renderiza
+ * tabuleiro nem mão.
  */
-export function TrapZone({ owner = 'PLAYER', style, hapticsEnabled = true }: TrapZoneProps) {
+export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
   const traps = useGameStore(useMemo(() => selectTraps(owner), [owner]));
-  const lastRevealed = useGameStore(selectLastRevealedTrap);
-
-  /* --- Anúncio da revelação ----------------------------------------------
-     Sem isto a armadilha detona de forma invisível: o HP cai, o turno muda e
-     o jogador não faz ideia do porquê.                                      */
-  const [notice, setNotice] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!lastRevealed || lastRevealed.owner !== owner) return;
-
-    setNotice(getCard(lastRevealed.cardId).name);
-
-    if (hapticsEnabled) {
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    }
-
-    const timeout = setTimeout(() => setNotice(null), REVEAL_NOTICE_MS);
-    return () => clearTimeout(timeout);
-    // `uid` como dependência: duas armadilhas iguais em sequência ainda
-    // reanunciam, porque o uid difere.
-  }, [lastRevealed?.uid, lastRevealed, owner, hapticsEnabled]);
-
   const emptySlots = Math.max(0, TRAP_LIMIT - traps.length);
 
   return (
@@ -89,16 +59,6 @@ export function TrapZone({ owner = 'PLAYER', style, hapticsEnabled = true }: Tra
           ))}
         </View>
       </View>
-
-      {notice && (
-        <Animated.View
-          entering={FadeIn.duration(140)}
-          exiting={FadeOut.duration(200)}
-          style={styles.notice}
-        >
-          <Text style={styles.noticeText}>◆ {notice} DETONOU</Text>
-        </Animated.View>
-      )}
     </View>
   );
 }
@@ -113,7 +73,8 @@ export default TrapZone;
  * Verso pixelado. Deliberadamente sem identidade: o oponente não pode saber
  * qual armadilha está armada, então todas as cartas viradas são idênticas.
  *
- * `exiting={ZoomOut}` marca o consumo — a carta some da mesa ao detonar.
+ * `exiting={ZoomOut}` marca o consumo — a carta some da mesa ao ser revelada
+ * (o `<AcknowledgementModal />` assume a partir daí).
  */
 const TrapBack = memo(function TrapBack() {
   return (
@@ -204,19 +165,5 @@ const styles = StyleSheet.create({
     color: colors.winGlow,
     fontSize: 18,
     fontWeight: '900',
-  },
-  notice: {
-    marginTop: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    backgroundColor: colors.bgPanel,
-    borderWidth: 2,
-    borderColor: colors.danger,
-  },
-  noticeText: {
-    color: colors.danger,
-    fontSize: 9,
-    fontWeight: '800',
-    letterSpacing: 2,
   },
 });
