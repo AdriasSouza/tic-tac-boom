@@ -78,7 +78,18 @@ export function TrapZone({ owner = 'PLAYER', style, orientation = 'row' }: TrapZ
   return (
     <View style={[styles.root, isColumn ? styles.rootColumn : styles.rootRow, style]}>
       <View style={[styles.content, isColumn && styles.contentColumn]}>
-        <Text style={[styles.caption, isPlayer && styles.captionPlayer, isColumn && styles.captionColumn]}>
+        <Text
+          style={[styles.caption, isPlayer && styles.captionPlayer, isColumn && styles.captionColumn]}
+          // Trava em 1 linha: sem isto, em telas estreitas "ARMADILHAS DA
+          // CPU" quebrava para uma segunda linha, e como a legenda e os slots
+          // dividem a mesma fileira (`content`, flexDirection:'row'), a
+          // quebra fazia a zona INTEIRA crescer de altura — roubando espaço
+          // do orçamento apertado da coluna e empurrando o resto (inclusive o
+          // tabuleiro) para cima/baixo de forma imprevisível. Truncar aqui
+          // (nunca a legenda dita a altura) é o que garante que a zona de
+          // armadilhas tenha SEMPRE a mesma altura fixa dos slots.
+          numberOfLines={1}
+        >
           {isColumn ? CAPTION_SHORT[owner] : CAPTION[owner]}
         </Text>
 
@@ -144,6 +155,11 @@ const styles = StyleSheet.create({
     width: '100%',
     paddingHorizontal: 16,
     marginVertical: 4,
+    // Explícito (mesmo já sendo o padrão do RN para View): a zona de
+    // armadilhas é altura FIXA, nunca deve ser ela a ceder espaço quando o
+    // orçamento vertical da coluna aperta — quem cede é sempre o `boardArea`
+    // flexível em `[mode].tsx`.
+    flexShrink: 0,
   },
   // Desktop largo: coluna estreita ao lado do tabuleiro. `alignSelf:'stretch'`
   // faz a zona ocupar a altura toda da fileira central (mesma altura do
@@ -164,9 +180,13 @@ const styles = StyleSheet.create({
   },
   caption: {
     color: colors.textDim,
-    fontSize: 8,
-    letterSpacing: 2,
+    fontSize: 7,
+    letterSpacing: 1.5,
     fontWeight: '700',
+    // Encolhe (e o `numberOfLines={1}` acima trunca com "…") ANTES de
+    // deixar a fileira estourar — o vizinho `slots` tem `flexShrink:0`
+    // logo abaixo, então entre os dois é sempre a LEGENDA que cede.
+    flexShrink: 1,
   },
   captionPlayer: {
     color: colors.markX, // mesma cor da peça do jogador — "isto é seu"
@@ -177,6 +197,10 @@ const styles = StyleSheet.create({
   slots: {
     flexDirection: 'row',
     gap: 6,
+    // Os slots são a informação principal da zona (quantas armadilhas há e
+    // se estão armadas) — nunca podem ser espremidos para abrir espaço para
+    // o texto da legenda.
+    flexShrink: 0,
   },
   slotsColumn: {
     flexDirection: 'column',
@@ -185,8 +209,13 @@ const styles = StyleSheet.create({
   emptySlot: {
     // width/height chegam inline, de `useResponsiveLayout`.
     borderWidth: 2,
-    borderColor: colors.boardFrameShadow,
-    opacity: 0.5,
+    borderStyle: 'dashed',
+    // Branco translúcido em vez do marrom escuro da moldura: contra o fundo
+    // escuro do painel (e, no layout largo, contra a moldura do tabuleiro
+    // ao lado), a cor antiga (`boardFrameShadow`, quase preta) a 50% de
+    // opacidade era praticamente invisível — o jogador não conseguia ver
+    // quantos espaços de armadilha ainda tinha livres.
+    borderColor: 'rgba(255, 255, 255, 0.25)',
   },
   back: {
     backgroundColor: colors.boardFrame,

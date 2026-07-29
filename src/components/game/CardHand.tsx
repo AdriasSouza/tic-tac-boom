@@ -22,6 +22,7 @@ import {
   selectHasPendingAcknowledgement,
   selectPendingAction,
   selectPlayerHand,
+  selectStatus,
   useGameStore,
   type CardId,
 } from '@/store/gameStore';
@@ -71,6 +72,7 @@ export interface CardHandProps {
 export function CardHand({ style }: CardHandProps) {
   const hand = useGameStore(selectPlayerHand);
   const canPlayCards = useGameStore(selectCanPlayCards);
+  const status = useGameStore(selectStatus);
   const pendingAction = useGameStore(selectPendingAction);
   const clearPendingAction = useGameStore((s) => s.clearPendingAction);
   // Uma armadilha revelada ou carta de espionagem pausando o jogo: nem
@@ -138,6 +140,19 @@ export function CardHand({ style }: CardHandProps) {
   useEffect(() => {
     if (focusedUid && !hand.some((c) => c.uid === focusedUid)) setFocusedUid(null);
   }, [focusedUid, hand]);
+
+  /**
+   * A rodada/partida pode terminar com o modo foco aberto (ex: a jogada de
+   * tabuleiro do oponente fecha a rodada enquanto o jogador está olhando uma
+   * carta). `selectCanUseCard` já desabilita o botão "USAR" nesse caso — o
+   * store nunca aceitaria a jogada mesmo que alguém clicasse —, mas o MODAL
+   * em si ficava aberto, parecendo interativo. `focusedUid` é estado LOCAL
+   * deste componente: retornar `null` de outro lugar não o desmonta nem reseta
+   * seus hooks, então nada além deste efeito o fecharia sozinho.
+   */
+  useEffect(() => {
+    if (status !== 'PLAYING') setFocusedUid(null);
+  }, [status]);
 
   /**
    * Metade superior da tela = "jogar no tabuleiro".

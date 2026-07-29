@@ -35,7 +35,14 @@ export function NoticeToast() {
 
   const noticeId = notice?.id ?? null;
   useEffect(() => {
-    if (!notice) return;
+    // Mesmo raciocínio do `<ExtraTurnBanner />`: `startMatch`/`startNextRound`
+    // zeram `lastNotice` de volta a `null`. Sem este `else`, um toast ainda na
+    // tela no instante do reset ficaria preso — o `else` de baixo é o que
+    // garante que "a store voltou a `null`" também esconde a UI local.
+    if (!notice) {
+      setVisible(null);
+      return;
+    }
     setVisible(notice);
 
     // Timer re-armado a cada aviso novo: um aviso que chega durante o anterior

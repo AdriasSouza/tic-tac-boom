@@ -59,7 +59,17 @@ export function ExtraTurnBanner() {
 
   const extraTurnId = lastExtraTurn?.id ?? null;
   useEffect(() => {
-    if (!lastExtraTurn) return;
+    // `startMatch`/`startNextRound` zeram `lastExtraTurn` de volta a `null`
+    // (ver `createInitialState`) — sem este `else`, um banner que ainda
+    // estivesse na tela no instante do reset ficaria PRESO: o cleanup do
+    // efeito anterior cancela o timer antigo, mas como esta invocação
+    // simplesmente retornava cedo, nada jamais chamava `setVisible(null)`
+    // de novo. Resultado observado: o letreiro de "TURNO EXTRA" da partida
+    // ANTERIOR sobrevivia visível no começo da partida nova.
+    if (!lastExtraTurn) {
+      setVisible(null);
+      return;
+    }
     setVisible(lastExtraTurn);
 
     void Haptics.notificationAsync(

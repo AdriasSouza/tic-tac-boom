@@ -438,7 +438,13 @@ export const useGameStore = create<GameStore>()((set, get) => {
       get().applyChaosRule('NORMAL');
     }
 
-    if (isChaosSurgeTurn(nextTurnCount)) {
+    // `isChaosSurgeTurn` já embute `turnCount > 0` internamente — o teste
+    // fica repetido aqui, explícito, como segunda linha de defesa: nenhum
+    // surto pode nascer de `nextTurnCount === 0`, nem que uma futura edição
+    // daquela função em `rules.ts` derrube a guarda por engano. Turno 0 é
+    // "partida acabou de começar, tabuleiro vazio" — caos ali seria o jogador
+    // vendo o terminal "ligar" antes de qualquer peça existir para reagir.
+    if (nextTurnCount > 0 && isChaosSurgeTurn(nextTurnCount)) {
       get().triggerTerminalGlitch();
     }
   }
@@ -583,6 +589,12 @@ export const useGameStore = create<GameStore>()((set, get) => {
   function resolveCardPlay(caster: Combatant, uid: string, targetIndex?: number): boolean {
     const state = get();
 
+    // Primeira linha de defesa, de propósito: NENHUMA carta resolve fora de
+    // `PLAYING` — nem em `ROUND_OVER` (transição entre rodadas), nem em
+    // `MATCH_OVER`, nem em `IDLE`. Revisado e confirmado — este é o único
+    // portão que `playCard`/`playMachineCard` atravessam, então mantê-lo
+    // como a PRIMEIRA checagem (antes de qualquer leitura de mão/alvo) é o
+    // que garante que nenhum caminho abaixo dele rode com a partida encerrada.
     if (state.status !== 'PLAYING') return false;
     if (state.turn !== caster) return false;
     // Mesma janela de `canPlaceAt`: uma confirmação manual pendente segura
@@ -944,6 +956,20 @@ export const useGameStore = create<GameStore>()((set, get) => {
     resetEventBus(); // eventos da partida anterior não vazam para a nova
     clearRoundTransition();
     clearAcknowledgementQueue(); // confirmação pendente de uma partida abandonada não sobrevive
+    /**
+     * `{ ...createInitialState() }` é uma substituição TOTAL do estado — e é
+     * isso, e não um reset campo-a-campo, que garante que absolutamente
+     * NENHUM valor efêmero de uma partida anterior atravesse para a nova:
+     * `lastExtraTurn`, `nextExtraTurnId`, `lastDamageEvent`,
+     * `nextDamageEventId`, `lastNotice`, `nextNoticeId`, `pendingAcknowledgement`
+     * — todos voltam a `null`/`0` aqui porque `createInitialState()` os
+     * declara assim, e o spread não deixa nenhum campo "de fora" para
+     * sobreviver com o valor antigo. Se um estado efêmero aparecer vazando
+     * entre partidas, o bug não está aqui: está no COMPONENTE que o consome
+     * guardando cópia própria em `useState`/`useRef` sem reagir ao valor
+     * voltando a `null` (foi o caso do `<ExtraTurnBanner />`/`<NoticeToast />`,
+     * corrigidos separadamente).
+     */
     set({ ...createInitialState(), matchSeed: usedSeed, status: 'PLAYING' });
 
     // Mão inicial dos dois lados — autocontido aqui para que NENHUMA tela
@@ -1021,6 +1047,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
     }
 
     const state = get();
+    // Mesma primeira linha de defesa de `resolveCardPlay`: armar mira fora de
+    // `PLAYING` deixaria o tabuleiro num modo mira que nenhuma jogada real
+    // resolveria — revisado e confirmado como o portão de entrada correto.
     if (state.status !== 'PLAYING') return false;
     if (state.turn !== 'PLAYER') return false;
 

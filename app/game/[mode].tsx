@@ -51,6 +51,13 @@ export default function GameScreen() {
   return (
     // `edges` sem 'bottom' seria errado justamente aqui: a mão de cartas mora
     // no rodapé e é o primeiro elemento a sumir embaixo da barra de gestos.
+    //
+    // Esta é a ÚNICA fonte de padding para a barra de status/notch em toda a
+    // tela — nem `GameHeader`, nem nenhum componente abaixo, deve somar um
+    // `paddingTop`/`marginTop` próprio para "compensar" a área segura. Fazer
+    // isso duas vezes é o clássico bug do espaço preto gigante no topo: a
+    // SafeAreaView já reserva o inset real do aparelho; qualquer padding
+    // manual adicional dobra essa reserva.
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       <GameHeader onPause={openPause} />
       <ChaosTerminal height={terminalHeight} />
