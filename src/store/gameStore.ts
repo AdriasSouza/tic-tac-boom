@@ -6,6 +6,7 @@ import { getChannel, getMatchSeed, seedMatch } from '@/engine/rng';
 import {
   AUTO_DRAW_INTERVAL_TURNS,
   CHAOS_RULE_DURATION_TURNS,
+  CHAOS_SURGE_INTERVAL_ROUNDS,
   CHAOS_SURGE_INTERVAL_TURNS,
   HAND_LIMIT,
   INITIAL_HP,
@@ -15,6 +16,7 @@ import {
   OPENING_HAND_SIZE,
   ROUND_DAMAGE,
   TRAP_LIMIT,
+  TURNS_PER_GLOBAL_ROUND,
   canPlaceAt,
   createEmptyBoard,
   findWinner,
@@ -23,16 +25,23 @@ import {
   getVanishingIndex,
   handKeyFor,
   isAutoDrawTurn,
+  isCellLocked,
+  isCellUnavailable,
   isChaosRuleExpired,
   isChaosSurgeTurn,
+  isLockedCellExpired,
   isValidTargetForCard,
   opponentOf,
   pickFreeCell,
   trapsKeyFor,
+  type AcknowledgementKind,
+  type AcknowledgementTone,
   type ChaosRule,
   type Combatant,
   type GameState,
   type MatchStatus,
+  type Notice,
+  type NoticeTone,
   type PendingAcknowledgement,
   type PendingAction,
 } from '@/engine/rules';
@@ -41,6 +50,26 @@ import type { GameEvent } from '@/engine/events';
 
 /** Intervalo entre o fim da rodada e a limpeza automática do tabuleiro. */
 const ROUND_TRANSITION_DELAY_MS = 1300;
+
+/**
+ * Linha de log de cada regra caótica, em PT-BR e descrevendo o EFEITO.
+ *
+ * O terminal é a única explicação do jogo para o que o caos acabou de fazer;
+ * imprimir o identificador interno (`random_fade`) deixava o jogador vendo
+ * peças sumirem sem relacionar uma coisa à outra.
+ */
+const CHAOS_RULE_LOG: Record<ChaosRule, string> = {
+  NORMAL: 'SISTEMA ESTÁVEL :: o caos recuou, o tabuleiro voltou ao normal',
+  RANDOM_FADE: 'CAOS: Símbolo Aleatório Instável :: qualquer peça sua pode sumir na sua jogada',
+  BLOCKED_CELL: 'CAOS: Casa Interditada :: uma célula foi lacrada e não aceita jogadas',
+};
+
+/** Toast curto do surto de caos — o log tem a explicação longa. */
+const CHAOS_RULE_NOTICE: Record<ChaosRule, string> = {
+  NORMAL: 'SISTEMA ESTÁVEL',
+  RANDOM_FADE: 'CAOS: SÍMBOLO INSTÁVEL',
+  BLOCKED_CELL: 'CAOS: CASA INTERDITADA',
+};
 
 /* -------------------------------------------------------------------------- */
 /*                              DOMÍNIO (reexport)                             */
@@ -53,6 +82,7 @@ const ROUND_TRANSITION_DELAY_MS = 1300;
 export {
   AUTO_DRAW_INTERVAL_TURNS,
   CHAOS_RULE_DURATION_TURNS,
+  CHAOS_SURGE_INTERVAL_ROUNDS,
   CHAOS_SURGE_INTERVAL_TURNS,
   HAND_LIMIT,
   INITIAL_HP,
@@ -62,12 +92,14 @@ export {
   OPENING_HAND_SIZE,
   ROUND_DAMAGE,
   TRAP_LIMIT,
+  TURNS_PER_GLOBAL_ROUND,
   canPlaceAt,
   createEmptyBoard,
   findWinner,
   getOldestPieceIndex,
   getPieceIndexes,
   getVanishingIndex,
+  isCellUnavailable,
   isValidTargetForCard,
   pickFreeCell,
 };
@@ -85,7 +117,17 @@ export type {
   Piece,
 } from '@/engine/rules';
 
-export type { CardId, Combatant, GameState, PendingAcknowledgement, PendingAction };
+export type {
+  AcknowledgementKind,
+  AcknowledgementTone,
+  CardId,
+  Combatant,
+  GameState,
+  Notice,
+  NoticeTone,
+  PendingAcknowledgement,
+  PendingAction,
+};
 
 export interface GameActions {
   /**
@@ -196,6 +238,15 @@ export interface GameActions {
   pushLog: (text: string) => void;
 
   /**
+   * Publica um aviso efêmero (toast) sobre o tabuleiro.
+   *
+   * Complementa `pushLog`, não substitui: o log é histórico consultável no
+   * terminal, o toast é o alerta que o jogador não pode deixar de ver. Fatos
+   * que mudam a mão dele ("a CPU destruiu sua carta MINA") precisam dos dois.
+   */
+  pushNotice: (text: string, tone?: NoticeTone) => void;
+
+  /**
    * Pausa ou retoma a partida.
    *
    * `true` bloqueia `canPlaceAt` (o tabuleiro para de aceitar toques) e faz
@@ -227,6 +278,9 @@ const createInitialState = (): GameState => ({
   machineHp: INITIAL_HP,
   activeRule: 'NORMAL',
   blockedCell: null,
+  lockedCell: null,
+  lockedCellExpiresAtTurn: null,
+  revealDoomedFor: null,
   playerHand: [],
   nextCardUid: 0,
   pendingAction: null,
@@ -235,11 +289,14 @@ const createInitialState = (): GameState => ({
   pendingAcknowledgement: null,
   nextAcknowledgementId: 0,
   machineHand: [],
+  machineCardTurn: null,
   // `null`: NORMAL não expira sozinho. O 1º surto vem naturalmente quando
   // `turnCount` alcançar `CHAOS_SURGE_INTERVAL_TURNS` (ver `tickGlobalClock`).
   ruleExpiresAtTurn: null,
   lastDamageEvent: null,
   nextDamageEventId: 0,
+  lastNotice: null,
+  nextNoticeId: 0,
   isPaused: false,
   terminalLog: [],
   nextLogId: 0,
@@ -367,6 +424,14 @@ export const useGameStore = create<GameStore>()((set, get) => {
       drawCardsFor('MACHINE', 1);
     }
 
+    // Trava de célula da carta TRAVAR — expira por conta própria, num campo
+    // separado da regra caótica. É o que garante que um surto de caos no meio
+    // do caminho não solte a casa antes da hora (e vice-versa).
+    if (isLockedCellExpired(get())) {
+      set({ lockedCell: null, lockedCellExpiresAtTurn: null });
+      get().pushLog('travar :: a casa lacrada foi liberada');
+    }
+
     if (isChaosRuleExpired(get())) {
       get().applyChaosRule('NORMAL');
     }
@@ -401,6 +466,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
    */
   function queueAcknowledgement(
     descriptor: {
+      kind?: AcknowledgementKind;
+      tone?: AcknowledgementTone;
       subtitle: string;
       title: string;
       description: string;
@@ -414,6 +481,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
     acknowledgementQueue.push({
       descriptor: {
         id,
+        kind: descriptor.kind ?? 'INFO',
+        tone: descriptor.tone ?? 'DANGER',
         subtitle: descriptor.subtitle,
         title: descriptor.title,
         description: descriptor.description,
@@ -492,7 +561,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
       queueAcknowledgement(
         {
-          subtitle: defender === 'PLAYER' ? 'SUA ARMADILHA' : 'ARMADILHA DO OPONENTE',
+          tone: 'DANGER',
+          subtitle: defender === 'PLAYER' ? 'SUA ARMADILHA' : 'ARMADILHA DA CPU',
           title: card.name,
           description: card.description,
         },
@@ -538,9 +608,31 @@ export const useGameStore = create<GameStore>()((set, get) => {
         [handKey]: hand,
         [trapsKey]: [...state[trapsKey], { uid, cardId }],
         pendingAction: null,
+        ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
       });
 
-      get().pushLog(`armadilha :: ${card.name.toLowerCase()} armada`);
+      get().pushLog(
+        caster === 'PLAYER'
+          ? `armadilha :: você armou ${card.name.toLowerCase()}`
+          : 'armadilha :: a cpu armou uma armadilha na mesa',
+      );
+
+      /* A jogada da CPU é anunciada, mas o NOME da armadilha não: revelá-lo
+         destruiria a única coisa que faz uma armadilha valer o custo. O
+         jogador fica sabendo que existe uma ameaça nova na mesa — que é o
+         mesmo que ele já vê na zona de armadilhas — e não qual é. */
+      if (caster === 'MACHINE') {
+        queueAcknowledgement(
+          {
+            tone: 'CPU',
+            subtitle: 'A CPU JOGOU',
+            title: 'ARMADILHA',
+            description: 'A CPU virou uma carta na mesa. Você não sabe qual é — ainda.',
+          },
+          () => {},
+        );
+      }
+
       get().dispatchEvent({ type: 'TRAP_ARMED', player: caster, cardId });
       return true;
     }
@@ -559,7 +651,14 @@ export const useGameStore = create<GameStore>()((set, get) => {
     if (resolveCounterTraps({ type: 'CARD_ABOUT_TO_RESOLVE', player: caster, cardId })) {
       const hand = [...state[handKey]];
       hand.splice(handIndex, 1);
-      set({ [handKey]: hand, pendingAction: null });
+      set({
+        [handKey]: hand,
+        pendingAction: null,
+        // A carta da máquina foi gasta, ainda que anulada — sem marcar o
+        // turno aqui, a IA voltaria do "Entendi" da armadilha achando que
+        // ainda não jogou e queimaria uma segunda carta.
+        ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
+      });
       return true;
     }
 
@@ -569,65 +668,117 @@ export const useGameStore = create<GameStore>()((set, get) => {
     const result = card.effect({ state, caster, uid, targetIndex, rng: getChannel('CARDS') });
     if (!result) return false;
 
+    /* --- Blindagem do relógio global ----------------------------------------
+       `turnCount` é o relógio que dispara compra automática, surto de caos e —
+       via `placeMark` — o sumiço de peças. Uma carta que o adiantasse faria
+       peças evaporarem "do nada" no meio de uma jogada de carta, que era
+       exatamente o bug relatado. O contrato passa a ser explícito e verificado
+       pelo compilador: NENHUM patch de carta pode tocar em `turnCount`. Quem
+       precisa passar a vez usa `consumesTurn`, tratado abaixo num lugar só. */
+    const { turnCount: _turnCountIsNotCardBusiness, ...safePatch } = result.patch ?? {};
+
     // --- Aplicação -----------------------------------------------------------
     // Remoção padrão: exclui a carta jogada da mão do caster. Se o EFEITO já
     // mexeu nessa mesma mão (SAQUE, TROCA — ambos recebem `uid` e excluem a
-    // carta jogada sozinhos), `...result.patch` é aplicado DEPOIS e prevalece,
+    // carta jogada sozinhos), `...safePatch` é aplicado DEPOIS e prevalece,
     // então não há dupla remoção nem a carta "voltando" por cima do patch.
     const defaultCasterHand = state[handKey].filter((c) => c.uid !== uid);
 
-    const patched: GameState = {
-      ...state,
+    /* Patch ESTREITO, não `{...state, ...}`: reescrever o estado inteiro a
+       partir do snapshot lido no topo da função desfaria silenciosamente
+       qualquer coisa que tivesse mudado desde então (um contra-ataque, um
+       log). Zustand faz merge raso, então listar só o que muda é ao mesmo
+       tempo mais barato e mais seguro. */
+    const patch: Partial<GameState> = {
       [handKey]: defaultCasterHand,
-      ...result.patch,
+      ...safePatch,
       pendingAction: null, // a mira (se havia) cumpriu seu papel
+      // Marca que a máquina já gastou a carta deste turno. Sem isto ela
+      // recomeçaria a decisão do zero depois do "Entendi" do anúncio e
+      // jogaria uma segunda carta no mesmo turno.
+      ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
     };
 
-    // Cartas podem mover/remover peças, então revalidamos a linha vencedora.
-    const outcome = findWinner(patched.board);
+    /**
+     * Aplica tudo o que a carta produziu. Fica numa closure porque a jogada da
+     * CPU só executa DEPOIS do jogador fechar o anúncio — ver logo abaixo.
+     */
+    const applyResult = (): void => {
+      // Cartas podem mover/remover peças, então revalidamos a linha vencedora.
+      const outcome = findWinner(safePatch.board ?? state.board);
 
-    if (outcome) {
+      if (outcome) {
+        set({
+          ...patch,
+          status: 'ROUND_OVER',
+          roundWinner: outcome.winner,
+          winningLine: outcome.line,
+        });
+        get().pushLog(`rodada :: ${outcome.winner === 'PLAYER' ? 'você venceu' : 'a cpu venceu'}`);
+        get().takeDamage(outcome.winner === 'PLAYER' ? 'MACHINE' : 'PLAYER', ROUND_DAMAGE);
+        if (get().status !== 'MATCH_OVER') scheduleRoundTransition();
+        return;
+      }
+
       set({
-        ...patched,
-        status: 'ROUND_OVER',
-        roundWinner: outcome.winner,
-        winningLine: outcome.line,
+        ...patch,
+        // Único caminho pelo qual uma carta avança o relógio global, e ainda
+        // assim só se ela pedir explicitamente.
+        ...(result.consumesTurn
+          ? { turn: opponentOf(caster), turnCount: get().turnCount + 1 }
+          : null),
       });
-      get().pushLog(`rodada :: ${outcome.winner === 'PLAYER' ? 'você venceu' : 'cpu venceu'}`);
-      get().takeDamage(outcome.winner === 'PLAYER' ? 'MACHINE' : 'PLAYER', ROUND_DAMAGE);
-      if (get().status !== 'MATCH_OVER') scheduleRoundTransition();
+
+      if (result.message) get().pushLog(result.message);
+      if (result.notice) get().pushNotice(result.notice.text, result.notice.tone);
+      if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
+      if (result.heal) get().healTarget(result.heal.target, result.heal.amount);
+      if (result.draw) drawCardsFor(result.draw.target, result.draw.count);
+
+      // Cartas de espionagem (ESPIONAGEM, VISÃO ABSOLUTA): a revelação já
+      // aconteceu (é o que `card.effect` acabou de calcular), isto só pausa o
+      // jogo com um modal até o jogador confirmar que leu. `apply` vazio: não
+      // há efeito mecânico para adiar, diferente do caso das armadilhas.
+      if (result.acknowledge) {
+        queueAcknowledgement(
+          {
+            kind: result.acknowledge.kind ?? 'INFO',
+            tone: result.acknowledge.tone ?? 'INTEL',
+            subtitle: result.acknowledge.subtitle,
+            title: result.acknowledge.title,
+            description: result.acknowledge.description,
+            revealedCards: result.acknowledge.revealedCards,
+          },
+          () => {},
+        );
+      }
+
+      get().dispatchEvent({ type: 'CARD_PLAYED', player: caster, cardId });
+    };
+
+    /* --- Anúncio da jogada da CPU -------------------------------------------
+       A máquina jogar uma carta e o efeito aparecer no mesmo frame é a origem
+       da sensação de "aconteceu do nada": o jogador vê o HP cair, a mão
+       encolher ou a casa travar sem nunca ter visto a causa. Enfileirar o
+       anúncio ANTES de aplicar inverte isso — primeiro ele lê "A CPU JOGOU
+       SAQUE", confirma, e só então o efeito acontece.
+
+       A carta já saiu da mão da CPU aqui (o `patch` está montado), mas nada
+       dele foi escrito ainda: `applyResult` é o `apply` da fila. */
+    if (caster === 'MACHINE') {
+      queueAcknowledgement(
+        {
+          tone: 'CPU',
+          subtitle: 'A CPU JOGOU',
+          title: card.name,
+          description: card.description,
+        },
+        applyResult,
+      );
       return true;
     }
 
-    set({
-      ...patched,
-      ...(result.consumesTurn
-        ? { turn: opponentOf(caster), turnCount: patched.turnCount + 1 }
-        : null),
-    });
-
-    if (result.message) get().pushLog(result.message);
-    if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
-    if (result.heal) get().healTarget(result.heal.target, result.heal.amount);
-    if (result.draw) drawCardsFor(result.draw.target, result.draw.count);
-
-    // Cartas de espionagem (ESPIONAGEM, VISÃO ABSOLUTA): a revelação já
-    // aconteceu (é o que `card.effect` acabou de calcular), isto só pausa o
-    // jogo com um modal até o jogador confirmar que leu. `apply` vazio: não
-    // há efeito mecânico para adiar, diferente do caso das armadilhas.
-    if (result.acknowledge) {
-      queueAcknowledgement(
-        {
-          subtitle: result.acknowledge.subtitle,
-          title: result.acknowledge.title,
-          description: result.acknowledge.description,
-          revealedCards: result.acknowledge.revealedCards,
-        },
-        () => {},
-      );
-    }
-
-    get().dispatchEvent({ type: 'CARD_PLAYED', player: caster, cardId });
+    applyResult();
     return true;
   }
 
@@ -702,6 +853,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
       lastVanishedIndex: vanishingIndex,
       turn: keepsTurn ? owner : opponentOf(owner),
       extraTurnPending: keepsTurn ? null : state.extraTurnPending,
+      // A previsão do VIDENTE valia para a próxima jogada DESTE combatente;
+      // ele acabou de jogar, então o destaque cumpriu seu papel e sai. Se
+      // fosse limpo em qualquer jogada, sumiria já no lance seguinte de quem
+      // usou a carta — antes de mostrar o que prometeu.
+      ...(state.revealDoomedFor === owner ? { revealDoomedFor: null } : null),
     });
 
     /* --- 5. Barramento ------------------------------------------------------
@@ -760,7 +916,10 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
   applyChaosRule: (rule, payload) => {
     const state = get();
-    if (state.activeRule !== rule) get().pushLog(`regra :: ${rule.toLowerCase()}`);
+    // Descreve o que a regra FAZ, não o nome interno dela: "regra ::
+    // random_fade" não explicava nada a quem está jogando, e o efeito (uma
+    // peça sumindo) chegava sem aviso reconhecível.
+    if (state.activeRule !== rule) get().pushLog(CHAOS_RULE_LOG[rule]);
 
     set({
       activeRule: rule,
@@ -813,6 +972,14 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // Armadilhas e mãos NÃO são limpas: continuam de pé até dispararem ou
       // serem jogadas. É o que justifica gastar uma carta numa aposta longa.
       blockedCell: state.activeRule === 'BLOCKED_CELL' ? pickFreeCell(createEmptyBoard()) : null,
+      // A trava do TRAVAR, ao contrário da regra caótica, foi comprada para
+      // uma situação de tabuleiro específica. Com o tabuleiro limpo ela não
+      // significa mais nada, então é devolvida em vez de lacrar uma casa
+      // arbitrária da rodada seguinte.
+      lockedCell: null,
+      lockedCellExpiresAtTurn: null,
+      // Mesma ideia: a peça condenada revelada pelo VIDENTE não existe mais.
+      revealDoomedFor: null,
     }));
   },
 
@@ -836,6 +1003,10 @@ export const useGameStore = create<GameStore>()((set, get) => {
     const resolved = getChannel('RULES').pick<ChaosRule>(pool.length > 0 ? pool : CHAOTIC_RULES);
 
     applyChaosRule(resolved);
+    // Toast além do log: o surto muda as regras do tabuleiro no meio da
+    // partida — é o tipo de evento que não pode depender do jogador estar
+    // olhando para o terminal na hora certa.
+    get().pushNotice(CHAOS_RULE_NOTICE[resolved], 'NEUTRAL');
   },
 
   drawCard: (count = 1) => drawCardsFor('PLAYER', count),
@@ -885,6 +1056,15 @@ export const useGameStore = create<GameStore>()((set, get) => {
       if (log.length > LOG_LIMIT) log.splice(0, log.length - LOG_LIMIT);
       return { terminalLog: log, nextLogId: state.nextLogId + 1 };
     }),
+
+  pushNotice: (text, tone = 'NEUTRAL') =>
+    set((state) => ({
+      // `id` monotônico pela mesma razão de `lastDamageEvent`: dois avisos de
+      // texto idêntico em sequência ainda precisam disparar duas animações, e
+      // quem compara por referência não veria diferença sem ele.
+      lastNotice: { id: state.nextNoticeId, text, tone },
+      nextNoticeId: state.nextNoticeId + 1,
+    })),
 
   dispatchEvent: (event) => {
     eventQueue.push(event);
@@ -945,13 +1125,18 @@ export const useGameStore = create<GameStore>()((set, get) => {
              — nunca depois de um timer fixo, que não garante leitura nenhuma. */
           queueAcknowledgement(
             {
-              subtitle: defender === 'PLAYER' ? 'SUA ARMADILHA' : 'ARMADILHA DO OPONENTE',
+              tone: 'DANGER',
+              subtitle: defender === 'PLAYER' ? 'SUA ARMADILHA' : 'ARMADILHA DA CPU',
               title: card.name,
               description: card.description,
             },
             () => {
-              set({ ...result.patch });
+              // Mesma blindagem de `resolveCardPlay`: uma armadilha também não
+              // tem por que mexer no relógio global.
+              const { turnCount: _clockIsNotTrapBusiness, ...trapPatch } = result.patch ?? {};
+              set({ ...trapPatch });
               if (result.message) get().pushLog(result.message);
+              if (result.notice) get().pushNotice(result.notice.text, result.notice.tone);
               // Dano passa por takeDamage: clamp em 0, fim de partida e a
               // animação do HUD vivem lá, num lugar só.
               if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
@@ -1040,6 +1225,10 @@ export const selectTerminalLog = (s: GameStore) => s.terminalLog;
 export const selectIsPaused = (s: GameStore) => s.isPaused;
 export const selectMachineHand = (s: GameStore) => s.machineHand;
 export const selectLastDamageEvent = (s: GameStore) => s.lastDamageEvent;
+/** Aviso efêmero mais recente — alimenta o toast sobre o tabuleiro. */
+export const selectLastNotice = (s: GameStore) => s.lastNotice;
+/** Quem ganhou turno extra, ou `null`. Alimenta o letreiro "TURNO EXTRA". */
+export const selectExtraTurnTarget = (s: GameStore) => s.extraTurnPending;
 
 /** Turnos globais restantes até a regra caótica atual expirar. `null` se não houver prazo. */
 export const selectRuleTurnsLeft = (s: GameStore) =>
@@ -1134,9 +1323,37 @@ export const selectIsVanishing = (index: number) => (s: GameStore): boolean => {
   return s.activeRule === 'RANDOM_FADE' ? true : indexes[0] === index;
 };
 
-/** A célula está interditada pela regra BLOCKED_CELL? */
+/**
+ * A célula está interditada — pelo caos OU pela carta TRAVAR?
+ *
+ * A `<Cell />` só precisa saber que não dá para jogar ali; qual dos dois
+ * subsistemas lacrou é irrelevante para o desenho. Quem quiser distinguir usa
+ * `selectIsCardLocked`.
+ */
 export const selectIsBlocked = (index: number) => (s: GameStore): boolean =>
-  s.activeRule === 'BLOCKED_CELL' && s.blockedCell === index;
+  isCellUnavailable(s, index);
+
+/**
+ * A célula foi lacrada por uma carta TRAVAR (e não pelo caos)?
+ *
+ * Existe para a UI marcar a trava do jogador com um visual próprio: uma casa
+ * que ELE lacrou de propósito não deveria parecer o mesmo azar aleatório que
+ * uma casa interditada pelo terminal.
+ */
+export const selectIsCardLocked = (index: number) => (s: GameStore): boolean =>
+  isCellLocked(s, index);
+
+/**
+ * A peça em `index` é a que o VIDENTE marcou como condenada?
+ *
+ * Derivado do tabuleiro vivo (e não de um índice congelado no estado): se um
+ * DEMOLIR destruir a peça marcada antes da hora, o destaque acompanha para a
+ * próxima da fila em vez de apontar para uma casa vazia.
+ */
+export const selectIsRevealedDoomed = (index: number) => (s: GameStore): boolean => {
+  if (s.revealDoomedFor === null) return false;
+  return getOldestPieceIndex(s.board, s.revealDoomedFor) === index;
+};
 
 /** A célula faz parte da linha vencedora da rodada? */
 export const selectIsWinningCell = (index: number) => (s: GameStore): boolean =>

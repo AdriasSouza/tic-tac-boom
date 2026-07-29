@@ -1,36 +1,90 @@
-import { memo } from 'react';
-import { Modal, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useState } from 'react';
+import { Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 
+import { FlipCard } from './FlipCard';
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
-import { getCard } from '@/engine/cards/registry';
-import { selectPendingAcknowledgement, useGameStore, type CardId } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
+import {
+  selectPendingAcknowledgement,
+  useGameStore,
+  type AcknowledgementTone,
+} from '@/store/gameStore';
+
+/** Cor de destaque por intenção do aviso. */
+const TONE_COLOR: Record<AcknowledgementTone, string> = {
+  DANGER: colors.danger,
+  CPU: colors.markO,
+  INTEL: colors.winGlow,
+};
 
 /**
- * Pausa de confirmação manual: quando uma armadilha dispara ou uma carta de
- * espionagem revela informação, o jogo trava aqui até o jogador clicar
- * "ENTENDI". `canPlaceAt`/`resolveCardPlay`/a CPU já recusam qualquer ação
- * enquanto isto está montado — o modal só existe para dar ao jogador a
- * chance de LER antes do efeito mecânico (dano, patch) aplicar de fato.
+ * Pausa de confirmação manual: quando uma armadilha dispara, a CPU joga uma
+ * carta ou uma carta de espionagem revela informação, o jogo trava aqui até o
+ * jogador clicar "ENTENDI". `canPlaceAt`/`resolveCardPlay`/a CPU já recusam
+ * qualquer ação enquanto isto está montado — o modal só existe para dar ao
+ * jogador a chance de LER antes do efeito mecânico aplicar de fato.
  *
  * Substitui um timer fixo de propósito: tempo na tela não garante leitura,
  * só que a tela ficou parada por tempo suficiente — e ainda exclui quem lê
  * mais devagar. Um clique explícito garante as duas coisas.
+ *
+ * Três modos, decididos por `pending.kind`:
+ * - `INFO`       — texto e um destaque grande;
+ * - `SPY_PICK`   — o jogador escolhe UMA carta e vira (ESPIONAGEM);
+ * - `INTEL_FLIP` — o jogador vira e desvira quantas quiser (VISÃO ABSOLUTA).
  */
 export function AcknowledgementModal() {
   const pending = useGameStore(selectPendingAcknowledgement);
   const acknowledge = useGameStore((s) => s.acknowledgePending);
 
+  /**
+   * Índices já virados. Estado LOCAL: virar uma carta não muda nada na
+   * partida — é leitura, não jogada —, então nada disso precisa passar pela
+   * store nem participar do determinismo do replay.
+   */
+  const [flipped, setFlipped] = useState<number[]>([]);
+
+  // Cada confirmação da fila começa com todas as cartas viradas para baixo. A
+  // fila pode trocar de item sem desmontar o modal (uma armadilha logo depois
+  // de uma espionagem), então zerar aqui é obrigatório.
+  const pendingId = pending?.id ?? null;
+  useEffect(() => {
+    setFlipped([]);
+  }, [pendingId]);
+
+  const isSpyPick = pending?.kind === 'SPY_PICK';
+
+  const handleFlip = useCallback(
+    (index: number) => {
+      setFlipped((current) => {
+        if (current.includes(index)) {
+          // ESPIONAGEM não desvira: a escolha é definitiva, senão o jogador
+          // simplesmente viraria uma, leria, desviraria e tentaria a próxima —
+          // e a carta viraria "revele a mão inteira" com passos a mais.
+          return isSpyPick ? current : current.filter((i) => i !== index);
+        }
+        return isSpyPick ? [index] : [...current, index];
+      });
+    },
+    [isSpyPick],
+  );
+
   if (!pending) return null;
+
+  const accent = TONE_COLOR[pending.tone];
+  const hasCards = pending.revealedCards.length > 0;
+  // Na Espionagem o botão só libera depois da escolha: confirmar sem virar
+  // nada desperdiçaria a carta em silêncio.
+  const canConfirm = !isSpyPick || flipped.length > 0;
 
   return (
     <Modal
       visible
       transparent
       animationType="none" // as animações são do Reanimated, na UI thread
-      onRequestClose={acknowledge} // botão físico de voltar no Android = confirmar
+      onRequestClose={canConfirm ? acknowledge : undefined}
       statusBarTranslucent
     >
       {/* `key` pelo id: se a próxima confirmação da fila entrar assim que
@@ -43,28 +97,50 @@ export function AcknowledgementModal() {
         style={styles.backdrop}
       >
         <Animated.View entering={ZoomIn.springify().damping(13).mass(0.8)} style={styles.holder}>
-          <PixelPanel accent={colors.danger} contentStyle={styles.panelContent}>
-            <Text style={styles.subtitle}>{pending.subtitle}</Text>
+          <PixelPanel accent={accent} contentStyle={styles.panelContent}>
+            <Text style={[styles.subtitle, { color: accent }]}>{pending.subtitle}</Text>
 
-            <View style={styles.artSlot}>
-              <Text style={styles.artGlyph}>{pending.title.charAt(0)}</Text>
-            </View>
+            {/* O brasão grande só faz sentido quando ELE é a informação. Com
+                cartas para virar, ele roubaria a altura de que a grade
+                precisa — e em tela pequena empurraria o botão para fora. */}
+            {!hasCards && (
+              <View style={[styles.artSlot, { borderColor: accent }]}>
+                <Text style={[styles.artGlyph, { color: accent }]}>
+                  {pending.title.charAt(0)}
+                </Text>
+              </View>
+            )}
 
             <Text style={styles.title}>{pending.title}</Text>
             <Text style={styles.description}>{pending.description}</Text>
 
-            {pending.revealedCards.length > 0 && (
-              <View style={styles.chipsRow}>
-                {pending.revealedCards.map((cardId, i) => (
-                  <RevealedCardChip key={`${cardId}-${i}`} cardId={cardId} />
+            {hasCards && (
+              // Rola quando a mão do oponente é grande — sem isto, 5 cartas
+              // em duas fileiras empurram o botão de confirmar para fora da
+              // tela num celular baixo.
+              <ScrollView
+                style={styles.cardsScroll}
+                contentContainerStyle={styles.cardsRow}
+                showsVerticalScrollIndicator={false}
+              >
+                {pending.revealedCards.map((cardId, index) => (
+                  <FlipCard
+                    key={`${cardId}-${index}`}
+                    cardId={cardId}
+                    revealed={flipped.includes(index)}
+                    // Espionagem: depois da escolha, as outras congelam.
+                    disabled={isSpyPick && flipped.length > 0 && !flipped.includes(index)}
+                    onPress={() => handleFlip(index)}
+                  />
                 ))}
-              </View>
+              </ScrollView>
             )}
 
             <PixelButton
-              label="ENTENDI"
+              label={canConfirm ? 'ENTENDI' : 'ESCOLHA UMA CARTA'}
               onPress={acknowledge}
-              accent={colors.danger}
+              disabled={!canConfirm}
+              accent={accent}
               style={styles.button}
             />
           </PixelPanel>
@@ -77,31 +153,10 @@ export function AcknowledgementModal() {
 export default AcknowledgementModal;
 
 /* -------------------------------------------------------------------------- */
-/*                              MINIATURA DE CARTA                             */
-/* -------------------------------------------------------------------------- */
-/* Usada só por Visão Absoluta (revela a mão inteira) — a carta principal já
-   tem seu próprio destaque grande acima; isto é a lista compacta do resto.  */
-
-const RevealedCardChip = memo(function RevealedCardChip({ cardId }: { cardId: CardId }) {
-  const card = getCard(cardId);
-  const accent = card.type === 'ACTION' ? colors.markX : colors.markO;
-
-  return (
-    <View style={[styles.chip, { borderColor: accent }]}>
-      <Text style={[styles.chipGlyph, { color: accent }]}>{card.name.charAt(0)}</Text>
-      <Text style={styles.chipName} numberOfLines={1}>
-        {card.name}
-      </Text>
-    </View>
-  );
-});
-
-/* -------------------------------------------------------------------------- */
 /*                                   ESTILOS                                   */
 /* -------------------------------------------------------------------------- */
 
 const ART_SIZE = 76;
-const CHIP_WIDTH = 64;
 
 const styles = StyleSheet.create({
   backdrop: {
@@ -114,13 +169,15 @@ const styles = StyleSheet.create({
   holder: {
     width: '100%',
     maxWidth: 340,
+    // Teto relativo à tela: um painel com 5 cartas para virar não pode
+    // ultrapassar a altura disponível num aparelho pequeno.
+    maxHeight: '90%',
   },
   panelContent: {
-    padding: 20,
+    padding: 18,
     alignItems: 'center',
   },
   subtitle: {
-    color: colors.danger,
     fontSize: 10,
     fontWeight: '800',
     letterSpacing: 3,
@@ -130,14 +187,12 @@ const styles = StyleSheet.create({
     width: ART_SIZE,
     height: ART_SIZE,
     borderWidth: 3,
-    borderColor: colors.danger,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.bgDeep,
     marginTop: 12,
   },
   artGlyph: {
-    color: colors.danger,
     fontSize: 34,
     fontWeight: '900',
   },
@@ -157,34 +212,21 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     opacity: 0.85,
   },
-  chipsRow: {
+  cardsScroll: {
     alignSelf: 'stretch',
+    marginTop: 14,
+    // Sem isto a lista mede pelo conteúdo e ignora o `maxHeight` do painel:
+    // 5 cartas em duas fileiras empurrariam o botão para fora do modal.
+    flexShrink: 1,
+  },
+  cardsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     justifyContent: 'center',
     gap: 8,
-    marginTop: 14,
-  },
-  chip: {
-    width: CHIP_WIDTH,
-    alignItems: 'center',
-    borderWidth: 2,
-    paddingVertical: 6,
-    backgroundColor: colors.bgDeep,
-  },
-  chipGlyph: {
-    fontSize: 16,
-    fontWeight: '900',
-  },
-  chipName: {
-    marginTop: 2,
-    color: colors.text,
-    fontSize: 7,
-    letterSpacing: 0.5,
-    fontWeight: '700',
   },
   button: {
     alignSelf: 'stretch',
-    marginTop: 20,
+    marginTop: 18,
   },
 });

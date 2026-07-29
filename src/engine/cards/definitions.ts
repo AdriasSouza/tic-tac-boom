@@ -3,7 +3,13 @@ import type { Rng } from '@/engine/rng';
 // `import type` é obrigatório aqui: `rules.ts` importa `CardDefinition` deste
 // arquivo, e este arquivo importa `GameState` de lá. Com `import type` o
 // TypeScript apaga as duas linhas na compilação e não sobra ciclo em runtime.
-import type { Combatant, GameState } from '@/engine/rules';
+import type {
+  AcknowledgementKind,
+  AcknowledgementTone,
+  Combatant,
+  GameState,
+  NoticeTone,
+} from '@/engine/rules';
 
 /* -------------------------------------------------------------------------- */
 /*                                    TIPOS                                    */
@@ -45,6 +51,39 @@ export type CardId =
  * depois.
  */
 export type CardType = 'ACTION' | 'TRAP' | 'COUNTER';
+
+/* -------------------------------------------------------------------------- */
+/*                                  RARIDADE                                   */
+/* -------------------------------------------------------------------------- */
+
+/** Faixa de raridade da carta. Define a chance de ela sair numa compra. */
+export type CardRarity = 'COMMON' | 'RARE' | 'EPIC' | 'LEGENDARY';
+
+/**
+ * Chance de a COMPRA cair em cada faixa, em pontos percentuais.
+ *
+ * O sorteio é em dois estágios (faixa primeiro, carta depois) de propósito:
+ * com um pool único ponderado carta a carta, a frequência de cada faixa
+ * dependeria de QUANTAS cartas existem nela — acrescentar uma armadilha nova
+ * aumentaria silenciosamente a chance de sair armadilha. Foi exatamente esse
+ * efeito que fazia a mão da CPU virar um paredão de armadilhas. Sorteando a
+ * faixa primeiro, estes 50/30/15/5 valem sempre, independente do tamanho do
+ * deck.
+ */
+export const RARITY_DRAW_WEIGHT: Record<CardRarity, number> = {
+  COMMON: 50,
+  RARE: 30,
+  EPIC: 15,
+  LEGENDARY: 5,
+};
+
+/** Rótulo exibido na UI. */
+export const RARITY_LABEL: Record<CardRarity, string> = {
+  COMMON: 'COMUM',
+  RARE: 'RARA',
+  EPIC: 'ÉPICA',
+  LEGENDARY: 'LENDÁRIA',
+};
 
 /** O que a carta exige como alvo antes de poder ser jogada. */
 export type CardTargeting =
@@ -138,11 +177,27 @@ export interface CardEffectResult {
    * seguir jogando. Usado por cartas de espionagem.
    */
   acknowledge?: {
+    /** Padrão `INFO`. `SPY_PICK`/`INTEL_FLIP` viram cartas com o dedo. */
+    kind?: AcknowledgementKind;
+    /** Padrão `INTEL` — cartas de informação. */
+    tone?: AcknowledgementTone;
     subtitle: string;
     title: string;
     description: string;
-    /** Cartas a listar além da principal — só Visão Absoluta usa isso hoje. */
+    /** Cartas exibidas viradas para baixo (espionagem) ou em miniatura. */
     revealedCards?: CardId[];
+  };
+  /**
+   * Toast efêmero sobre o tabuleiro. **Não pausa o jogo** — é para o jogador
+   * VER um fato que o afeta sem ter que ler o log do terminal ("A CPU
+   * DESTRUIU SUA CARTA: MINA").
+   *
+   * Separado de `message` (que vai para o histórico do terminal) porque as
+   * duas coisas têm públicos diferentes: o log é consulta, o toast é alerta.
+   */
+  notice?: {
+    text: string;
+    tone?: NoticeTone;
   };
 }
 
@@ -155,7 +210,15 @@ export interface CardDefinition {
   type: CardType;
   description: string;
   targeting: CardTargeting;
-  /** Peso relativo no sorteio de `drawCard` (via `rng.weighted`). */
+  /** Faixa de raridade — decide a chance de a carta sair numa compra. */
+  rarity: CardRarity;
+  /**
+   * Peso relativo **dentro da própria faixa de raridade**.
+   *
+   * Não é mais o peso global: a faixa é sorteada antes (ver
+   * `RARITY_DRAW_WEIGHT`) e só então este peso desempata entre as cartas
+   * daquela faixa.
+   */
   weight: number;
 
   /**

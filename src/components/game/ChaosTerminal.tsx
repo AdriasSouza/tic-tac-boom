@@ -21,7 +21,8 @@ import {
 
 /** Nativo/Web (host) ➜ página CRT */
 type OutboundMessage =
-  | { type: 'SET_RULE'; rule: ChaosRule; label: string }
+  /** `surge: false` troca o rótulo sem tremor — é o caos recuando, não chegando. */
+  | { type: 'SET_RULE'; rule: ChaosRule; label: string; surge: boolean }
   /** Atualiza só o contador de turnos, sem disparar o glitch visual do nome
       da regra — senão CADA jogada glitcharia a tela, não só as que mudam a
       regra de fato. */
@@ -36,9 +37,25 @@ type InboundMessage = { type: 'READY' };
 
 /** Texto exibido no terminal para cada regra caótica. */
 const RULE_LABEL: Record<ChaosRule, string> = {
-  NORMAL: 'SYSTEM NOMINAL',
-  RANDOM_FADE: 'RANDOM FADE',
-  BLOCKED_CELL: 'CELL LOCKDOWN',
+  NORMAL: 'SISTEMA ESTÁVEL',
+  RANDOM_FADE: 'SÍMBOLO INSTÁVEL',
+  BLOCKED_CELL: 'CASA INTERDITADA',
+};
+
+/**
+ * A troca de regra deve glitchar a tela?
+ *
+ * Só o SURTO é uma "ativação do terminal". Voltar a NORMAL é o caos recuando —
+ * anunciar isso com o mesmo tremor e a mesma vibração dobrava a frequência
+ * percebida de eventos caóticos: com surto a cada 4 meios-turnos e retorno 2
+ * depois, o terminal acendia uma vez por rodada e o caos parecia contínuo.
+ * Com a calmaria silenciosa, sobra exatamente uma ativação a cada 2 rodadas
+ * globais.
+ */
+const RULE_IS_SURGE: Record<ChaosRule, boolean> = {
+  NORMAL: false,
+  RANDOM_FADE: true,
+  BLOCKED_CELL: true,
 };
 
 /* -------------------------------------------------------------------------- */
@@ -318,10 +335,11 @@ const CRT_HTML = `<!DOCTYPE html>
     }, duration);
   }
 
-  function setRule(rule, label) {
+  function setRule(rule, label, surge) {
     ruleEl.textContent = label;
     ruleEl.setAttribute('data-text', label);
-    glitch(900);
+    // Sem surto, o rótulo simplesmente muda: a calmaria não merece tremor.
+    if (surge) glitch(900);
     // A linha de log da troca de regra vem do store (pushLog), não daqui —
     // uma única fonte de verdade para o histórico.
   }
@@ -363,7 +381,7 @@ const CRT_HTML = `<!DOCTYPE html>
       if (!msg || typeof msg.type !== 'string') return;
 
       if (msg.type === 'SET_RULE') {
-        setRule(msg.rule, msg.label);
+        setRule(msg.rule, msg.label, msg.surge === true);
       } else if (msg.type === 'SET_COUNTDOWN') {
         setCountdown(msg.turnsLeft);
       } else if (msg.type === 'PRINT') {
@@ -382,7 +400,7 @@ const CRT_HTML = `<!DOCTYPE html>
   document.addEventListener('message', onNativeMessage);
   window.addEventListener('message', onNativeMessage);
 
-  print(['uplink estabelecido']);
+  print(['conexão estabelecida — monitorando o caos']);
 
   // Handshake: o host responde com SET_RULE, SET_COUNTDOWN e o histórico do log.
   send({ type: 'READY' });
@@ -397,6 +415,13 @@ const CRT_HTML = `<!DOCTYPE html>
  * WebView recarregar a página inteira no Android — matando o handshake.
  */
 const CRT_SOURCE = { html: CRT_HTML, baseUrl: '' } as const;
+
+/**
+ * Prazo para o handshake `READY` chegar antes do host assumir a página como
+ * pronta. Folgado de propósito: o custo de esperar demais é um atraso
+ * imperceptível no primeiro log; o de esperar de menos, nenhum.
+ */
+const HANDSHAKE_FALLBACK_MS = 1200;
 
 /* -------------------------------------------------------------------------- */
 /*                                 COMPONENTE                                  */
@@ -471,26 +496,63 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
     [isWeb],
   );
 
-  /** Processa uma mensagem vinda da página (READY, por enquanto só isso). */
+  /**
+   * A página está viva e pronta para receber mensagens.
+   *
+   * **Idempotente de propósito** — pode ser chamada pelo handshake `READY`, por
+   * `onLoad` ou pelo temporizador de segurança, quantas vezes for. Sem isso o
+   * conserto da web abaixo (chamar daqui do `onLoad`) duplicaria o log toda
+   * vez que a mensagem `READY` também chegasse.
+   */
   const handleReady = useCallback(() => {
     isReadyRef.current = true;
+
+    /* Mensagens de PRINT enfileiradas são DESCARTADAS: o histórico completo é
+       reimpresso logo abaixo e já as contém. Reenviar as duas coisas era o
+       caminho mais curto para o log aparecer em dobro. As demais (regra,
+       contador) são idempotentes e podem seguir. */
     const queued = pendingRef.current;
     pendingRef.current = [];
-    queued.forEach(post);
+    queued.filter((message) => message.type !== 'PRINT').forEach(post);
 
     // A página nasceu vazia (primeiro load ou crash do renderer): reimprime
     // o histórico que o store guardou.
     lastPrintedIdRef.current = -1;
     const history = useGameStore.getState().terminalLog;
+    post({ type: 'CLEAR' });
     if (history.length > 0) {
       lastPrintedIdRef.current = history[history.length - 1].id;
       post({ type: 'PRINT', lines: history.map((line) => line.text) });
     }
   }, [post]);
 
+  /* --- Rede de segurança do handshake --------------------------------------
+     O terminal só imprime depois do `READY`, e na web esse `READY` chega por
+     `postMessage` — que pode ser despachado pela página ANTES do host ter
+     registrado o listener (o script do `srcDoc` roda durante o parse, o
+     `useEffect` do listener só depois do commit). Perder essa única mensagem
+     deixava o terminal mudo para sempre, com tudo empilhado em `pendingRef`:
+     era exatamente o sintoma de "parou de funcionar na web".
+
+     Em vez de torcer pela corrida, assumimos a página como pronta se o
+     handshake não chegar a tempo. `handleReady` é idempotente, então no caso
+     normal (handshake no prazo) isto não faz nada.                           */
+  useEffect(() => {
+    if (isReadyRef.current) return;
+    const timer = setTimeout(() => {
+      if (!isReadyRef.current) handleReady();
+    }, HANDSHAKE_FALLBACK_MS);
+    return () => clearTimeout(timer);
+  }, [handleReady]);
+
   // Nativo/Web ➜ Página: espelha a regra caótica atual no monitor.
   useEffect(() => {
-    post({ type: 'SET_RULE', rule: activeRule, label: RULE_LABEL[activeRule] });
+    post({
+      type: 'SET_RULE',
+      rule: activeRule,
+      label: RULE_LABEL[activeRule],
+      surge: RULE_IS_SURGE[activeRule],
+    });
   }, [activeRule, post]);
 
   // Nativo/Web ➜ Página: contador de turnos — SEM disparar o glitch visual.
@@ -508,7 +570,11 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
       isFirstRuleRenderRef.current = false;
       return;
     }
-    if (hapticsEnabled) void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid);
+    // Só o surto vibra. Voltar a NORMAL é alívio, e vibrar por isso fazia o
+    // aparelho tremer duas vezes por ciclo de caos.
+    if (hapticsEnabled && RULE_IS_SURGE[activeRule]) {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid);
+    }
   }, [activeRule, hapticsEnabled]);
 
   /* --- Nativo/Web ➜ Página: log de combate ---------------------------------
@@ -583,9 +649,20 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
     return () => window.removeEventListener('message', handleWindowMessage);
   }, [isWeb, handleReady]);
 
+  /**
+   * `onLoad` do iframe: a página terminou de carregar, então o script inline
+   * do `srcDoc` já rodou e `window.__CHAOS__` existe.
+   *
+   * Antes isto fazia o OPOSTO — marcava a página como NÃO pronta. Como o
+   * `READY` da página costuma ser despachado antes do `load` do host chegar,
+   * o efeito prático era invalidar um handshake que já havia acontecido e
+   * deixar o terminal permanentemente mudo na web, com todas as mensagens
+   * paradas em `pendingRef`. Aqui a página está comprovadamente viva; declarar
+   * isso direto elimina a corrida em vez de participar dela.
+   */
   const handleIframeLoad = useCallback(() => {
-    isReadyRef.current = false;
-  }, []);
+    handleReady();
+  }, [handleReady]);
 
   const containerStyle = useMemo(() => [styles.container, { height }, style], [height, style]);
 

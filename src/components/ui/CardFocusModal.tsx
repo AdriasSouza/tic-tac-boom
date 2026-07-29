@@ -5,6 +5,8 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
 import { getCard } from '@/engine/cards/registry';
+import { RARITY_LABEL } from '@/engine/cards/definitions';
+import { RARITY_COLOR } from '@/theme/rarity';
 import { type CardId } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 
@@ -33,6 +35,7 @@ function CardFocusModalComponent({ cardId, canConfirm, onCancel, onConfirm }: Ca
   const card = getCard(cardId);
   const accent = card.type === 'ACTION' ? colors.markX : colors.markO;
   const confirmLabel = card.type === 'TRAP' ? 'ARMAR' : 'USAR';
+  const rarityColor = RARITY_COLOR[card.rarity];
 
   return (
     <Modal
@@ -70,6 +73,16 @@ function CardFocusModalComponent({ cardId, canConfirm, onCancel, onConfirm }: Ca
             </View>
 
             <Text style={styles.name}>{card.name}</Text>
+
+            {/* A raridade só é legível aqui: na carta da mão ela é uma barra
+                colorida de 3dp, sem espaço para o nome escrito. Esta é a tela
+                onde o jogador para para ler, então é onde a legenda cabe. */}
+            <View style={[styles.rarityTag, { borderColor: rarityColor }]}>
+              <Text style={[styles.rarityText, { color: rarityColor }]}>
+                {RARITY_LABEL[card.rarity]}
+              </Text>
+            </View>
+
             <Text style={styles.description}>{card.description}</Text>
 
             <View style={styles.actions}>
@@ -140,6 +153,17 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 2,
     textAlign: 'center',
+  },
+  rarityTag: {
+    marginTop: 8,
+    borderWidth: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  rarityText: {
+    fontSize: 8,
+    fontWeight: '900',
+    letterSpacing: 2,
   },
   description: {
     marginTop: 8,

@@ -32,7 +32,8 @@ function CreditsModalComponent({ visible, onClose }: CreditsModalProps) {
             <View style={styles.titleRule} />
 
             <Text style={styles.name}>ADRIAS SOARES DE SOUZA</Text>
-            <Text style={styles.role}>25 anos</Text>
+            <Text style={styles.role}>Versão 1.0.0</Text>
+            <Text style={styles.role}>Feito em: 28/07/2026</Text>
             <Text style={styles.role}>Desenvolvedor Full-Stack e Analista de Dados</Text>
 
             <View style={styles.divider} />

@@ -11,8 +11,9 @@ import {
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 
-import { CARD_HEIGHT, CardItem } from './CardItem';
+import { CardItem } from './CardItem';
 import { CardFocusModal } from '@/components/ui/CardFocusModal';
+import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import { colors } from '@/theme/colors';
 import { getCard } from '@/engine/cards/registry';
 import {
@@ -29,8 +30,8 @@ import {
 /*                             GEOMETRIA DO LEQUE                              */
 /* -------------------------------------------------------------------------- */
 
-/** Distância horizontal entre cartas vizinhas (menor que CARD_WIDTH ⇒ sobrepõe). */
-const FAN_SPACING = 48;
+/** Folga lateral mínima entre a ponta do leque e a borda da tela, em dp. */
+const FAN_SIDE_PADDING = 12;
 
 /** Rotação por passo a partir do centro, em graus. */
 const FAN_ANGLE_STEP = 7;
@@ -75,7 +76,8 @@ export function CardHand({ style }: CardHandProps) {
   // Uma armadilha revelada ou carta de espionagem pausando o jogo: nem
   // arrastar, nem abrir o modo foco fazem sentido enquanto isso está na tela.
   const hasPendingAcknowledgement = useGameStore(selectHasPendingAcknowledgement);
-  const { height } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
+  const { cardWidth, cardHeight, fanSpacing, handAreaHeight } = useResponsiveLayout();
 
   const isTargeting = pendingAction !== null;
 
@@ -163,22 +165,38 @@ export function CardHand({ style }: CardHandProps) {
     clearPendingAction();
   }, [clearPendingAction]);
 
-  /** Geometria pré-calculada: recomputa só quando o tamanho da mão muda. */
+  /**
+   * Geometria pré-calculada: recomputa quando a mão ou a tela mudam.
+   *
+   * O espaçamento tem DOIS tetos, e vence o menor:
+   * - o valor proporcional da tela (`fanSpacing`, de `useResponsiveLayout`);
+   * - o que ainda cabe na largura disponível com a mão cheia.
+   *
+   * O segundo é o que resolve o sumiço das cartas em celular: com espaçamento
+   * fixo, uma mão de 5 cartas ocupava mais que a largura da tela e as das
+   * pontas ficavam metade para fora. Agora o leque simplesmente se fecha mais
+   * (as cartas se sobrepõem), que é o comportamento natural de um leque de
+   * verdade quando a mão cresce.
+   */
   const layout = useMemo(() => {
     const count = hand.length;
     const middle = (count - 1) / 2;
     // Achata o leque conforme a mão cresce, respeitando o teto de ângulo.
     const angleStep = middle > 0 ? Math.min(FAN_ANGLE_STEP, FAN_ANGLE_MAX / middle) : 0;
 
+    const usableWidth = Math.max(0, width - FAN_SIDE_PADDING * 2 - cardWidth);
+    const maxSpacing = count > 1 ? usableWidth / (count - 1) : fanSpacing;
+    const spacing = Math.max(12, Math.min(fanSpacing, maxSpacing));
+
     return Array.from({ length: count }, (_, index) => {
       const offset = index - middle;
       return {
-        baseX: offset * FAN_SPACING,
+        baseX: offset * spacing,
         baseY: Math.abs(offset) * FAN_ARC_LIFT, // centro mais alto ⇒ arco
         baseRotation: offset * angleStep,
       };
     });
-  }, [hand.length]);
+  }, [hand.length, width, cardWidth, fanSpacing]);
 
   return (
     <View style={[styles.root, style]}>
@@ -199,7 +217,7 @@ export function CardHand({ style }: CardHandProps) {
         </Animated.View>
       )}
 
-      <View style={styles.fan}>
+      <View style={[styles.fan, { height: handAreaHeight }]}>
         {hand.length === 0 ? (
           <Text style={styles.empty}>MÃO VAZIA</Text>
         ) : (
@@ -216,6 +234,8 @@ export function CardHand({ style }: CardHandProps) {
                 uid={uid}
                 cardId={cardId}
                 index={index}
+                cardWidth={cardWidth}
+                cardHeight={cardHeight}
                 baseX={baseX}
                 baseY={baseY}
                 baseRotation={baseRotation}
@@ -258,7 +278,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   fan: {
-    height: CARD_HEIGHT + 40,
+    // `height` chega inline, de `useResponsiveLayout` — a faixa da mão precisa
+    // encolher junto com a carta, senão reserva altura que a tela não tem.
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',

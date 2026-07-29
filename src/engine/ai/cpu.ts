@@ -9,6 +9,7 @@ import {
   getOldestPieceIndex,
   handKeyFor,
   hpOf,
+  isCellUnavailable,
   trapsKeyFor,
   type Board,
   type Combatant,
@@ -102,7 +103,11 @@ const POSITION_TIERS: readonly (readonly number[])[] = [
 function simulate(state: GameState, owner: Combatant, index: number): Board | null {
   if (index < 0 || index > 8) return null;
   if (state.board[index] !== null) return null;
-  if (state.activeRule === 'BLOCKED_CELL' && state.blockedCell === index) return null;
+  // Cobre o bloqueio do caos E a trava da carta TRAVAR. Simular uma jogada
+  // numa casa lacrada faria a CPU "planejar" vitórias impossíveis e, pior,
+  // tentar jogar exatamente na casa que o jogador travou — que é o sintoma
+  // que a carta existe para produzir do lado certo.
+  if (isCellUnavailable(state, index)) return null;
 
   const board = [...state.board];
 
@@ -123,7 +128,7 @@ function legalMoves(state: GameState): number[] {
   const out: number[] = [];
   for (let i = 0; i < 9; i++) {
     if (state.board[i] !== null) continue;
-    if (state.activeRule === 'BLOCKED_CELL' && state.blockedCell === i) continue;
+    if (isCellUnavailable(state, i)) continue;
     out.push(i);
   }
   return out;
@@ -162,6 +167,12 @@ export interface CpuCardPlay {
  * casa, senão guarda a mão para o próximo turno.
  */
 export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
+  /* A jogada de carta da CPU é anunciada num modal que PAUSA o jogo, e a IA
+     retoma o turno depois do "Entendi". Sem esta marca ela recomeçaria a
+     decisão do zero nesse retorno e jogaria uma segunda carta no mesmo turno
+     — o limite de "uma por turno" viraria "uma por confirmação". */
+  if (state.machineCardTurn === state.turnCount) return null;
+
   const hand = state[handKeyFor(CPU)];
   const find = (id: CardId) => hand.find((c) => c.cardId === id);
   const rng = getChannel('AI');
@@ -176,7 +187,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
 
   // 3. Remove a própria interdição antes de tentar jogar no tabuleiro.
   const cleanse = find('CLEANSE');
-  if (cleanse && state.activeRule === 'BLOCKED_CELL') {
+  if (cleanse && (state.activeRule === 'BLOCKED_CELL' || state.lockedCell !== null)) {
     return { uid: cleanse.uid, cardId: cleanse.cardId };
   }
 
@@ -204,10 +215,13 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     return { uid: raid.uid, cardId: raid.cardId };
   }
 
-  // 8. Trava uma célula vazia aleatória — disrupção de baixo custo.
+  // 8. Trava uma célula vazia aleatória — disrupção de baixo custo. Nunca a
+  // que já está lacrada: o efeito recusaria e a carta voltaria para a mão.
   const lock = find('LOCK_CELL');
   if (lock) {
-    const empty = state.board.map((cell, i) => (cell === null ? i : -1)).filter((i) => i !== -1);
+    const empty = state.board
+      .map((cell, i) => (cell === null && state.lockedCell !== i ? i : -1))
+      .filter((i) => i !== -1);
     if (empty.length > 0) return { uid: lock.uid, cardId: lock.cardId, targetIndex: rng.pick(empty) };
   }
 
@@ -224,7 +238,13 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   const draw = find('DRAW_CARD');
   if (draw && hand.length < HAND_LIMIT) return { uid: draw.uid, cardId: draw.cardId };
 
-  // 12. Troca de mãos é alto risco (pode devolver cartas melhores ao
+  // 12. Espionagem: a CPU não ganha nada mecânico com ela (já decide com o
+  // estado inteiro à vista), mas deixar a carta apodrecer na mão é pior — e
+  // do lado do jogador ela aparece como um aviso concreto de que foi espiado.
+  const spy = find('SPY_CARD') ?? find('FULL_INTEL');
+  if (spy && state[handKeyFor(HUMAN)].length > 0) return { uid: spy.uid, cardId: spy.cardId };
+
+  // 13. Troca de mãos é alto risco (pode devolver cartas melhores ao
   // oponente) — só ocasionalmente, nunca como prioridade.
   const swap = find('HAND_SWAP');
   if (swap && rng.chance(0.15)) return { uid: swap.uid, cardId: swap.cardId };
@@ -332,6 +352,18 @@ export async function playCPUTurn(
       if (fresh.status !== 'PLAYING' || fresh.turn !== CPU || fresh.pendingAction !== null) {
         return null;
       }
+
+      /* --- O anúncio da carta pausou o jogo -----------------------------
+         A jogada da CPU é mostrada ao jogador ANTES de aplicar, e até ele
+         confirmar o efeito nem aconteceu. Seguir para `placeMark` aqui seria
+         jogar sobre um tabuleiro cuja carta ainda não resolveu — e o próprio
+         `canPlaceAt` recusaria, fazendo a CPU perder a jogada em silêncio.
+
+         Abortar é seguro porque o hook da CPU tem `pendingAcknowledgement`
+         nas dependências: quando o jogador confirma, o turno recomeça, e
+         `machineCardTurn` garante que ele siga direto para o tabuleiro em vez
+         de jogar uma segunda carta. */
+      if (fresh.pendingAcknowledgement !== null) return null;
     }
   }
 

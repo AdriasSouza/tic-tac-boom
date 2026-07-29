@@ -85,8 +85,32 @@ export interface LogLine {
 }
 
 /**
- * Pausa de confirmação manual — uma armadilha disparou, ou uma carta revelou
- * informação, e o jogo espera o jogador clicar "Entendi" antes de continuar.
+ * Como o modal de confirmação APRESENTA a informação.
+ *
+ * - `INFO`       — só texto e um destaque. Armadilha revelada, ação da CPU.
+ * - `SPY_PICK`   — mostra `revealedCards` viradas para BAIXO e o jogador
+ *                  escolhe UMA para virar (ESPIONAGEM). A escolha é dele, não
+ *                  do RNG: decidir onde gastar a informação É a jogada.
+ * - `INTEL_FLIP` — todas viradas para baixo, e o jogador vira/desvira quantas
+ *                  quiser (VISÃO ABSOLUTA).
+ *
+ * `SPY_PICK`/`INTEL_FLIP` existem porque "receber uma lista pronta de nomes"
+ * não se parece com espionagem — virar a carta com o próprio dedo, sim.
+ */
+export type AcknowledgementKind = 'INFO' | 'SPY_PICK' | 'INTEL_FLIP';
+
+/**
+ * Intenção visual do modal. Só cor e selo — nenhuma regra depende disto.
+ *
+ * `CPU` existe para o anúncio de jogada da máquina não usar o mesmo vermelho
+ * de "você caiu numa armadilha": são eventos de gravidade bem diferente.
+ */
+export type AcknowledgementTone = 'DANGER' | 'CPU' | 'INTEL';
+
+/**
+ * Pausa de confirmação manual — uma armadilha disparou, a CPU jogou uma carta,
+ * ou uma carta revelou informação, e o jogo espera o jogador clicar "Entendi"
+ * antes de continuar.
  *
  * Substitui um timer automático: dar um tempo fixo (ex: 1.8s) não garante que
  * o jogador realmente LEU a informação — só que ela ficou na tela por tempo
@@ -96,19 +120,41 @@ export interface LogLine {
 export interface PendingAcknowledgement {
   /** Monotônico — `key` estável na UI e evita reabrir a mesma pausa duas vezes. */
   id: number;
-  /** Selo curto no topo (ex: "SUA ARMADILHA", "ARMADILHA DO OPONENTE", "ESPIONAGEM"). */
+  kind: AcknowledgementKind;
+  tone: AcknowledgementTone;
+  /** Selo curto no topo (ex: "SUA ARMADILHA", "A CPU JOGOU", "ESPIONAGEM"). */
   subtitle: string;
-  /** Nome em destaque (o nome da carta revelada, ou um título como "MÃO DO OPONENTE"). */
+  /** Nome em destaque (o nome da carta revelada, ou um título como "MÃO DA CPU"). */
   title: string;
   /** Texto explicativo — a `description` da carta, ou uma frase sobre o que foi descoberto. */
   description: string;
   /**
-   * Cartas a listar em miniatura, além da principal já descrita em
-   * `title`/`description`. Vazio na maioria dos casos (revelação de
-   * armadilha, Espionagem); usado por Visão Absoluta, que revela a mão
-   * inteira do oponente de uma vez.
+   * Cartas envolvidas. Em `INFO` normalmente vazio (o destaque principal já
+   * está em `title`/`description`); em `SPY_PICK`/`INTEL_FLIP` é a mão que o
+   * jogador vai virar carta a carta.
    */
   revealedCards: CardId[];
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                   AVISOS                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Cor do toast: ganho do jogador, prejuízo do jogador, ou neutro. */
+export type NoticeTone = 'GOOD' | 'BAD' | 'NEUTRAL';
+
+/**
+ * Aviso efêmero exibido como toast sobre o tabuleiro.
+ *
+ * Diferente de `PendingAcknowledgement`, **não pausa o jogo** — é para fatos
+ * que o jogador precisa VER acontecer mas não precisa confirmar ("a CPU
+ * destruiu sua carta MINA"). O `id` monotônico é o que faz dois avisos de
+ * texto idêntico ainda dispararem duas animações.
+ */
+export interface Notice {
+  id: number;
+  text: string;
+  tone: NoticeTone;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -137,6 +183,29 @@ export interface GameState {
   activeRule: ChaosRule;
   /** Célula interditada enquanto `activeRule === 'BLOCKED_CELL'`. */
   blockedCell: number | null;
+
+  /**
+   * Célula lacrada pela carta TRAVAR — **independente** de `blockedCell`.
+   *
+   * Antes as duas coisas dividiam o mesmo campo, e isso era o bug: um surto
+   * de caos sorteando `RANDOM_FADE` sobrescrevia `activeRule` e a trava do
+   * jogador evaporava no meio do turno do oponente (e, no sentido inverso,
+   * jogar TRAVAR cancelava a regra caótica em vigor de graça). Campos
+   * separados fazem os dois efeitos coexistirem, cada um com sua expiração.
+   */
+  lockedCell: number | null;
+  /** Turno global em que `lockedCell` é liberada. `null` quando não há trava. */
+  lockedCellExpiresAtTurn: number | null;
+
+  /**
+   * Combatente cuja peça condenada está REVELADA pela carta VIDENTE.
+   *
+   * Guarda o dono, não o índice: a peça condenada é derivada do tabuleiro
+   * (`getOldestPieceIndex`), então guardar o índice congelaria a revelação
+   * num alvo que outra carta pode ter destruído no meio tempo. Limpo quando
+   * esse combatente joga — que é exatamente o momento previsto pela carta.
+   */
+  revealDoomedFor: Combatant | null;
 
   /**
    * Mão do jogador. Os dados da carta (nome, efeito, arte) vêm do
@@ -180,6 +249,18 @@ export interface GameState {
   machineHand: HandCard[];
 
   /**
+   * Turno global em que a máquina já gastou sua carta do turno. `null` = ainda
+   * não jogou nenhuma.
+   *
+   * Existe porque o anúncio da jogada da CPU PAUSA o jogo até o jogador
+   * confirmar: a IA aborta o turno ali e o retoma depois do "Entendi". Sem
+   * esta marca ela recomeçaria a decisão do zero e jogaria uma segunda carta
+   * no mesmo turno. Compara com `turnCount`, então se invalida sozinha — não
+   * precisa de ninguém para limpá-la.
+   */
+  machineCardTurn: number | null;
+
+  /**
    * Turno global (`turnCount`) em que a regra caótica ATUAL reverte para
    * `NORMAL`. `null` enquanto `activeRule === 'NORMAL'` — o repouso não
    * expira sozinho, só é interrompido pelo próximo surto agendado (ver
@@ -196,6 +277,10 @@ export interface GameState {
   /** Dano mais recente aplicado por `takeDamage`. Efêmero, dispara o flash vermelho de tela. */
   lastDamageEvent: { target: Combatant; amount: number; id: number } | null;
   nextDamageEventId: number;
+
+  /** Aviso mais recente. Efêmero — alimenta o toast sobre o tabuleiro. */
+  lastNotice: Notice | null;
+  nextNoticeId: number;
 
   /**
    * Partida pausada pelo menu de pause.
@@ -261,8 +346,29 @@ export const TRAP_LIMIT = 3;
 /** Linhas retidas no log de combate. Buffer circular. */
 export const LOG_LIMIT = 40;
 
-/** A cada quantos turnos globais um novo surto de caos troca a regra ativa. */
-export const CHAOS_SURGE_INTERVAL_TURNS = 4;
+/**
+ * Jogadas que compõem uma **rodada global** — uma de cada lado.
+ *
+ * `turnCount` conta MEIOS-turnos (uma unidade por peça posicionada). O jogador
+ * enxerga "turno" como a rodada completa, então tudo que é anunciado ao
+ * jogador em turnos é convertido por aqui em vez de espalhar `* 2` pelo código.
+ */
+export const TURNS_PER_GLOBAL_ROUND = 2;
+
+/**
+ * Rodadas globais completas entre um surto de caos e o próximo.
+ *
+ * Antes o terminal "acendia" a cada 2 meios-turnos — o surto numa ponta e o
+ * retorno a NORMAL na outra —, o que na prática era uma alteração de regra por
+ * rodada e fazia o caos parecer constante e sem causa. Agora só o SURTO conta
+ * como ativação (o retorno a NORMAL é uma calmaria silenciosa, ver
+ * `ChaosTerminal`), e ele acontece uma vez a cada 2 rodadas globais.
+ */
+export const CHAOS_SURGE_INTERVAL_ROUNDS = 2;
+
+/** A cada quantos meios-turnos um novo surto de caos troca a regra ativa. */
+export const CHAOS_SURGE_INTERVAL_TURNS =
+  CHAOS_SURGE_INTERVAL_ROUNDS * TURNS_PER_GLOBAL_ROUND;
 
 /** Quantos turnos globais uma regra caótica dura antes de reverter a NORMAL. */
 export const CHAOS_RULE_DURATION_TURNS = 2;
@@ -402,7 +508,9 @@ export function canPlaceAt(state: GameState, index: number): boolean {
   if (state.pendingAction !== null) return false;
   if (index < 0 || index > 8) return false;
   if (state.board[index] !== null) return false;
-  if (state.activeRule === 'BLOCKED_CELL' && state.blockedCell === index) return false;
+  // Caos (BLOCKED_CELL) e carta (TRAVAR) lacram por caminhos diferentes; aqui
+  // a distinção não importa, só o resultado.
+  if (isCellUnavailable(state, index)) return false;
   return true;
 }
 
@@ -440,6 +548,35 @@ export function isChaosRuleExpired(state: GameState): boolean {
 /** É turno de um novo surto de caos (`CHAOS_SURGE_INTERVAL_TURNS` em turnos)? */
 export function isChaosSurgeTurn(turnCount: number): boolean {
   return turnCount > 0 && turnCount % CHAOS_SURGE_INTERVAL_TURNS === 0;
+}
+
+/**
+ * A célula está lacrada pela carta TRAVAR?
+ *
+ * Separado de `BLOCKED_CELL` (regra caótica) de propósito — ver `lockedCell`
+ * em `GameState`. Quem só quer saber "dá para jogar aqui?" usa `canPlaceAt`,
+ * que consulta as duas coisas.
+ */
+export function isCellLocked(state: GameState, index: number): boolean {
+  return state.lockedCell === index;
+}
+
+/** A trava de célula da carta TRAVAR já venceu? */
+export function isLockedCellExpired(state: GameState): boolean {
+  return (
+    state.lockedCellExpiresAtTurn !== null && state.turnCount >= state.lockedCellExpiresAtTurn
+  );
+}
+
+/**
+ * A célula é interditada por QUALQUER motivo (caos ou carta)?
+ *
+ * É a pergunta que o tabuleiro e a IA realmente fazem — nenhum dos dois se
+ * importa com qual dos dois subsistemas lacrou a casa.
+ */
+export function isCellUnavailable(state: GameState, index: number): boolean {
+  if (isCellLocked(state, index)) return true;
+  return state.activeRule === 'BLOCKED_CELL' && state.blockedCell === index;
 }
 
 /** É hora de distribuir a carta automática deste turno global? */

@@ -14,6 +14,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { getCard } from '@/engine/cards/registry';
+import { RARITY_COLOR } from '@/theme/rarity';
 import { useGameStore, type CardId } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 
@@ -21,8 +22,15 @@ import { colors } from '@/theme/colors';
 /*                                  CONSTANTES                                 */
 /* -------------------------------------------------------------------------- */
 
-export const CARD_WIDTH = 84;
-export const CARD_HEIGHT = 118;
+/**
+ * Tamanho de REFERÊNCIA da carta — usado só para derivar as proporções
+ * internas (padding, fonte, art slot) a partir do `cardWidth` recebido via
+ * prop. O tamanho de fato exibido vem de `<CardHand />` (via
+ * `useResponsiveLayout`), nunca daqui: com medidas fixas a carta não encolhia
+ * em telas pequenas e a mão terminava escondida fora da área visível, que era
+ * exatamente o bug relatado.
+ */
+const REFERENCE_CARD_WIDTH = 84;
 
 /** Escala aplicada enquanto a carta está sendo arrastada. */
 const DRAG_SCALE = 0.1; // 1.0 ➜ 1.1
@@ -48,6 +56,10 @@ export interface CardItemProps {
   cardId: CardId;
   /** Posição da carta na mão. Repassada nos callbacks para manter `memo` útil. */
   index: number;
+  /** Largura da carta em dp, já resolvida para esta tela. */
+  cardWidth: number;
+  /** Altura da carta em dp, já resolvida para esta tela. */
+  cardHeight: number;
   /** Posição em X no leque, já calculada pelo `<CardHand />`. */
   baseX: number;
   /** Elevação em Y no leque (arco). */
@@ -94,6 +106,8 @@ function CardItemComponent({
   uid,
   cardId,
   index,
+  cardWidth,
+  cardHeight,
   baseX,
   baseY,
   baseRotation,
@@ -299,6 +313,14 @@ function CardItemComponent({
   });
 
   const accent = card.type === 'ACTION' ? colors.markX : colors.markO;
+  const rarityColor = RARITY_COLOR[card.rarity];
+
+  /* --- Métrica interna -----------------------------------------------------
+     Tudo escala junto com a carta a partir da MESMA razão. Calcular cada
+     medida "no olho" para telas pequenas deixaria o texto do tamanho de
+     sempre dentro de uma moldura menor — e ele estouraria a borda.           */
+  const s = cardWidth / REFERENCE_CARD_WIDTH;
+  const artSize = Math.round(cardWidth - 26 * s);
 
   return (
     <Animated.View
@@ -310,7 +332,17 @@ function CardItemComponent({
     >
       <GestureDetector gesture={gesture}>
         <Animated.View
-          style={[styles.card, !canDrag && !isSelected && styles.cardDisabled, animatedStyle]}
+          style={[
+            styles.card,
+            {
+              width: cardWidth,
+              height: cardHeight,
+              paddingHorizontal: Math.round(6 * s),
+              paddingVertical: Math.round(8 * s),
+            },
+            !canDrag && !isSelected && styles.cardDisabled,
+            animatedStyle,
+          ]}
           accessibilityRole="button"
           accessibilityState={{ selected: isSelected, disabled: !canDrag && !isSelected }}
           accessibilityLabel={`Carta ${card.name}. ${card.description}`}
@@ -324,17 +356,27 @@ function CardItemComponent({
           <View style={[styles.bevelLight, { backgroundColor: accent }]} pointerEvents="none" />
           <View style={styles.bevelShadow} pointerEvents="none" />
 
-          <Text style={[styles.type, { color: accent }]} numberOfLines={1}>
+          {/* Faixa de raridade: uma barra vertical na borda esquerda. Ocupa
+              zero espaço de layout (é absoluta) — numa carta de 60dp de largura
+              não sobra área para um rótulo escrito. */}
+          <View style={[styles.rarityBar, { backgroundColor: rarityColor }]} pointerEvents="none" />
+
+          <Text style={[styles.type, { color: accent, fontSize: Math.max(6, Math.round(7 * s)) }]} numberOfLines={1}>
             {requiresTarget ? '◎ ' : ''}
             {card.type}
           </Text>
 
-          <View style={[styles.artSlot, { borderColor: accent }]}>
+          <View style={[styles.artSlot, { borderColor: accent, width: artSize, height: artSize }]}>
             {/* TODO(fase 5): <Image source={cardSprite(card.id)} /> */}
-            <Text style={[styles.artGlyph, { color: accent }]}>{card.name.charAt(0)}</Text>
+            <Text style={[styles.artGlyph, { color: accent, fontSize: Math.round(26 * s) }]}>
+              {card.name.charAt(0)}
+            </Text>
           </View>
 
-          <Text style={styles.name} numberOfLines={2}>
+          <Text
+            style={[styles.name, { fontSize: Math.max(7, Math.round(9 * s)) }]}
+            numberOfLines={2}
+          >
             {card.name}
           </Text>
         </Animated.View>
@@ -371,13 +413,10 @@ const styles = StyleSheet.create({
   },
   card: {
     position: 'absolute',
-    width: CARD_WIDTH,
-    height: CARD_HEIGHT,
+    // width/height chegam por prop — ver `useResponsiveLayout`.
     backgroundColor: colors.bgPanel,
     borderWidth: 2,
     borderColor: colors.boardFrameShadow,
-    paddingHorizontal: 6,
-    paddingVertical: 8,
     alignItems: 'center',
     justifyContent: 'space-between',
     overflow: 'hidden',
@@ -403,25 +442,27 @@ const styles = StyleSheet.create({
     height: 3,
     backgroundColor: 'rgba(0,0,0,0.45)',
   },
+  rarityBar: {
+    position: 'absolute',
+    top: 3,
+    bottom: 3,
+    left: 0,
+    width: 3,
+  },
   type: {
-    fontSize: 7,
     letterSpacing: 2,
     fontWeight: '700',
   },
   artSlot: {
-    width: CARD_WIDTH - 26,
-    height: CARD_WIDTH - 26,
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.bgDeep,
   },
   artGlyph: {
-    fontSize: 26,
     fontWeight: '900',
   },
   name: {
-    fontSize: 9,
     letterSpacing: 1,
     fontWeight: '700',
     color: colors.text,
