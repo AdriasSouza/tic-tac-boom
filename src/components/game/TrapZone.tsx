@@ -14,6 +14,18 @@ export interface TrapZoneProps {
   /** De quem são as armadilhas exibidas. */
   owner?: Combatant;
   style?: StyleProp<ViewStyle>;
+  /**
+   * `'row'` (padrão) — legenda ao lado dos slots, empilhados na horizontal.
+   * Layout mobile: a zona ocupa a largura toda, entre o tabuleiro e a mão.
+   *
+   * `'column'` — legenda em cima, slots empilhados na vertical. Usado só no
+   * layout largo (`useResponsiveLayout().isWide`), onde a zona vira uma
+   * coluna lateral estreita ao lado do tabuleiro em vez de uma faixa
+   * horizontal — a legenda completa ("ARMADILHAS DA CPU") não cabe numa
+   * coluna de ~70dp, por isso `orientation="column"` também troca para um
+   * rótulo curto.
+   */
+  orientation?: 'row' | 'column';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -40,16 +52,23 @@ export interface TrapZoneProps {
  * Só assina as armadilhas do dono, então uma detonando não re-renderiza
  * tabuleiro nem mão.
  */
-/** Rótulo por dono. Ver o comentário do componente. */
+/** Rótulo por dono no layout empilhado (mobile) — cabe numa faixa larga. */
 const CAPTION: Record<Combatant, string> = {
   PLAYER: 'SUAS ARMADILHAS',
   MACHINE: 'ARMADILHAS DA CPU',
 };
 
-export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
+/** Rótulo por dono no layout em coluna (desktop largo) — precisa ser curto. */
+const CAPTION_SHORT: Record<Combatant, string> = {
+  PLAYER: 'VOCÊ',
+  MACHINE: 'CPU',
+};
+
+export function TrapZone({ owner = 'PLAYER', style, orientation = 'row' }: TrapZoneProps) {
   const traps = useGameStore(useMemo(() => selectTraps(owner), [owner]));
   const emptySlots = Math.max(0, TRAP_LIMIT - traps.length);
   const isPlayer = owner === 'PLAYER';
+  const isColumn = orientation === 'column';
 
   // Duas zonas empilhadas somam altura de sobra num celular baixo — elas
   // encolhem junto com o resto para o tabuleiro e a mão não perderem espaço.
@@ -57,11 +76,13 @@ export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
   const slotSize = { width: trapSlotWidth, height: trapSlotHeight };
 
   return (
-    <View style={[styles.root, style]}>
-      <View style={styles.row}>
-        <Text style={[styles.caption, isPlayer && styles.captionPlayer]}>{CAPTION[owner]}</Text>
+    <View style={[styles.root, isColumn ? styles.rootColumn : styles.rootRow, style]}>
+      <View style={[styles.content, isColumn && styles.contentColumn]}>
+        <Text style={[styles.caption, isPlayer && styles.captionPlayer, isColumn && styles.captionColumn]}>
+          {isColumn ? CAPTION_SHORT[owner] : CAPTION[owner]}
+        </Text>
 
-        <View style={styles.slots}>
+        <View style={[styles.slots, isColumn && styles.slotsColumn]}>
           {traps.map(({ uid }) => (
             <TrapBack key={uid} size={slotSize} />
           ))}
@@ -116,14 +137,30 @@ const TrapBack = memo(function TrapBack({ size }: { size: { width: number; heigh
 
 const styles = StyleSheet.create({
   root: {
-    width: '100%',
     alignItems: 'center',
-    paddingHorizontal: 16,
   },
-  row: {
+  // Mobile: faixa horizontal de largura total, entre o tabuleiro e a mão.
+  rootRow: {
+    width: '100%',
+    paddingHorizontal: 16,
+    marginVertical: 4,
+  },
+  // Desktop largo: coluna estreita ao lado do tabuleiro. `alignSelf:'stretch'`
+  // faz a zona ocupar a altura toda da fileira central (mesma altura do
+  // tabuleiro), e `justifyContent:'center'` centraliza o conteúdo nela.
+  rootColumn: {
+    alignSelf: 'stretch',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  content: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
+  },
+  contentColumn: {
+    flexDirection: 'column',
+    gap: 8,
   },
   caption: {
     color: colors.textDim,
@@ -134,8 +171,15 @@ const styles = StyleSheet.create({
   captionPlayer: {
     color: colors.markX, // mesma cor da peça do jogador — "isto é seu"
   },
+  captionColumn: {
+    textAlign: 'center',
+  },
   slots: {
     flexDirection: 'row',
+    gap: 6,
+  },
+  slotsColumn: {
+    flexDirection: 'column',
     gap: 6,
   },
   emptySlot: {

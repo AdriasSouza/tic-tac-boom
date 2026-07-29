@@ -278,6 +278,23 @@ export interface GameState {
   lastDamageEvent: { target: Combatant; amount: number; id: number } | null;
   nextDamageEventId: number;
 
+  /**
+   * Concessão de turno extra mais recente. Efêmero, com `id` monotônico —
+   * mesmo padrão de `lastDamageEvent`.
+   *
+   * Existe PORQUE reagir direto a `extraTurnPending` (o valor de controle,
+   * não um evento) é frágil: um componente que guarda "o valor anterior" numa
+   * ref para detectar a transição perde a corrida sob o double-invoke de
+   * efeitos do React em modo dev — a mesma transição pode ser "consumida"
+   * pela invocação descartada do efeito, e o timer que esconderia o banner
+   * nunca chega a ser reagendado, deixando-o preso piscando para sempre. Um
+   * `id` que só muda quando uma NOVA concessão acontece não depende de
+   * comparar com nada guardado localmente: o efeito reage à mudança de `id`,
+   * e isso sobrevive ao double-invoke porque o `id` em si não regride.
+   */
+  lastExtraTurn: { target: Combatant; id: number } | null;
+  nextExtraTurnId: number;
+
   /** Aviso mais recente. Efêmero — alimenta o toast sobre o tabuleiro. */
   lastNotice: Notice | null;
   nextNoticeId: number;

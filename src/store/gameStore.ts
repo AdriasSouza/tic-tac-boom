@@ -295,6 +295,8 @@ const createInitialState = (): GameState => ({
   ruleExpiresAtTurn: null,
   lastDamageEvent: null,
   nextDamageEventId: 0,
+  lastExtraTurn: null,
+  nextExtraTurnId: 0,
   lastNotice: null,
   nextNoticeId: 0,
   isPaused: false,
@@ -1178,6 +1180,37 @@ export const useGameStore = create<GameStore>()((set, get) => {
 });
 
 /* -------------------------------------------------------------------------- */
+/*                    ANÚNCIO EFÊMERO DE TURNO EXTRA                           */
+/* -------------------------------------------------------------------------- */
+/* `extraTurnPending` é a flag de CONTROLE (consumida por `placeMark`), não um
+   evento — várias cartas/armadilhas diferentes escrevem nela, e ela permanece
+   com o mesmo valor entre a concessão e o consumo. Um componente que tentasse
+   detectar "acabou de ser concedida" comparando com um valor anterior guardado
+   em ref ficaria vulnerável ao double-invoke de efeitos do React em dev: a
+   comparação pode ser feita pela invocação do efeito que é DESCARTADA, e a
+   invocação que sobrevive já vê "sem mudança" — o timer que esconderia o
+   banner nunca é agendado, e ele fica preso na tela piscando para sempre. Foi
+   exatamente isso que aconteceu com o `ExtraTurnBanner`.
+
+   Resolver isso AQUI, centralizado, em vez de dentro do componente: o
+   `subscribe` do Zustand entrega `(state, prevState)` a cada mudança, e essa
+   comparação não é reexecutada por nenhum efeito do React — só dispara uma
+   vez por mudança de estado real. Threading a transição por um campo efêmero
+   com `id` monotônico (mesmo padrão de `lastDamageEvent`/`lastNotice`) é o
+   que permite ao componente reagir de forma robusta, sem guardar nada
+   localmente. */
+useGameStore.subscribe((state, prevState) => {
+  if (state.extraTurnPending === null) return;
+  if (state.extraTurnPending === prevState.extraTurnPending) return;
+
+  const id = useGameStore.getState().nextExtraTurnId;
+  useGameStore.setState({
+    lastExtraTurn: { target: state.extraTurnPending, id },
+    nextExtraTurnId: id + 1,
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /*                            ADAPTADORES DE MIRA                              */
 /* -------------------------------------------------------------------------- */
 /* A engine de regras recebe a `CardDefinition` pronta, para não precisar
@@ -1227,8 +1260,13 @@ export const selectMachineHand = (s: GameStore) => s.machineHand;
 export const selectLastDamageEvent = (s: GameStore) => s.lastDamageEvent;
 /** Aviso efêmero mais recente — alimenta o toast sobre o tabuleiro. */
 export const selectLastNotice = (s: GameStore) => s.lastNotice;
-/** Quem ganhou turno extra, ou `null`. Alimenta o letreiro "TURNO EXTRA". */
-export const selectExtraTurnTarget = (s: GameStore) => s.extraTurnPending;
+/**
+ * Concessão de turno extra mais recente, com `id` monotônico. Alimenta o
+ * `<ExtraTurnBanner />` — reagir ao `id` (e não a `extraTurnPending` direto)
+ * é o que evita o banner ficar preso piscando; ver o comentário do `subscribe`
+ * logo abaixo da store.
+ */
+export const selectLastExtraTurn = (s: GameStore) => s.lastExtraTurn;
 
 /** Turnos globais restantes até a regra caótica atual expirar. `null` se não houver prazo. */
 export const selectRuleTurnsLeft = (s: GameStore) =>

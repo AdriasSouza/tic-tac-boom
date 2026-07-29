@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 
 import { FlipCard } from './FlipCard';
@@ -34,6 +34,11 @@ const TONE_COLOR: Record<AcknowledgementTone, string> = {
  * - `INFO`       — texto e um destaque grande;
  * - `SPY_PICK`   — o jogador escolhe UMA carta e vira (ESPIONAGEM);
  * - `INTEL_FLIP` — o jogador vira e desvira quantas quiser (VISÃO ABSOLUTA).
+ *
+ * Tocar em qualquer ponto fora do painel também confirma — jogador impaciente
+ * não precisa mirar no botão pequeno para avançar um aviso que já leu. Mesmo
+ * gate de `canConfirm` do botão: na Espionagem, sem ter virado uma carta
+ * ainda, o toque fora não faz nada (senão a escolha nunca aconteceria).
  */
 export function AcknowledgementModal() {
   const pending = useGameStore(selectPendingAcknowledgement);
@@ -96,6 +101,17 @@ export function AcknowledgementModal() {
         exiting={FadeOut.duration(140)}
         style={styles.backdrop}
       >
+        {/* Full-screen, DEPOIS do backdrop mas ANTES do painel na árvore: o
+            painel (renderizado a seguir) fica visualmente por cima e captura
+            os toques nos próprios botões/cartas primeiro — só a área vazia
+            ao redor cai aqui. */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={canConfirm ? acknowledge : undefined}
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+        />
+
         <Animated.View entering={ZoomIn.springify().damping(13).mass(0.8)} style={styles.holder}>
           <PixelPanel accent={accent} contentStyle={styles.panelContent}>
             <Text style={[styles.subtitle, { color: accent }]}>{pending.subtitle}</Text>

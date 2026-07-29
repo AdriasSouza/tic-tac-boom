@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { memo, useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -14,6 +15,11 @@ export interface GameHeaderProps {
  * Fica ACIMA do `<ChaosTerminal />` — o terminal já ocupa a leitura central
  * do topo da tela, então o header precisa ser baixo (uma linha) para não
  * empurrar o tabuleiro para fora da área confortável de toque.
+ *
+ * Deliberadamente o mais fino possível: numa tela mobile curta, cada dp que o
+ * header economiza aqui é um dp a mais que sobra para o tabuleiro e a mão de
+ * cartas mais abaixo na coluna — que são os elementos que o jogador de fato
+ * usa a cada jogada.
  */
 function GameHeaderComponent({ onPause }: GameHeaderProps) {
   const handlePause = useCallback(() => {
@@ -23,19 +29,20 @@ function GameHeaderComponent({ onPause }: GameHeaderProps) {
 
   return (
     <View style={styles.root}>
-      <Text style={styles.logo}>
+      <Text style={styles.logo} numberOfLines={1}>
         TIC TAC <Text style={styles.logoBoom}>BOOM</Text>
       </Text>
 
       <Pressable
         onPress={handlePause}
-        style={styles.pauseButton}
+        style={({ pressed }) => [styles.pauseButton, pressed && styles.pauseButtonPressed]}
         accessibilityRole="button"
         accessibilityLabel="Pausar partida"
-        hitSlop={8}
+        // A área de toque real é maior que a caixa visual — mantém o alvo
+        // fácil de acertar mesmo com o botão desenhado pequeno e discreto.
+        hitSlop={10}
       >
-        <View style={styles.pauseBar} />
-        <View style={styles.pauseBar} />
+        <Ionicons name="pause" size={14} color={colors.text} />
       </Pressable>
     </View>
   );
@@ -50,30 +57,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingBottom: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 2,
   },
   logo: {
     color: colors.text,
-    fontSize: 13,
+    fontSize: 11,
     fontWeight: '900',
-    letterSpacing: 2,
+    letterSpacing: 1.5,
   },
   logoBoom: {
     color: colors.markX,
   },
   pauseButton: {
-    width: 30,
-    height: 26,
+    width: 22,
+    height: 20,
     borderWidth: 2,
     borderColor: colors.textDim,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
   },
-  pauseBar: {
-    width: 3,
-    height: 12,
-    backgroundColor: colors.text,
+  pauseButtonPressed: {
+    opacity: 0.6,
   },
 });

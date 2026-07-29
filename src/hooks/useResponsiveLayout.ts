@@ -25,7 +25,22 @@ export interface ResponsiveGameLayout {
   /** Lado dos slots da zona de armadilhas. */
   trapSlotWidth: number;
   trapSlotHeight: number;
+  /**
+   * `true` em telas largas (desktop/tablet em paisagem) — o layout troca de
+   * empilhado (tudo em coluna) para as zonas de armadilha nas LATERAIS do
+   * tabuleiro, liberando altura para a mão de cartas em vez de desperdiçar a
+   * largura sobrando num monitor.
+   */
+  isWide: boolean;
 }
+
+/**
+ * Abaixo disto o layout é sempre empilhado, não importa a altura. Números
+ * redondos de breakpoint de web (tablet paisagem/desktop começam por aqui);
+ * a maioria dos celulares em retrato nunca chega perto disto mesmo diagonal
+ * grande, então não há ambiguidade prática entre "celular" e "largo".
+ */
+const WIDE_BREAKPOINT = 768;
 
 /**
  * Altura de tela onde os tamanhos "base" do jogo (carta 84×118, terminal
@@ -84,5 +99,6 @@ export function useResponsiveLayout(): ResponsiveGameLayout {
     handAreaHeight: cardHeight + Math.round(30 * scale),
     trapSlotWidth: Math.round(40 * scale),
     trapSlotHeight: Math.round(54 * scale),
+    isWide: width >= WIDE_BREAKPOINT,
   };
 }
