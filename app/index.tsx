@@ -40,9 +40,14 @@ export default function TitleScreen() {
         label="Jogar vs CPU" 
         onPress={() => router.push({ pathname: '/game/[mode]', params: { mode: 'cpu' } })} 
       />
-      <PixelButton 
-        label="Jogar Local" 
-        onPress={() => router.push({ pathname: '/game/[mode]', params: { mode: 'local' } })} 
+      <PixelButton
+        label="Jogar Local"
+        onPress={() => router.push({ pathname: '/game/[mode]', params: { mode: 'local' } })}
+      />
+      <PixelButton
+        label="Jogar Online"
+        variant="secondary"
+        onPress={() => router.push('/lobby')}
       />
       <PixelButton
         label="Como Jogar"

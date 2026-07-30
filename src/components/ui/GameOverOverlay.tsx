@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, {
   Easing,
@@ -13,13 +13,8 @@ import Animated, {
   withTiming
 } from 'react-native-reanimated';
 
-import {
-  INITIAL_HP,
-  selectMachineHp,
-  selectMatchSeed,
-  selectPlayerHp,
-  useGameStore,
-} from '@/store/gameStore';
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
+import { INITIAL_HP, selectHp, selectMatchSeed, useGameStore } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
@@ -64,13 +59,24 @@ function GameOverContent({ haptics }: { haptics: boolean }) {
   const router = useRouter();
 
   const matchWinner = useGameStore((s) => s.matchWinner);
-  const playerHp = useGameStore(selectPlayerHp);
-  const machineHp = useGameStore(selectMachineHp);
   const matchSeed = useGameStore(selectMatchSeed);
   const startMatch = useGameStore((s) => s.startMatch);
 
-  const playerWon = matchWinner === 'PLAYER';
+  /**
+   * Vitória é relativa a QUEM ESTÁ OLHANDO.
+   *
+   * Comparar com `'PLAYER'` fixo invertia o resultado inteiro para quem entra
+   * numa sala online: o convidado controla o `MACHINE`, então ganhar a
+   * partida lhe mostrava "CPU VENCEU" com a cor de derrota. É o pior lugar
+   * possível para um erro de perspectiva — é a última tela da partida.
+   */
+  const { localCombatant, remoteCombatant, isOnline } = useMatchPerspective();
+  const localHp = useGameStore(useMemo(() => selectHp(localCombatant), [localCombatant]));
+  const remoteHp = useGameStore(useMemo(() => selectHp(remoteCombatant), [remoteCombatant]));
+
+  const playerWon = matchWinner === localCombatant;
   const accent = playerWon ? colors.winGlow : colors.danger;
+  const opponentLabel = isOnline ? 'RIVAL' : 'CPU';
 
   /* --- Animações ---------------------------------------------------------- */
   const enter = useSharedValue(0); // backdrop + painel
@@ -153,7 +159,7 @@ function GameOverContent({ haptics }: { haptics: boolean }) {
           <Text style={styles.eyebrow}>FIM DE PARTIDA</Text>
 
           <Animated.Text style={[styles.title, { color: accent }, titleStyle]}>
-            {playerWon ? 'VOCÊ VENCEU' : 'CPU VENCEU'}
+            {playerWon ? 'VOCÊ VENCEU' : `${opponentLabel} VENCEU`}
           </Animated.Text>
 
           <Text style={styles.verdict}>
@@ -161,9 +167,9 @@ function GameOverContent({ haptics }: { haptics: boolean }) {
           </Text>
 
           <View style={styles.scoreRow}>
-            <ScoreColumn label="VOCÊ" hp={playerHp} tone={colors.markX} />
+            <ScoreColumn label="VOCÊ" hp={localHp} tone={colors.markX} />
             <Text style={styles.scoreSeparator}>×</Text>
-            <ScoreColumn label="CPU" hp={machineHp} tone={colors.markO} />
+            <ScoreColumn label={opponentLabel} hp={remoteHp} tone={colors.markO} />
           </View>
 
           <View style={styles.actions}>

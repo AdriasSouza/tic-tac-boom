@@ -1,34 +1,43 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
-import { selectMachineHand, useGameStore } from '@/store/gameStore';
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
+import { selectHandOf, useGameStore } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 
-export interface MachineHandZoneProps {
+export interface OpponentHandZoneProps {
   style?: StyleProp<ViewStyle>;
 }
 
 /**
- * Mostra QUANTAS cartas a CPU tem — nunca quais. Um verso genérico por
- * carta, proporcional a `machineHand.length`.
+ * Mão do OPONENTE — quantas cartas ele tem, nunca quais.
  *
- * Sem isto o jogador não tinha como saber se a CPU está prestes a armar uma
- * armadilha ou está de mãos vazias — informação que já é visível para o
- * lado do jogador (a própria mão), então escondê-la do lado da CPU deixa a
- * decisão mais opaca do que precisa ser. A IDENTIDADE das cartas continua
- * secreta (é o que ESPIONAGEM/VISÃO ABSOLUTA existem para revelar); só a
- * CONTAGEM fica pública.
+ * Um verso genérico por carta, proporcional ao tamanho da mão do combatente
+ * remoto. Sem isto o jogador não tinha como saber se o adversário está
+ * prestes a armar uma armadilha ou de mãos vazias — informação que já é
+ * visível do lado dele (a própria mão), então escondê-la do outro lado
+ * deixava a decisão mais opaca do que precisa ser. A IDENTIDADE das cartas
+ * continua secreta (é o que ESPIONAGEM/VISÃO ABSOLUTA existem para revelar);
+ * só a CONTAGEM fica pública.
+ *
+ * Lê a mão pelo combatente REMOTO da perspectiva, não por `machineHand` fixo:
+ * numa sala online quem entrou controla o `MACHINE`, e a mão inimiga dele é a
+ * do `PLAYER`. Com o literal, o convidado veria a contagem da própria mão
+ * aqui em cima e a do adversário no leque de baixo — os dois lados trocados.
  *
  * `pointerEvents="none"`: puramente informativo, nunca arrastável — a carta
  * nem pertence ao jogador para ele jogar.
  */
-export function MachineHandZone({ style }: MachineHandZoneProps) {
-  const hand = useGameStore(selectMachineHand);
+export function OpponentHandZone({ style }: OpponentHandZoneProps) {
+  const { remoteCombatant, isOnline } = useMatchPerspective();
+  const hand = useGameStore(useMemo(() => selectHandOf(remoteCombatant), [remoteCombatant]));
 
   return (
     <View style={[styles.root, style]} pointerEvents="none">
-      <Text style={styles.caption}>MÃO DA CPU · {hand.length}</Text>
+      <Text style={styles.caption}>
+        {isOnline ? 'MÃO DO OPONENTE' : 'MÃO DA CPU'} · {hand.length}
+      </Text>
       <View style={styles.row}>
         {hand.map(({ uid }) => (
           <HandBackChip key={uid} />
@@ -38,7 +47,7 @@ export function MachineHandZone({ style }: MachineHandZoneProps) {
   );
 }
 
-export default MachineHandZone;
+export default OpponentHandZone;
 
 /* -------------------------------------------------------------------------- */
 /*                                VERSO DA CARTA                               */

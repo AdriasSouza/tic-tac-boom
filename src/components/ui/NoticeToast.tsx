@@ -2,6 +2,8 @@
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeInDown, FadeOutUp } from 'react-native-reanimated';
 
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
+import { formatNotice, resolveNoticeTone } from '@/i18n/logMessages';
 import { colors } from '@/theme/colors';
 import { selectLastNotice, useGameStore, type Notice, type NoticeTone } from '@/store/gameStore';
 
@@ -31,6 +33,10 @@ const TONE_COLOR: Record<NoticeTone, string> = {
  */
 export function NoticeToast() {
   const notice = useGameStore(selectLastNotice);
+  // O aviso guardado é um FATO; o texto e a cor nascem aqui, já do ponto de
+  // vista deste aparelho — quem rouba vê verde, quem é roubado vê vermelho,
+  // a partir do mesmo evento.
+  const perspective = useMatchPerspective();
   const [visible, setVisible] = useState<Notice | null>(null);
 
   const noticeId = notice?.id ?? null;
@@ -54,7 +60,8 @@ export function NoticeToast() {
 
   if (!visible) return null;
 
-  const accent = TONE_COLOR[visible.tone];
+  const text = formatNotice(visible, perspective);
+  const accent = TONE_COLOR[resolveNoticeTone(visible, perspective, visible.tone)];
 
   return (
     <View style={styles.layer} pointerEvents="none">
@@ -68,7 +75,7 @@ export function NoticeToast() {
       >
         <View style={[styles.bevel, { backgroundColor: accent }]} />
         <Text style={[styles.text, { color: accent }]} numberOfLines={2}>
-          {visible.text}
+          {text}
         </Text>
       </Animated.View>
     </View>

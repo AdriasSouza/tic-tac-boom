@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
+import { formatLogEntry } from '@/i18n/logMessages';
 import {
   LOG_LIMIT,
   selectActiveRule,
@@ -463,6 +465,11 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
   const turnsLeft = useGameStore(selectRuleTurnsLeft);
   const terminalLog = useGameStore(selectTerminalLog);
 
+  /* O log guardado é semântico; o texto nasce AQUI, já com o ponto de vista
+     deste aparelho. É o que faz os dois jogadores lerem o mesmo histórico e
+     cada um ver "você" no lugar certo. */
+  const perspective = useMatchPerspective();
+
   /** Maior `id` já impresso. `-1` = nada impresso ainda (ou página recarregou). */
   const lastPrintedIdRef = useRef(-1);
 
@@ -522,9 +529,9 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
     post({ type: 'CLEAR' });
     if (history.length > 0) {
       lastPrintedIdRef.current = history[history.length - 1].id;
-      post({ type: 'PRINT', lines: history.map((line) => line.text) });
+      post({ type: 'PRINT', lines: history.map((line) => formatLogEntry(line, perspective)) });
     }
-  }, [post]);
+  }, [post, perspective]);
 
   /* --- Rede de segurança do handshake --------------------------------------
      O terminal só imprime depois do `READY`, e na web esse `READY` chega por
@@ -603,8 +610,8 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
     if (fresh.length === 0) return;
 
     lastPrintedIdRef.current = fresh[fresh.length - 1].id;
-    post({ type: 'PRINT', lines: fresh.map((line) => line.text) });
-  }, [terminalLog, post]);
+    post({ type: 'PRINT', lines: fresh.map((line) => formatLogEntry(line, perspective)) });
+  }, [terminalLog, post, perspective]);
 
   /* --- Transporte nativo: WebView ------------------------------------------ */
 

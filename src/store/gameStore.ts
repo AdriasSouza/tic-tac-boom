@@ -24,6 +24,7 @@ import {
   getPieceIndexes,
   getVanishingIndex,
   handKeyFor,
+  handOf,
   isAutoDrawTurn,
   isCellLocked,
   isCellUnavailable,
@@ -40,7 +41,9 @@ import {
   type Combatant,
   type GameState,
   type MatchStatus,
+  type LogPayload,
   type Notice,
+  type NoticePayload,
   type NoticeTone,
   type PendingAcknowledgement,
   type PendingAction,
@@ -51,25 +54,9 @@ import type { GameEvent } from '@/engine/events';
 /** Intervalo entre o fim da rodada e a limpeza automática do tabuleiro. */
 const ROUND_TRANSITION_DELAY_MS = 1300;
 
-/**
- * Linha de log de cada regra caótica, em PT-BR e descrevendo o EFEITO.
- *
- * O terminal é a única explicação do jogo para o que o caos acabou de fazer;
- * imprimir o identificador interno (`random_fade`) deixava o jogador vendo
- * peças sumirem sem relacionar uma coisa à outra.
- */
-const CHAOS_RULE_LOG: Record<ChaosRule, string> = {
-  NORMAL: 'SISTEMA ESTÁVEL :: o caos recuou, o tabuleiro voltou ao normal',
-  RANDOM_FADE: 'CAOS: Símbolo Aleatório Instável :: qualquer peça sua pode sumir na sua jogada',
-  BLOCKED_CELL: 'CAOS: Casa Interditada :: uma célula foi lacrada e não aceita jogadas',
-};
-
-/** Toast curto do surto de caos — o log tem a explicação longa. */
-const CHAOS_RULE_NOTICE: Record<ChaosRule, string> = {
-  NORMAL: 'SISTEMA ESTÁVEL',
-  RANDOM_FADE: 'CAOS: SÍMBOLO INSTÁVEL',
-  BLOCKED_CELL: 'CAOS: CASA INTERDITADA',
-};
+/* Os textos das regras caóticas viviam aqui e migraram para
+   `src/i18n/logMessages.ts`: o store emite `{ code: 'CHAOS_RULE', value: rule }`
+   e quem escolhe as palavras é a apresentação. */
 
 /* -------------------------------------------------------------------------- */
 /*                              DOMÍNIO (reexport)                             */
@@ -111,7 +98,7 @@ export type {
   BoardCell,
   ChaosRule,
   HandCard,
-  LogLine,
+  LogEntry,
   Mark,
   MatchStatus,
   Piece,
@@ -123,7 +110,9 @@ export type {
   CardId,
   Combatant,
   GameState,
+  LogPayload,
   Notice,
+  NoticePayload,
   NoticeTone,
   PendingAcknowledgement,
   PendingAction,
@@ -158,8 +147,12 @@ export interface GameActions {
    * Inicia uma partida nova (zera HP, tabuleiro, regra e mão) e (re)semeia o
    * RNG. Passe uma `seed` para reproduzir uma partida específica; omita para
    * sortear uma nova.
+   *
+   * `isOnline` marca que o combatente `MACHINE` é um humano em outro
+   * aparelho, e não a IA — ver a flag homônima em `GameState`. Omitir mantém
+   * o comportamento offline de sempre.
    */
-  startMatch: (seed?: number) => void;
+  startMatch: (seed?: number, isOnline?: boolean) => void;
 
   /** Limpa o tabuleiro mantendo o HP — usado entre rodadas. */
   startNextRound: () => void;
@@ -235,7 +228,13 @@ export interface GameActions {
    * assina `terminalLog` e imprime o que ainda não viu. Trocar o terminal por
    * outro widget não exige tocar em nenhuma regra de jogo.
    */
-  pushLog: (text: string) => void;
+  /**
+   * Registra um FATO no log de combate.
+   *
+   * Recebe um evento semântico, nunca uma frase pronta: o motor não conhece
+   * idioma nem sabe quem é "você". Ver `src/engine/log.ts`.
+   */
+  pushLog: (payload: LogPayload) => void;
 
   /**
    * Publica um aviso efêmero (toast) sobre o tabuleiro.
@@ -244,7 +243,7 @@ export interface GameActions {
    * terminal, o toast é o alerta que o jogador não pode deixar de ver. Fatos
    * que mudam a mão dele ("a CPU destruiu sua carta MINA") precisam dos dois.
    */
-  pushNotice: (text: string, tone?: NoticeTone) => void;
+  pushNotice: (payload: NoticePayload) => void;
 
   /**
    * Pausa ou retoma a partida.
@@ -300,6 +299,7 @@ const createInitialState = (): GameState => ({
   lastNotice: null,
   nextNoticeId: 0,
   isPaused: false,
+  isOnline: false,
   terminalLog: [],
   nextLogId: 0,
   extraTurnPending: null,
@@ -431,7 +431,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // do caminho não solte a casa antes da hora (e vice-versa).
     if (isLockedCellExpired(get())) {
       set({ lockedCell: null, lockedCellExpiresAtTurn: null });
-      get().pushLog('travar :: a casa lacrada foi liberada');
+      get().pushLog({ code: 'CELL_UNLOCKED' });
     }
 
     if (isChaosRuleExpired(get())) {
@@ -565,7 +565,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
       const remaining = state[trapsKey].filter((t) => t.uid !== trap.uid);
       set({ ...result.patch, [trapsKey]: remaining });
-      if (result.message) get().pushLog(result.message);
+      if (result.log) get().pushLog(result.log);
 
       queueAcknowledgement(
         {
@@ -625,11 +625,10 @@ export const useGameStore = create<GameStore>()((set, get) => {
         ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
       });
 
-      get().pushLog(
-        caster === 'PLAYER'
-          ? `armadilha :: você armou ${card.name.toLowerCase()}`
-          : 'armadilha :: a cpu armou uma armadilha na mesa',
-      );
+      /* O `cardId` viaja no evento mas a APRESENTAÇÃO esconde de quem não é
+         o dono — ver `TRAP_ARMED` em `log.ts`. Guardar o segredo na tradução
+         mantém um log único e correto para os dois lados. */
+      get().pushLog({ code: 'TRAP_ARMED', subject: caster, value: cardId });
 
       /* A jogada da CPU é anunciada, mas o NOME da armadilha não: revelá-lo
          destruiria a única coisa que faz uma armadilha valer o custo. O
@@ -728,7 +727,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
           roundWinner: outcome.winner,
           winningLine: outcome.line,
         });
-        get().pushLog(`rodada :: ${outcome.winner === 'PLAYER' ? 'você venceu' : 'a cpu venceu'}`);
+        get().pushLog({ code: 'ROUND_WIN', subject: outcome.winner });
         get().takeDamage(outcome.winner === 'PLAYER' ? 'MACHINE' : 'PLAYER', ROUND_DAMAGE);
         if (get().status !== 'MATCH_OVER') scheduleRoundTransition();
         return;
@@ -743,8 +742,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
           : null),
       });
 
-      if (result.message) get().pushLog(result.message);
-      if (result.notice) get().pushNotice(result.notice.text, result.notice.tone);
+      if (result.log) get().pushLog(result.log);
+      if (result.notice) get().pushNotice(result.notice);
       if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
       if (result.heal) get().healTarget(result.heal.target, result.heal.amount);
       if (result.draw) drawCardsFor(result.draw.target, result.draw.count);
@@ -841,7 +840,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
       // Quem perdeu a rodada leva dano. takeDamage cuida do fim de partida.
       const loser: Combatant = result.winner === 'PLAYER' ? 'MACHINE' : 'PLAYER';
-      get().pushLog(`rodada :: ${result.winner === 'PLAYER' ? 'você venceu' : 'cpu venceu'}`);
+      get().pushLog({ code: 'ROUND_WIN', subject: result.winner });
       get().takeDamage(loser, ROUND_DAMAGE);
 
       tickGlobalClock(nextTurnCount);
@@ -873,6 +872,13 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // usou a carta — antes de mostrar o que prometeu.
       ...(state.revealDoomedFor === owner ? { revealDoomedFor: null } : null),
     });
+
+    /* Toda jogada de tabuleiro entra no log, de QUALQUER combatente.
+       Antes só a CPU registrava a própria jogada (no hook da IA, já formatada
+       em texto), então numa partida online — onde a IA está desligada — o
+       terminal não registrava jogada nenhuma. Emitir daqui cobre os dois
+       lados e os três modos com um caminho só. */
+    get().pushLog({ code: 'MOVE_PLACED', subject: owner, value: index });
 
     /* --- 5. Barramento ------------------------------------------------------
        Publicado DEPOIS do set: quando a armadilha avalia `triggerCondition`,
@@ -933,7 +939,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // Descreve o que a regra FAZ, não o nome interno dela: "regra ::
     // random_fade" não explicava nada a quem está jogando, e o efeito (uma
     // peça sumindo) chegava sem aviso reconhecível.
-    if (state.activeRule !== rule) get().pushLog(CHAOS_RULE_LOG[rule]);
+    if (state.activeRule !== rule) get().pushLog({ code: 'CHAOS_RULE', value: rule });
 
     set({
       activeRule: rule,
@@ -950,7 +956,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     });
   },
 
-  startMatch: (seed) => {
+  startMatch: (seed, isOnline = false) => {
     // Semear ANTES de montar o estado: createInitialState lê a seed efetiva.
     const usedSeed = seedMatch(seed);
     resetEventBus(); // eventos da partida anterior não vazam para a nova
@@ -970,7 +976,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
      * voltando a `null` (foi o caso do `<ExtraTurnBanner />`/`<NoticeToast />`,
      * corrigidos separadamente).
      */
-    set({ ...createInitialState(), matchSeed: usedSeed, status: 'PLAYING' });
+    set({ ...createInitialState(), matchSeed: usedSeed, status: 'PLAYING', isOnline });
 
     // Mão inicial dos dois lados — autocontido aqui para que NENHUMA tela
     // precise lembrar de chamar `drawCard` depois de iniciar a partida.
@@ -1034,7 +1040,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // Toast além do log: o surto muda as regras do tabuleiro no meio da
     // partida — é o tipo de evento que não pode depender do jogador estar
     // olhando para o terminal na hora certa.
-    get().pushNotice(CHAOS_RULE_NOTICE[resolved], 'NEUTRAL');
+    get().pushNotice({ code: 'CHAOS_RULE', value: resolved, tone: 'NEUTRAL' });
   },
 
   drawCard: (count = 1) => drawCardsFor('PLAYER', count),
@@ -1051,16 +1057,27 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // `PLAYING` deixaria o tabuleiro num modo mira que nenhuma jogada real
     // resolveria — revisado e confirmado como o portão de entrada correto.
     if (state.status !== 'PLAYING') return false;
-    if (state.turn !== 'PLAYER') return false;
 
-    const entry = state.playerHand.find((c) => c.uid === action.uid);
+    /**
+     * O caster é quem tem a VEZ, não `'PLAYER'` fixo.
+     *
+     * A mira só pode ser armada por quem está jogando, então `state.turn` já
+     * é a resposta — e derivar dele em vez de assumir `'PLAYER'` é o que faz
+     * a função valer para os dois lados. Com o literal, quem controla o
+     * `MACHINE` (o convidado numa sala online, ou o segundo jogador no modo
+     * local) nunca conseguia armar uma carta de alvo: a guarda recusava
+     * antes mesmo de olhar a mão dele.
+     */
+    const caster = state.turn;
+
+    const entry = handOf(state, caster).find((c) => c.uid === action.uid);
     if (!entry || entry.cardId !== action.cardId) return false;
 
     const card = getCard(entry.cardId);
     if (!card.requiresTarget) return false; // carta sem mira não arma nada
     if (
       card.canPlay &&
-      !card.canPlay({ state, caster: 'PLAYER', uid: action.uid, targetIndex: undefined })
+      !card.canPlay({ state, caster, uid: action.uid, targetIndex: undefined })
     ) {
       return false;
     }
@@ -1068,7 +1085,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // Sem alvo legal no tabuleiro, armar a mira travaria o jogador num modo
     // do qual só o botão de cancelar sairia.
     const hasAnyTarget = state.board.some((_, index) =>
-      isValidTargetFor(state, entry.cardId, index),
+      isValidTargetFor(state, entry.cardId, index, caster),
     );
     if (!hasAnyTarget) return false;
 
@@ -1080,20 +1097,20 @@ export const useGameStore = create<GameStore>()((set, get) => {
     if (get().pendingAction !== null) set({ pendingAction: null });
   },
 
-  pushLog: (text) =>
+  pushLog: (payload) =>
     set((state) => {
-      const log = [...state.terminalLog, { id: state.nextLogId, text }];
+      const log = [...state.terminalLog, { ...payload, id: state.nextLogId }];
       // Buffer circular: descarta as mais antigas em vez de crescer sem fim.
       if (log.length > LOG_LIMIT) log.splice(0, log.length - LOG_LIMIT);
       return { terminalLog: log, nextLogId: state.nextLogId + 1 };
     }),
 
-  pushNotice: (text, tone = 'NEUTRAL') =>
+  pushNotice: ({ tone = 'NEUTRAL', ...payload }) =>
     set((state) => ({
-      // `id` monotônico pela mesma razão de `lastDamageEvent`: dois avisos de
-      // texto idêntico em sequência ainda precisam disparar duas animações, e
-      // quem compara por referência não veria diferença sem ele.
-      lastNotice: { id: state.nextNoticeId, text, tone },
+      // `id` monotônico pela mesma razão de `lastDamageEvent`: dois avisos
+      // idênticos em sequência ainda precisam disparar duas animações, e quem
+      // compara por referência não veria diferença sem ele.
+      lastNotice: { ...payload, id: state.nextNoticeId, tone },
       nextNoticeId: state.nextNoticeId + 1,
     })),
 
@@ -1166,8 +1183,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
               // tem por que mexer no relógio global.
               const { turnCount: _clockIsNotTrapBusiness, ...trapPatch } = result.patch ?? {};
               set({ ...trapPatch });
-              if (result.message) get().pushLog(result.message);
-              if (result.notice) get().pushNotice(result.notice.text, result.notice.tone);
+              if (result.log) get().pushLog(result.log);
+              if (result.notice) get().pushNotice(result.notice);
               // Dano passa por takeDamage: clamp em 0, fim de partida e a
               // animação do HUD vivem lá, num lugar só.
               if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
@@ -1260,7 +1277,10 @@ export function isValidTargetFor(
 export function isPendingTarget(state: GameState, index: number): boolean {
   const pending = state.pendingAction;
   if (!pending) return false;
-  return isValidTargetFor(state, pending.cardId, index);
+  // O caster é quem tem a vez — mesma razão de `setPendingAction`. Cartas
+  // cujo alvo válido depende de quem joga (DEMOLIR, TRAVAR) destacariam as
+  // células erradas no tabuleiro do convidado se isto assumisse `'PLAYER'`.
+  return isValidTargetFor(state, pending.cardId, index, state.turn);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1275,6 +1295,16 @@ export const selectTurnCount = (s: GameStore) => s.turnCount;
 export const selectStatus = (s: GameStore) => s.status;
 export const selectActiveRule = (s: GameStore) => s.activeRule;
 export const selectPlayerHand = (s: GameStore) => s.playerHand;
+
+/**
+ * Mão de um combatente específico.
+ *
+ * Referência estável enquanto aquela mão não muda — é o que permite a
+ * `<CardHand />` assinar a mão do combatente LOCAL (que no online pode ser o
+ * `MACHINE`) sem re-renderizar quando a do oponente muda.
+ */
+export const selectHandOf = (combatant: Combatant) => (s: GameStore) =>
+  combatant === 'PLAYER' ? s.playerHand : s.machineHand;
 export const selectExtraTurnPending = (s: GameStore) => s.extraTurnPending;
 export const selectPendingAction = (s: GameStore) => s.pendingAction;
 export const selectPlayerTraps = (s: GameStore) => s.playerTraps;
@@ -1329,25 +1359,30 @@ export const selectCanPlayCards = (s: GameStore) =>
   s.status === 'PLAYING' && s.turn === 'PLAYER';
 
 /**
- * A carta `uid` (mão do Player) pode ser usada/armada agora?
+ * A carta `uid` (mão de quem tem a vez) pode ser usada/armada agora?
  *
  * Alimenta o botão "Usar"/"Armar" do modo foco: cobre os mesmos gates de
  * `resolveCardPlay` (turno, fase, pausa, revelação em curso) mais o
  * `canPlay` específico da carta (ex: CURAR com HP já cheio) e, para TRAPs,
  * se ainda há espaço na mesa. Não substitui as guardas do store — é só a
  * UI antecipando se `playCard` vai aceitar, para desabilitar o botão.
+ *
+ * Assim como `setPendingAction`, o caster é `s.turn` e não `'PLAYER'`: quem
+ * controla o `MACHINE` teria todas as cartas permanentemente desabilitadas no
+ * modo foco.
  */
 export const selectCanUseCard = (uid: string) => (s: GameStore): boolean => {
-  if (s.status !== 'PLAYING' || s.turn !== 'PLAYER') return false;
+  if (s.status !== 'PLAYING') return false;
   if (s.isPaused || s.pendingAcknowledgement !== null) return false;
 
-  const entry = s.playerHand.find((c) => c.uid === uid);
+  const caster = s.turn;
+  const entry = handOf(s, caster).find((c) => c.uid === uid);
   if (!entry) return false;
 
   const card = getCard(entry.cardId);
-  if (card.type === 'TRAP') return s.playerTraps.length < TRAP_LIMIT;
+  if (card.type === 'TRAP') return s[trapsKeyFor(caster)].length < TRAP_LIMIT;
 
-  return !card.canPlay || card.canPlay({ state: s, caster: 'PLAYER', uid, targetIndex: undefined });
+  return !card.canPlay || card.canPlay({ state: s, caster, uid, targetIndex: undefined });
 };
 export const selectPlayerHp = (s: GameStore) => s.playerHp;
 export const selectMachineHp = (s: GameStore) => s.machineHp;

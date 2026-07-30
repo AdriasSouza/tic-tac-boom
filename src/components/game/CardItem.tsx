@@ -14,6 +14,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { getCard } from '@/engine/cards/registry';
+import { netPlayCard } from '@/services/syncBridge';
 import { RARITY_COLOR } from '@/theme/rarity';
 import { useGameStore, type CardId } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
@@ -174,7 +175,10 @@ function CardItemComponent({
 
   /** Carta **sem** mira: resolve na hora. */
   const commitPlay = useCallback(() => {
-    const played = useGameStore.getState().playCard(uid, undefined);
+    // Facade da ponte: replica para o oponente no modo online e escolhe entre
+    // `playCard`/`playMachineCard` conforme o combatente local. Fora do
+    // online é um repasse puro para o store.
+    const played = netPlayCard(uid, undefined);
 
     if (played) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);

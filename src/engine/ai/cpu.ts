@@ -373,20 +373,3 @@ export async function playCPUTurn(
   actions.placeMark(decision.index);
   return decision;
 }
-
-/* -------------------------------------------------------------------------- */
-/*                                   FORMATO                                   */
-/* -------------------------------------------------------------------------- */
-
-const REASON_LABEL: Record<CpuReason, string> = {
-  WIN: 'fecha linha',
-  BLOCK: 'bloqueia',
-  POSITIONAL: 'avança',
-};
-
-/** Linha de log legível para o ChaosTerminal. */
-export function describeCpuMove({ index, reason }: CpuDecision): string {
-  const row = Math.floor(index / 3) + 1;
-  const col = (index % 3) + 1;
-  return `cpu :: ${REASON_LABEL[reason]} em ${row}x${col}`;
-}

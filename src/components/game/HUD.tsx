@@ -14,6 +14,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import {
   INITIAL_HP,
   selectMachineHp,
@@ -47,8 +48,9 @@ const BLOCK_GAP = 4;
 
 export interface HUDProps {
   style?: StyleProp<ViewStyle>;
-  /** Rótulos dos combatentes. */
+  /** Rótulo do lado local. */
   playerLabel?: string;
+  /** Rótulo do adversário. Omitido, vira "CPU" offline e "RIVAL" no online. */
   machineLabel?: string;
   hapticsEnabled?: boolean;
 }
@@ -67,11 +69,18 @@ export interface HUDProps {
 export function HUD({
   style,
   playerLabel = 'VOCÊ',
-  machineLabel = 'CPU',
+  machineLabel,
   hapticsEnabled = true,
 }: HUDProps) {
   const turn = useGameStore(selectTurn);
   const status = useGameStore(selectStatus);
+
+  /* O lado esquerdo (vermelho) é sempre QUEM ESTÁ SEGURANDO O APARELHO, e o
+     direito (azul) sempre o adversário — mesmo numa sala online, onde o
+     jogador local pode ser o combatente `MACHINE`. Fixar `target="PLAYER"` à
+     esquerda mostraria ao convidado a vida do oponente no próprio lado. */
+  const { localCombatant, remoteCombatant, isOnline } = useMatchPerspective();
+  const opponentLabel = machineLabel ?? (isOnline ? 'RIVAL' : 'CPU');
 
   const isLive = status === 'PLAYING';
 
@@ -84,22 +93,26 @@ export function HUD({
 
         <View style={styles.row}>
           <HpTracker
-            target="PLAYER"
+            target={localCombatant}
             label={playerLabel}
             accent={colors.markX}
             align="left"
-            isActive={isLive && turn === 'PLAYER'}
+            isActive={isLive && turn === localCombatant}
             hapticsEnabled={hapticsEnabled}
           />
 
-          <TurnBadge turn={turn} isLive={isLive} />
+          <TurnBadge
+            isLocalTurn={turn === localCombatant}
+            isLive={isLive}
+            opponentLabel={opponentLabel}
+          />
 
           <HpTracker
-            target="MACHINE"
-            label={machineLabel}
+            target={remoteCombatant}
+            label={opponentLabel}
             accent={colors.markO}
             align="right"
-            isActive={isLive && turn === 'MACHINE'}
+            isActive={isLive && turn === remoteCombatant}
             hapticsEnabled={hapticsEnabled}
           />
         </View>
@@ -306,13 +319,20 @@ const TurnMarker = memo(function TurnMarker({
   return <Animated.View style={[styles.turnMarker, { backgroundColor: color }, style]} />;
 });
 
-/** Rótulo central de quem joga agora. */
+/**
+ * Rótulo central de quem joga agora.
+ *
+ * Recebe `isLocalTurn` já resolvido em vez do `Combatant` cru: a decisão
+ * "isto sou eu?" pertence à perspectiva, e o badge só precisa do resultado.
+ */
 const TurnBadge = memo(function TurnBadge({
-  turn,
+  isLocalTurn,
   isLive,
+  opponentLabel,
 }: {
-  turn: Combatant;
+  isLocalTurn: boolean;
   isLive: boolean;
+  opponentLabel: string;
 }) {
   const fade = useSharedValue(1);
 
@@ -321,7 +341,7 @@ const TurnBadge = memo(function TurnBadge({
     fade.value = 0;
     fade.value = withTiming(1, { duration: 220, easing: Easing.out(Easing.quad) });
     return () => cancelAnimation(fade);
-  }, [turn, fade]);
+  }, [isLocalTurn, fade]);
 
   const style = useAnimatedStyle(() => ({
     opacity: fade.value,
@@ -334,12 +354,12 @@ const TurnBadge = memo(function TurnBadge({
       <Animated.Text
         style={[
           styles.turnBadgeValue,
-          { color: turn === 'PLAYER' ? colors.markX : colors.markO },
+          { color: isLocalTurn ? colors.markX : colors.markO },
           style,
         ]}
         numberOfLines={1}
       >
-        {!isLive ? '--' : turn === 'PLAYER' ? 'VOCÊ' : 'CPU'}
+        {!isLive ? '--' : isLocalTurn ? 'VOCÊ' : opponentLabel}
       </Animated.Text>
     </View>
   );

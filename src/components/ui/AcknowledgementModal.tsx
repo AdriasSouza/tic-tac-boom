@@ -6,11 +6,13 @@ import { FlipCard } from './FlipCard';
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
 import { colors } from '@/theme/colors';
+import { canLocalAcknowledge, netAcknowledge } from '@/services/syncBridge';
 import {
   selectPendingAcknowledgement,
   useGameStore,
   type AcknowledgementTone,
 } from '@/store/gameStore';
+import { selectMultiplayerStatus, useMultiplayerStore } from '@/store/multiplayerStore';
 
 /** Cor de destaque por intenção do aviso. */
 const TONE_COLOR: Record<AcknowledgementTone, string> = {
@@ -42,7 +44,31 @@ const TONE_COLOR: Record<AcknowledgementTone, string> = {
  */
 export function AcknowledgementModal() {
   const pending = useGameStore(selectPendingAcknowledgement);
-  const acknowledge = useGameStore((s) => s.acknowledgePending);
+
+  /* --- Padrão de autoridade -------------------------------------------------
+     Só UM cliente publica o `ACKNOWLEDGE`: o autor da ação que criou esta
+     pausa (ver `getAcknowledgementAuthority`). Se os dois publicassem, a fila
+     seria consumida duas vezes e uma revelação inteira sumiria da tela sem
+     ninguém ver.
+
+     O cliente sem autoridade não fica travado: quando o `ACKNOWLEDGE` do
+     outro chega pela rede, a ponte chama `acknowledgePending()` aqui também,
+     `pendingAcknowledgement` vira `null` e este componente desmonta sozinho —
+     sem nenhuma interação local. É por isso que a leitura de `pending` já é a
+     única condição de exibição: a "trava de estado global" liberar É o
+     fechamento do modal.                                                    */
+  const isOnline = useMultiplayerStore(selectMultiplayerStatus) === 'MATCH_STARTED';
+
+  // Recalculado a cada render em vez de assinado: a autoridade deriva do log
+  // de ações (estado de módulo da ponte), e o que dispara o re-render é a
+  // própria chegada de `pending`. Assinar exigiria espelhar o log num store.
+  const hasAuthority = canLocalAcknowledge();
+
+  const acknowledge = useCallback(() => {
+    // `netAcknowledge` aplica localmente E replica — e ele mesmo recusa
+    // publicar se este cliente não for a autoridade.
+    netAcknowledge();
+  }, []);
 
   /**
    * Índices já virados. Estado LOCAL: virar uma carta não muda nada na
@@ -82,7 +108,16 @@ export function AcknowledgementModal() {
   const hasCards = pending.revealedCards.length > 0;
   // Na Espionagem o botão só libera depois da escolha: confirmar sem virar
   // nada desperdiçaria a carta em silêncio.
-  const canConfirm = !isSpyPick || flipped.length > 0;
+  const hasFlippedIfRequired = !isSpyPick || flipped.length > 0;
+  // No online, quem não tem autoridade não confirma nada — só lê e espera o
+  // outro liberar. Fora do online `hasAuthority` é sempre `true`.
+  const canConfirm = hasFlippedIfRequired && hasAuthority;
+
+  const buttonLabel = !hasAuthority
+    ? 'AGUARDANDO O OPONENTE'
+    : hasFlippedIfRequired
+      ? 'ENTENDI'
+      : 'ESCOLHA UMA CARTA';
 
   return (
     <Modal
@@ -153,12 +188,21 @@ export function AcknowledgementModal() {
             )}
 
             <PixelButton
-              label={canConfirm ? 'ENTENDI' : 'ESCOLHA UMA CARTA'}
+              label={buttonLabel}
               onPress={acknowledge}
               disabled={!canConfirm}
               accent={accent}
               style={styles.button}
             />
+
+            {/* Sem isto, quem não tem autoridade veria só um botão desabilitado
+                e concluiria que o jogo travou. O aviso transforma a espera em
+                informação. */}
+            {isOnline && !hasAuthority && (
+              <Text style={styles.waitHint}>
+                O oponente precisa confirmar para a partida continuar.
+              </Text>
+            )}
           </PixelPanel>
         </Animated.View>
       </Animated.View>
@@ -244,5 +288,12 @@ const styles = StyleSheet.create({
   button: {
     alignSelf: 'stretch',
     marginTop: 18,
+  },
+  waitHint: {
+    marginTop: 8,
+    color: colors.textDim,
+    fontSize: 9,
+    letterSpacing: 1,
+    textAlign: 'center',
   },
 });

@@ -1,5 +1,8 @@
 import { getChannel } from '@/engine/rng';
 import type { CardDefinition, CardId } from '@/engine/cards/definitions';
+// Type-only, como em `definitions.ts`: `log.ts` importa `Combatant` daqui, e
+// o TypeScript apaga as duas linhas na compilação — não sobra ciclo em runtime.
+import type { LogEntry, Notice } from './log';
 
 /**
  * Modelo de domínio do Tic Tac Boom.
@@ -79,10 +82,17 @@ export type PendingAction = {
  * viu — comparar conteúdo falharia com mensagens repetidas legítimas
  * ("demolir :: célula 4" duas vezes seguidas).
  */
-export interface LogLine {
-  id: number;
-  text: string;
-}
+/* O log de combate é semântico: o motor emite FATOS, não frases. Os tipos
+   vivem em `./log` e são reexportados aqui por conveniência de quem já
+   importa tudo de `rules`. Ver `LogCode` para o porquê da separação. */
+export type {
+  LogCode,
+  LogEntry,
+  LogPayload,
+  Notice,
+  NoticePayload,
+  NoticeTone,
+} from './log';
 
 /**
  * Como o modal de confirmação APRESENTA a informação.
@@ -136,26 +146,8 @@ export interface PendingAcknowledgement {
   revealedCards: CardId[];
 }
 
-/* -------------------------------------------------------------------------- */
-/*                                   AVISOS                                    */
-/* -------------------------------------------------------------------------- */
-
-/** Cor do toast: ganho do jogador, prejuízo do jogador, ou neutro. */
-export type NoticeTone = 'GOOD' | 'BAD' | 'NEUTRAL';
-
-/**
- * Aviso efêmero exibido como toast sobre o tabuleiro.
- *
- * Diferente de `PendingAcknowledgement`, **não pausa o jogo** — é para fatos
- * que o jogador precisa VER acontecer mas não precisa confirmar ("a CPU
- * destruiu sua carta MINA"). O `id` monotônico é o que faz dois avisos de
- * texto idêntico ainda dispararem duas animações.
- */
-export interface Notice {
-  id: number;
-  text: string;
-  tone: NoticeTone;
-}
+/* Os avisos efêmeros (toasts) seguem o mesmo modelo semântico do log e vivem
+   em `./log`, reexportados no topo deste arquivo. */
 
 /* -------------------------------------------------------------------------- */
 /*                                   ESTADO                                    */
@@ -308,13 +300,29 @@ export interface GameState {
   isPaused: boolean;
 
   /**
+   * Esta partida tem um humano do outro lado da rede?
+   *
+   * **Não é estado de rede** — a engine continua sem saber o que é Firebase,
+   * sala ou latência. É um fato sobre a PARTIDA que muda uma regra de
+   * domínio: se o combatente `MACHINE` é a IA ou uma pessoa.
+   *
+   * Existe porque o resto do motor tratava `MACHINE` como sinônimo de "a
+   * inteligência artificial", e cartas de informação (ESPIONAGEM, VISÃO
+   * ABSOLUTA) pulavam o modal quando a IA as jogava — ela não precisa ler
+   * nada na tela. No online esse atalho é falso: `MACHINE` é um humano que
+   * PRECISA do modal. Com esta flag a distinção fica explícita no lugar de
+   * ficar implícita numa suposição que só valia enquanto o jogo era offline.
+   */
+  isOnline: boolean;
+
+  /**
    * Log de combate — buffer circular de `LOG_LIMIT` linhas.
    *
    * Mora no estado, e não direto na WebView, para sobreviver a recarregamento
    * da página: quando o renderer do Android reinicia, o terminal reimprime o
    * histórico em vez de aparecer vazio.
    */
-  terminalLog: LogLine[];
+  terminalLog: LogEntry[];
   nextLogId: number;
 
   /**

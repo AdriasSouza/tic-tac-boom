@@ -8,8 +8,8 @@ import type {
   AcknowledgementTone,
   Combatant,
   GameState,
-  NoticeTone,
 } from '@/engine/rules';
+import type { LogPayload, NoticePayload } from '@/engine/log';
 
 /* -------------------------------------------------------------------------- */
 /*                                    TIPOS                                    */
@@ -165,8 +165,15 @@ export interface CardEffectResult {
   cancelsAction?: boolean;
   /** `true` faz a carta gastar o turno do jogador. Padrão: `false`. */
   consumesTurn?: boolean;
-  /** Linha a imprimir no ChaosTerminal. */
-  message?: string;
+  /**
+   * Fato a registrar no log de combate.
+   *
+   * Um EVENTO, não uma frase: a carta descreve o que aconteceu em termos
+   * absolutos (`{ code: 'CARD_HEAL', subject: caster }`) e quem escolhe as
+   * palavras — inclusive se o `subject` vira "você" ou "o oponente" — é a
+   * camada de apresentação. Ver `src/engine/log.ts`.
+   */
+  log?: LogPayload;
   /**
    * Pausa o jogo com um modal de confirmação ("Entendi") mostrando esta
    * informação, antes do jogador poder agir de novo.
@@ -189,16 +196,14 @@ export interface CardEffectResult {
   };
   /**
    * Toast efêmero sobre o tabuleiro. **Não pausa o jogo** — é para o jogador
-   * VER um fato que o afeta sem ter que ler o log do terminal ("A CPU
-   * DESTRUIU SUA CARTA: MINA").
+   * VER um fato que o afeta sem ter que ler o log do terminal.
    *
-   * Separado de `message` (que vai para o histórico do terminal) porque as
-   * duas coisas têm públicos diferentes: o log é consulta, o toast é alerta.
+   * Separado de `log` (que vai para o histórico do terminal) porque as duas
+   * coisas têm públicos diferentes: o log é consulta, o toast é alerta. Mas
+   * compartilham o mesmo vocabulário de `LogCode`, então os dois nunca podem
+   * discordar sobre o que aconteceu — só sobre quanto texto usar para dizê-lo.
    */
-  notice?: {
-    text: string;
-    tone?: NoticeTone;
-  };
+  notice?: NoticePayload;
 }
 
 /** Retornar `null` significa "jogada inválida" — a carta volta para a mão. */

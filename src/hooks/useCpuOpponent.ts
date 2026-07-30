@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 
-import { describeCpuMove, playCPUTurn, type CpuSignal } from '@/engine/ai/cpu';
+import { playCPUTurn, type CpuSignal } from '@/engine/ai/cpu';
+import { isOnlineMatch } from '@/services/syncBridge';
+import { selectMultiplayerStatus, useMultiplayerStore } from '@/store/multiplayerStore';
 import {
   selectHasPendingAcknowledgement,
   selectIsPaused,
@@ -36,6 +38,10 @@ export function useCpuOpponent({
   const status = useGameStore(selectStatus);
   const isPaused = useGameStore(selectIsPaused);
   const hasPendingAcknowledgement = useGameStore(selectHasPendingAcknowledgement);
+  // Só o status da rede é assinado (não a sala inteira): é o mínimo para o
+  // efeito reavaliar quando a partida vira online, sem re-render a cada ação
+  // que chega pelo listener.
+  const multiplayerStatus = useMultiplayerStore(selectMultiplayerStatus);
 
   /**
    * `turnCount` é o gatilho, não `turn`.
@@ -49,6 +55,20 @@ export function useCpuOpponent({
 
   useEffect(() => {
     if (!enabled) return;
+
+    /* --- Fantasma desligado no online --------------------------------------
+       Numa partida online o lado `MACHINE` é um HUMANO no outro aparelho, não
+       a IA. Sem esta guarda os dois clientes rodariam a CPU em paralelo, cada
+       um jogando pelo oponente do outro — e como a IA é determinística pela
+       seed, ambos produziriam a MESMA jogada fantasma, que então chegaria
+       duplicada pela rede. O resultado seria um tabuleiro se preenchendo
+       sozinho, sem ninguém tocar em nada.
+
+       Leitura imperativa (e `selectMultiplayerStatus` nas dependências abaixo
+       para reavaliar): o hook da CPU não deve assinar o store de rede a ponto
+       de re-renderizar a tela de jogo a cada evento de conexão. */
+    if (isOnlineMatch()) return;
+
     if (isPaused) return; // pausado: nem inicia um novo "pensamento"
     if (hasPendingAcknowledgement) return; // confirmação manual pendente: espera o jogador clicar "Entendi"
     if (status !== 'PLAYING' || turn !== 'MACHINE') return;
@@ -70,10 +90,10 @@ export function useCpuOpponent({
         maxDelay,
         positionalBias,
       },
-    ).then((decision) => {
-      if (!decision || signal.cancelled) return;
-      useGameStore.getState().pushLog(describeCpuMove(decision));
-    });
+    );
+    // A jogada em si já é registrada pelo `placeMark` (evento `MOVE_PLACED`),
+    // para os dois combatentes e nos três modos — não há mais nada a logar
+    // aqui, e o motivo da escolha da IA era ruído de depuração no terminal.
 
     // Ao pausar, o cleanup cancela o "pensamento" em andamento. Como
     // `isPaused` está nas dependências, despausar reexecuta o efeito e a CPU
@@ -89,6 +109,7 @@ export function useCpuOpponent({
     status,
     isPaused,
     hasPendingAcknowledgement,
+    multiplayerStatus,
     minDelay,
     maxDelay,
     positionalBias,

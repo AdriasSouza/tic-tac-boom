@@ -12,6 +12,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { colors } from '@/theme/colors';
 import { selectLastExtraTurn, useGameStore, type Combatant } from '@/store/gameStore';
 
@@ -21,18 +22,30 @@ const VISIBLE_MS = 1600;
 /** Meio ciclo do pisca-pisca. */
 const BLINK_MS = 220;
 
-const LABEL: Record<Combatant, { title: string; caption: string; accent: string }> = {
-  PLAYER: {
-    title: 'TURNO EXTRA',
-    caption: 'SUA PRÓXIMA JOGADA NÃO PASSA A VEZ',
-    accent: colors.winGlow,
-  },
-  MACHINE: {
-    title: 'TURNO EXTRA DA CPU',
-    caption: 'A CPU JOGA DUAS VEZES SEGUIDAS',
+/**
+ * Rótulo por ALIANÇA, não por combatente absoluto.
+ *
+ * O que muda a mensagem é "o turno extra é meu ou dele?" — e num jogo online
+ * quem entrou na sala controla o `MACHINE`, então mapear pelo combatente
+ * anunciaria "TURNO EXTRA DA CPU", em vermelho de ameaça, justamente quando o
+ * convidado acabasse de GANHAR a jogada dupla.
+ */
+function labelFor(isLocal: boolean, isOnline: boolean) {
+  if (isLocal) {
+    return {
+      title: 'TURNO EXTRA',
+      caption: 'SUA PRÓXIMA JOGADA NÃO PASSA A VEZ',
+      accent: colors.winGlow,
+    };
+  }
+
+  const opponent = isOnline ? 'O RIVAL' : 'A CPU';
+  return {
+    title: `TURNO EXTRA D${isOnline ? 'O RIVAL' : 'A CPU'}`,
+    caption: `${opponent} JOGA DUAS VEZES SEGUIDAS`,
     accent: colors.danger,
-  },
-};
+  };
+}
 
 type LastExtraTurn = { target: Combatant; id: number };
 
@@ -55,6 +68,7 @@ type LastExtraTurn = { target: Combatant; id: number };
  */
 export function ExtraTurnBanner() {
   const lastExtraTurn = useGameStore(selectLastExtraTurn);
+  const { localCombatant, isOnline } = useMatchPerspective();
   const [visible, setVisible] = useState<LastExtraTurn | null>(null);
 
   const extraTurnId = lastExtraTurn?.id ?? null;
@@ -73,7 +87,7 @@ export function ExtraTurnBanner() {
     setVisible(lastExtraTurn);
 
     void Haptics.notificationAsync(
-      lastExtraTurn.target === 'PLAYER'
+      lastExtraTurn.target === localCombatant
         ? Haptics.NotificationFeedbackType.Success
         : Haptics.NotificationFeedbackType.Warning,
     );
@@ -83,7 +97,7 @@ export function ExtraTurnBanner() {
     // do zero para o novo em vez de herdar o tempo restante do anterior.
     const timer = setTimeout(() => setVisible(null), VISIBLE_MS);
     return () => clearTimeout(timer);
-  }, [extraTurnId, lastExtraTurn]);
+  }, [extraTurnId, lastExtraTurn, localCombatant]);
 
   const blink = useSharedValue(1);
 
@@ -104,7 +118,7 @@ export function ExtraTurnBanner() {
 
   if (!visible) return null;
 
-  const { title, caption, accent } = LABEL[visible.target];
+  const { title, caption, accent } = labelFor(visible.target === localCombatant, isOnline);
 
   return (
     <View style={styles.layer} pointerEvents="none">

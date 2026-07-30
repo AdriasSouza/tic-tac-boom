@@ -13,15 +13,18 @@ import * as Haptics from 'expo-haptics';
 
 import { CardItem } from './CardItem';
 import { CardFocusModal } from '@/components/ui/CardFocusModal';
+import { useCanPlayCardsNow, useIsLocalTurn } from '@/hooks/useLocalTurn';
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
+import { netPlayCard } from '@/services/syncBridge';
+import { selectMultiplayerStatus, useMultiplayerStore } from '@/store/multiplayerStore';
 import { colors } from '@/theme/colors';
 import { getCard } from '@/engine/cards/registry';
 import {
-  selectCanPlayCards,
   selectCanUseCard,
+  selectHandOf,
   selectHasPendingAcknowledgement,
   selectPendingAction,
-  selectPlayerHand,
   selectStatus,
   useGameStore,
   type CardId,
@@ -70,8 +73,18 @@ export interface CardHandProps {
  * A física do arrasto mora inteira no `<CardItem />`.
  */
 export function CardHand({ style }: CardHandProps) {
-  const hand = useGameStore(selectPlayerHand);
-  const canPlayCards = useGameStore(selectCanPlayCards);
+  // A mão do combatente que ESTE aparelho controla — `PLAYER` nos modos
+  // offline, mas `MACHINE` para quem entrou numa sala online. Ler
+  // `selectPlayerHand` fixo mostrava ao convidado a mão do adversário.
+  const { localCombatant } = useMatchPerspective();
+  const hand = useGameStore(useMemo(() => selectHandOf(localCombatant), [localCombatant]));
+  // `useCanPlayCardsNow` no lugar de `selectCanPlayCards`: o seletor original
+  // testa `turn === 'PLAYER'`, o que travaria permanentemente quem entrou
+  // como `player2` numa sala online (do lado dele o combatente local é
+  // `MACHINE`). Fora do online os dois são equivalentes.
+  const canPlayCards = useCanPlayCardsNow();
+  const isLocalTurn = useIsLocalTurn();
+  const isOnline = useMultiplayerStore(selectMultiplayerStatus) === 'MATCH_STARTED';
   const status = useGameStore(selectStatus);
   const pendingAction = useGameStore(selectPendingAction);
   const clearPendingAction = useGameStore((s) => s.clearPendingAction);
@@ -123,7 +136,8 @@ export function CardHand({ style }: CardHandProps) {
       if (!armed) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     } else {
       // Sem alvo (ou TRAP, que sempre arma direto): resolve na hora.
-      const played = useGameStore.getState().playCard(uid);
+      // Facade da ponte — ver `netPlayCard`. Replica no online, repassa no local.
+      const played = netPlayCard(uid);
       void Haptics.notificationAsync(
         played
           ? Haptics.NotificationFeedbackType.Success
@@ -215,6 +229,19 @@ export function CardHand({ style }: CardHandProps) {
 
   return (
     <View style={[styles.root, style]}>
+      {/* Vez do oponente: sem um aviso, a mão simplesmente para de responder e
+          o jogador não tem como saber se travou ou se é a vez do outro. Só
+          aparece no online — nos modos local/CPU `isLocalTurn` é sempre true. */}
+      {isOnline && !isLocalTurn && (
+        <Animated.View
+          entering={FadeIn.duration(160)}
+          exiting={FadeOut.duration(120)}
+          style={styles.waitBanner}
+        >
+          <Text style={styles.waitBannerText}>AGUARDE · VEZ DO OPONENTE</Text>
+        </Animated.View>
+      )}
+
       {/* Faixa de instrução — sem ela, o modo mira vira um beco sem saída. */}
       {isTargeting && (
         <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)}>
@@ -298,6 +325,21 @@ const styles = StyleSheet.create({
     width: '100%',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  waitBanner: {
+    marginBottom: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    backgroundColor: colors.bgPanel,
+    borderWidth: 2,
+    borderColor: colors.markO,
+    alignItems: 'center',
+  },
+  waitBannerText: {
+    color: colors.markO,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 2,
   },
   targetBanner: {
     marginBottom: 6,

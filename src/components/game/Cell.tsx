@@ -13,6 +13,8 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
+import { isLocalTurn, netPlaceMark, netPlayCard } from '@/services/syncBridge';
 import {
   canPlaceAt,
   isPendingTarget,
@@ -25,6 +27,7 @@ import {
   selectIsVanishing,
   selectIsWinningCell,
   useGameStore,
+  type Combatant,
   type Mark,
 } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
@@ -78,6 +81,8 @@ function CellComponent({ index, size }: CellProps) {
   const isValidTarget = useGameStore(useMemo(() => selectIsValidTarget(index), [index]));
   /** Peça marcada pelo VIDENTE — a que vai sumir na próxima jogada do dono. */
   const isRevealedDoomed = useGameStore(useMemo(() => selectIsRevealedDoomed(index), [index]));
+  // Define qual peça é "minha" para efeito de cor — ver `colorFor`.
+  const { localCombatant } = useMatchPerspective();
 
   /* --- Shared values (rodam na UI thread, zero re-render) ----------------- */
   const pulse = useSharedValue(1); // 1 = opaco, 0 = quase apagado
@@ -201,6 +206,16 @@ function CellComponent({ index, size }: CellProps) {
     // assinatura reativa, e evita agir sobre um valor de render antigo.
     const state = useGameStore.getState();
 
+    /* --- Trava de turno do multiplayer ------------------------------------
+       Fora do online `isLocalTurn()` é sempre `true`, então isto some para
+       os modos local e CPU. No online é a primeira guarda: sem ela, tocar
+       fora da própria vez publicaria uma jogada que o oponente recusaria,
+       dessincronizando os dois clientes. */
+    if (!isLocalTurn()) {
+      rejectFeedback();
+      return;
+    }
+
     /* --- Modo mira intercepta tudo ---------------------------------------
        Com pendingAction ativo o toque resolve a carta, nunca posiciona peça. */
     if (state.pendingAction) {
@@ -210,8 +225,10 @@ function CellComponent({ index, size }: CellProps) {
       }
 
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      // Se o store recusar (corrida com mudança de estado), devolve o erro.
-      if (!state.playCard(state.pendingAction.uid, index)) rejectFeedback();
+      // Pela facade da ponte, não pelo store direto: é ela que replica a
+      // jogada para o oponente e que escolhe entre `playCard`/`playMachineCard`
+      // conforme o combatente que este cliente controla.
+      if (!netPlayCard(state.pendingAction.uid, index)) rejectFeedback();
       return;
     }
 
@@ -222,7 +239,7 @@ function CellComponent({ index, size }: CellProps) {
     }
 
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    state.placeMark(index);
+    netPlaceMark(index);
   }, [index, rejectFeedback]);
 
   const handlePressIn = useCallback(() => {
@@ -236,6 +253,10 @@ function CellComponent({ index, size }: CellProps) {
   /* --- Render -------------------------------------------------------------- */
   // Xadrez sutil: ajuda a ler o grid antes dos sprites finais entrarem.
   const isDarkTile = (Math.floor(index / 3) + (index % 3)) % 2 === 1;
+
+  /** Aliado sempre na cor principal; inimigo sempre na secundária. */
+  const colorFor = (owner: Combatant) =>
+    owner === localCombatant ? colors.markX : colors.markO;
 
   return (
     <Pressable
@@ -277,7 +298,19 @@ function CellComponent({ index, size }: CellProps) {
 
         {piece && (
           <Animated.View style={markStyle}>
-            {piece.mark === 'X' ? <MarkX size={size} /> : <MarkO size={size} />}
+            {/* FORMA pelo símbolo, COR pela aliança.
+                A forma é identidade da peça e tem que bater nos dois
+                aparelhos — trocar X por O deixaria os jogadores descrevendo
+                tabuleiros diferentes um para o outro. Já a cor é linguagem
+                de time: "vermelho é meu, azul é dele" vale para os dois
+                lados, e é o que faz o convidado ler o tabuleiro tão rápido
+                quanto o anfitrião em vez de ter que lembrar que ele é o
+                azul. */}
+            {piece.mark === 'X' ? (
+              <MarkX size={size} color={colorFor(piece.owner)} />
+            ) : (
+              <MarkO size={size} color={colorFor(piece.owner)} />
+            )}
           </Animated.View>
         )}
 
@@ -325,7 +358,7 @@ export default Cell;
    anti-aliasing e sem dependência de asset. Trocar por <Image> quando os
    sprites finais existirem — a API (`size`) continua a mesma.                */
 
-function MarkX({ size }: { size: number }) {
+function MarkX({ size, color }: { size: number; color: string }) {
   const bar = Math.round(size * X_BAR_RATIO);
   const length = Math.round(size * 0.62);
 
@@ -339,6 +372,7 @@ function MarkX({ size }: { size: number }) {
             {
               width: length,
               height: bar,
+              backgroundColor: color,
               marginTop: -bar / 2,
               marginLeft: -length / 2,
               transform: [{ rotate: `${deg}deg` }],
@@ -350,7 +384,7 @@ function MarkX({ size }: { size: number }) {
   );
 }
 
-function MarkO({ size }: { size: number }) {
+function MarkO({ size, color }: { size: number; color: string }) {
   const outer = Math.round(size * 0.6);
   const ring = Math.round(size * X_BAR_RATIO);
 
@@ -361,7 +395,7 @@ function MarkO({ size }: { size: number }) {
           width: outer,
           height: outer,
           borderWidth: ring,
-          borderColor: colors.markO,
+          borderColor: color,
           // borderRadius 0 de propósito: "O" blocado lê como pixel art.
           borderRadius: 0,
         }}
@@ -461,7 +495,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: '50%',
     left: '50%',
-    backgroundColor: colors.markX,
+    // `backgroundColor` chega inline — a cor da peça depende da aliança, não
+    // do símbolo. Ver `colorFor`.
   },
   targetOverlay: {
     ...StyleSheet.absoluteFill,

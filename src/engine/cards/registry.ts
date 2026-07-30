@@ -11,8 +11,29 @@ import {
 } from '@/engine/rules';
 import { RARITY_DRAW_WEIGHT } from './definitions';
 import type { Rng } from '@/engine/rng';
-import type { GameState } from '@/engine/rules';
+import type { Combatant, GameState } from '@/engine/rules';
 import type { CardDefinition, CardId, CardRarity } from './definitions';
+
+/* -------------------------------------------------------------------------- */
+/*                              QUEM É A MÁQUINA?                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Este combatente é controlado pela IA?
+ *
+ * `MACHINE` significava "a inteligência artificial" em todo o motor, e cartas
+ * de informação usavam isso para pular o modal de leitura — a IA não precisa
+ * ler nada na tela. No modo online a equivalência quebra: `MACHINE` passa a
+ * ser um humano em outro aparelho, que precisa do modal exatamente como o
+ * `PLAYER`.
+ *
+ * Concentrar a pergunta numa função só (em vez de repetir a condição em cada
+ * carta) é o que garante que uma carta futura não volte a assumir o atalho
+ * antigo por descuido.
+ */
+function isAIController(state: GameState, caster: Combatant): boolean {
+  return caster === 'MACHINE' && !state.isOnline;
+}
 
 /* -------------------------------------------------------------------------- */
 /*                                    CARTAS                                   */
@@ -43,7 +64,7 @@ const BREAK_PIECE: CardDefinition = {
 
   canPlay: ({ state }) => occupiedIndexes(state).length > 0,
 
-  effect: ({ state, targetIndex }) => {
+  effect: ({ state, caster, targetIndex }) => {
     // Com `requiresTarget`, o store garante que targetIndex chegou validado.
     // A checagem sobrevive como rede de segurança para chamadas programáticas
     // (IA, testes) que não passam pelo fluxo de mira da UI.
@@ -56,7 +77,7 @@ const BREAK_PIECE: CardDefinition = {
 
     return {
       patch: { board, lastVanishedIndex: targetIndex },
-      message: 'demolir :: célula ' + targetIndex,
+      log: { code: 'CARD_BREAK_PIECE', subject: caster, value: targetIndex },
     };
   },
 };
@@ -75,7 +96,7 @@ const EXTRA_TURN: CardDefinition = {
 
   effect: ({ caster }) => ({
     patch: { extraTurnPending: caster },
-    message: 'rebobinar :: turno extra armado',
+    log: { code: 'CARD_EXTRA_TURN', subject: caster },
   }),
 };
 
@@ -96,7 +117,7 @@ const HEAL_SELF: CardDefinition = {
 
   effect: ({ caster }) => ({
     heal: { target: caster, amount: 1 },
-    message: 'curar :: +1 hp',
+    log: { code: 'CARD_HEAL', subject: caster },
   }),
 };
 
@@ -111,7 +132,7 @@ const DIRECT_DAMAGE: CardDefinition = {
 
   effect: ({ caster }) => ({
     damage: { target: opponentOf(caster), amount: 1 },
-    message: 'ataque :: 1 de dano direto no oponente',
+    log: { code: 'CARD_DAMAGE', subject: caster, target: opponentOf(caster) },
   }),
 };
 
@@ -132,7 +153,7 @@ const DRAW_CARD: CardDefinition = {
 
   effect: ({ caster }) => ({
     draw: { target: caster, count: 2 },
-    message: 'estudar :: comprou 2 cartas',
+    log: { code: 'CARD_DRAW', subject: caster, value: 2 },
   }),
 };
 
@@ -159,25 +180,27 @@ const HAND_RAID: CardDefinition = {
     const remainingVictimHand = victimHand.filter((c) => c.uid !== stolen.uid);
     const steals = rng.chance(0.5);
 
-    // O NOME da carta atingida entra no aviso e no log. Sem isso o jogador via
-    // a mão encolher e não tinha como saber o que perdeu — o pior tipo de
-    // "aconteceu do nada", porque o prejuízo é real mas invisível.
-    const victim = getCard(stolen.cardId).name;
-    const verb = steals ? 'ROUBOU' : 'DESTRUIU';
+    // O `cardId` atingido viaja no evento. Sem ele o jogador via a mão
+    // encolher e não tinha como saber o que perdeu — o pior tipo de
+    // "aconteceu do nada", porque o prejuízo é real mas invisível. Quem
+    // resolve o id em nome legível é a apresentação.
+    const code = steals ? 'CARD_RAID_STOLE' : 'CARD_RAID_DESTROYED';
+    const event = {
+      code,
+      subject: caster,
+      target: opponentOf(caster),
+      value: stolen.cardId,
+    } as const;
 
     return {
       patch: {
         [handKeyFor(caster)]: steals ? [...casterHand, stolen] : casterHand,
         [handKeyFor(opponentOf(caster))]: remainingVictimHand,
       },
-      message:
-        caster === 'PLAYER'
-          ? `saque :: você ${steals ? 'roubou' : 'destruiu'} ${victim} da cpu`
-          : `saque :: a cpu ${steals ? 'roubou' : 'destruiu'} sua carta ${victim}`,
-      notice: {
-        text: caster === 'PLAYER' ? `VOCÊ ${verb}: ${victim}` : `A CPU ${verb} SUA CARTA: ${victim}`,
-        tone: caster === 'PLAYER' ? 'GOOD' : 'BAD',
-      },
+      // Sem `tone`: quem rouba ganha e quem é roubado perde, e só a
+      // perspectiva sabe quem é quem. O tradutor decide a cor.
+      log: event,
+      notice: event,
     };
   },
 };
@@ -197,7 +220,7 @@ const CLEANSE: CardDefinition = {
   // vezes em que o jogador a joga achando que vai destravar a casa.
   canPlay: ({ state }) => state.activeRule === 'BLOCKED_CELL' || state.lockedCell !== null,
 
-  effect: ({ state }) => {
+  effect: ({ state, caster }) => {
     const clearsChaos = state.activeRule === 'BLOCKED_CELL';
     const clearsLock = state.lockedCell !== null;
     if (!clearsChaos && !clearsLock) return null;
@@ -207,8 +230,8 @@ const CLEANSE: CardDefinition = {
         ...(clearsChaos ? { activeRule: 'NORMAL' as const, blockedCell: null, ruleExpiresAtTurn: null } : null),
         ...(clearsLock ? { lockedCell: null, lockedCellExpiresAtTurn: null } : null),
       },
-      message: 'purificar :: interdição removida, a casa voltou a aceitar jogadas',
-      notice: { text: 'CASA LIBERADA', tone: 'NEUTRAL' },
+      log: { code: 'CARD_CLEANSE', subject: caster },
+      notice: { code: 'CARD_CLEANSE', subject: caster, tone: 'NEUTRAL' },
     };
   },
 };
@@ -233,11 +256,8 @@ const HAND_SWAP: CardDefinition = {
         [handKeyFor(caster)]: opponentHand,
         [handKeyFor(opponentOf(caster))]: casterHand,
       },
-      message: 'troca :: as duas mãos trocaram de dono',
-      notice: {
-        text: caster === 'PLAYER' ? 'VOCÊ TROCOU AS MÃOS' : 'A CPU TROCOU AS MÃOS',
-        tone: caster === 'PLAYER' ? 'GOOD' : 'BAD',
-      },
+      log: { code: 'CARD_SWAP', subject: caster, target: opponentOf(caster) },
+      notice: { code: 'CARD_SWAP', subject: caster, target: opponentOf(caster) },
     };
   },
 };
@@ -257,9 +277,6 @@ const REVEAL_OLDEST: CardDefinition = {
     const index = getOldestPieceIndex(state.board, opponentOf(caster));
     if (index === null) return null;
 
-    const row = Math.floor(index / 3) + 1;
-    const col = (index % 3) + 1;
-
     return {
       // Guarda o DONO, não o índice: o destaque é recalculado a cada render a
       // partir do tabuleiro vivo, então continua correto mesmo se um DEMOLIR
@@ -267,8 +284,13 @@ const REVEAL_OLDEST: CardDefinition = {
       // informação verdadeira que ninguém usava — traduzir "2x3" de volta para
       // uma casa no meio da partida custa mais atenção do que a carta vale.
       patch: { revealDoomedFor: opponentOf(caster) },
-      message: `vidente :: a peça do oponente em ${row}x${col} está condenada`,
-      notice: { text: 'PEÇA CONDENADA REVELADA', tone: 'GOOD' },
+      log: {
+        code: 'CARD_REVEAL_DOOMED',
+        subject: caster,
+        target: opponentOf(caster),
+        value: index,
+      },
+      notice: { code: 'CARD_REVEAL_DOOMED', subject: caster, target: opponentOf(caster) },
     };
   },
 };
@@ -287,12 +309,9 @@ const LOCK_CELL: CardDefinition = {
 
   canPlay: ({ state }) => state.board.some((cell, i) => cell === null && state.lockedCell !== i),
 
-  effect: ({ state, targetIndex }) => {
+  effect: ({ state, caster, targetIndex }) => {
     if (targetIndex === undefined) return null;
     if (state.board[targetIndex] !== null) return null;
-
-    const row = Math.floor(targetIndex / 3) + 1;
-    const col = (targetIndex % 3) + 1;
 
     return {
       /* Campo PRÓPRIO (`lockedCell`), não mais o `blockedCell` da regra
@@ -309,8 +328,8 @@ const LOCK_CELL: CardDefinition = {
         lockedCell: targetIndex,
         lockedCellExpiresAtTurn: state.turnCount + CARD_RULE_MIN_DURATION_TURNS,
       },
-      message: `travar :: a casa ${row}x${col} está lacrada durante o turno do oponente`,
-      notice: { text: `CASA ${row}x${col} LACRADA`, tone: 'NEUTRAL' },
+      log: { code: 'CARD_LOCK_CELL', subject: caster, value: targetIndex },
+      notice: { code: 'CARD_LOCK_CELL', subject: caster, value: targetIndex, tone: 'NEUTRAL' },
     };
   },
 };
@@ -337,16 +356,24 @@ const SPY_CARD: CardDefinition = {
     const opponentHand = state[handKeyFor(opponentOf(caster))];
     if (opponentHand.length === 0) return null;
 
-    /* --- CPU: não abre modal ------------------------------------------------
+    /* --- IA: não abre modal ------------------------------------------------
        A máquina já "sabe" a mão do jogador; o modal é uma ferramenta humana.
        Mas o jogador precisa ver que foi espionado, senão a carta some da mão
-       da CPU sem nenhum efeito aparente. */
-    if (caster === 'MACHINE') {
-      const spied = getCard(rng.pick(opponentHand).cardId);
-      return {
-        message: `espionagem :: a cpu olhou sua carta ${spied.name.toLowerCase()}`,
-        notice: { text: `A CPU ESPIONOU: ${spied.name}`, tone: 'BAD' },
-      };
+       da CPU sem nenhum efeito aparente.
+
+       `isAI` em vez de `caster === 'MACHINE'`: no modo online o `MACHINE` é
+       uma PESSOA no outro aparelho, que precisa do modal tanto quanto o
+       `PLAYER`. A suposição "MACHINE ⇒ inteligência artificial" só valia
+       enquanto o jogo era offline. */
+    if (isAIController(state, caster)) {
+      const spied = rng.pick(opponentHand).cardId;
+      const event = {
+        code: 'CARD_SPY_PEEK',
+        subject: caster,
+        target: opponentOf(caster),
+        value: spied,
+      } as const;
+      return { log: event, notice: event };
     }
 
     /* --- Jogador: ele escolhe qual virar -------------------------------------
@@ -356,7 +383,12 @@ const SPY_CARD: CardDefinition = {
        canal CARDS), escolher é uma aposta honesta — e a escolha ser DO JOGADOR
        é o que torna a carta uma decisão em vez de um sorteio. */
     return {
-      message: `espionagem :: você espiou a mão da cpu (${opponentHand.length} carta(s))`,
+      log: {
+        code: 'CARD_SPY_HAND',
+        subject: caster,
+        target: opponentOf(caster),
+        value: opponentHand.length,
+      },
       acknowledge: {
         kind: 'SPY_PICK',
         tone: 'INTEL',
@@ -387,15 +419,21 @@ const FULL_INTEL: CardDefinition = {
     const opponentHand = state[handKeyFor(opponentOf(caster))];
     if (opponentHand.length === 0) return null;
 
-    if (caster === 'MACHINE') {
-      return {
-        message: `visão absoluta :: a cpu leu sua mão inteira (${opponentHand.length} carta(s))`,
-        notice: { text: 'A CPU LEU SUA MÃO INTEIRA', tone: 'BAD' },
-      };
+    // Ver a nota em ESPIONAGEM: quem pula o modal é a IA, não o combatente
+    // `MACHINE` — no online os dois não são a mesma coisa.
+    const intel = {
+      code: 'CARD_INTEL_HAND',
+      subject: caster,
+      target: opponentOf(caster),
+      value: opponentHand.length,
+    } as const;
+
+    if (isAIController(state, caster)) {
+      return { log: intel, notice: intel };
     }
 
     return {
-      message: `visão absoluta :: você leu a mão da cpu (${opponentHand.length} carta(s))`,
+      log: intel,
       // Sem embaralhar, ao contrário da ESPIONAGEM: aqui TODAS podem ser
       // viradas, então não há posição privilegiada a proteger.
       acknowledge: {
@@ -430,7 +468,7 @@ const SHIELD_TRAP: CardDefinition = {
   triggerCondition: (event) =>
     event.type === 'CARD_ABOUT_TO_RESOLVE' && event.cardId === 'HAND_RAID',
 
-  effect: () => ({ cancelsAction: true, message: 'proteção :: o saque do oponente foi anulado' }),
+  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_SHIELD', subject: caster } }),
 };
 
 const COUNTER_TRAP: CardDefinition = {
@@ -447,7 +485,7 @@ const COUNTER_TRAP: CardDefinition = {
   triggerCondition: (event) =>
     event.type === 'CARD_ABOUT_TO_RESOLVE' && CARD_REGISTRY[event.cardId].type === 'ACTION',
 
-  effect: () => ({ cancelsAction: true, message: 'anti-magia :: a ação do oponente foi anulada' }),
+  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_COUNTER', subject: caster } }),
 };
 
 const MIND_SHIELD_TRAP: CardDefinition = {
@@ -467,7 +505,7 @@ const MIND_SHIELD_TRAP: CardDefinition = {
     event.type === 'CARD_ABOUT_TO_RESOLVE' &&
     (event.cardId === 'SPY_CARD' || event.cardId === 'FULL_INTEL'),
 
-  effect: () => ({ cancelsAction: true, message: 'mente blindada :: a espionagem foi anulada' }),
+  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_MIND_SHIELD', subject: caster } }),
 };
 
 const BOMB_TRAP: CardDefinition = {
@@ -498,7 +536,7 @@ const BOMB_TRAP: CardDefinition = {
      */
     patch: { extraTurnPending: caster },
 
-    message: 'mina :: o centro detonou — 2 de dano e um turno extra',
+    log: { code: 'TRAP_BOMB', subject: caster, target: opponentOf(caster) },
   }),
 };
 

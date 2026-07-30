@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, { FadeInDown, ZoomOut } from 'react-native-reanimated';
 
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import { TRAP_LIMIT, selectTraps, useGameStore, type Combatant } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
@@ -52,23 +53,26 @@ export interface TrapZoneProps {
  * Só assina as armadilhas do dono, então uma detonando não re-renderiza
  * tabuleiro nem mão.
  */
-/** Rótulo por dono no layout empilhado (mobile) — cabe numa faixa larga. */
-const CAPTION: Record<Combatant, string> = {
-  PLAYER: 'SUAS ARMADILHAS',
-  MACHINE: 'ARMADILHAS DA CPU',
-};
-
-/** Rótulo por dono no layout em coluna (desktop largo) — precisa ser curto. */
-const CAPTION_SHORT: Record<Combatant, string> = {
-  PLAYER: 'VOCÊ',
-  MACHINE: 'CPU',
-};
-
 export function TrapZone({ owner = 'PLAYER', style, orientation = 'row' }: TrapZoneProps) {
   const traps = useGameStore(useMemo(() => selectTraps(owner), [owner]));
   const emptySlots = Math.max(0, TRAP_LIMIT - traps.length);
-  const isPlayer = owner === 'PLAYER';
   const isColumn = orientation === 'column';
+
+  /* O rótulo depende de a fileira ser MINHA ou DELE — não de o dono ser
+     `PLAYER`. Numa sala online quem entrou controla o `MACHINE`, e rotular
+     pelo combatente absoluto diria "ARMADILHAS DA CPU" em cima das próprias
+     armadilhas do convidado. */
+  const { localCombatant, isOnline } = useMatchPerspective();
+  const isLocal = owner === localCombatant;
+
+  const caption = isLocal
+    ? 'SUAS ARMADILHAS'
+    : isOnline
+      ? 'ARMADILHAS DO OPONENTE'
+      : 'ARMADILHAS DA CPU';
+
+  // Numa coluna lateral estreita (~70dp) o rótulo completo não cabe.
+  const captionShort = isLocal ? 'VOCÊ' : isOnline ? 'RIVAL' : 'CPU';
 
   // Duas zonas empilhadas somam altura de sobra num celular baixo — elas
   // encolhem junto com o resto para o tabuleiro e a mão não perderem espaço.
@@ -79,7 +83,7 @@ export function TrapZone({ owner = 'PLAYER', style, orientation = 'row' }: TrapZ
     <View style={[styles.root, isColumn ? styles.rootColumn : styles.rootRow, style]}>
       <View style={[styles.content, isColumn && styles.contentColumn]}>
         <Text
-          style={[styles.caption, isPlayer && styles.captionPlayer, isColumn && styles.captionColumn]}
+          style={[styles.caption, isLocal && styles.captionPlayer, isColumn && styles.captionColumn]}
           // Trava em 1 linha: sem isto, em telas estreitas "ARMADILHAS DA
           // CPU" quebrava para uma segunda linha, e como a legenda e os slots
           // dividem a mesma fileira (`content`, flexDirection:'row'), a
@@ -90,7 +94,7 @@ export function TrapZone({ owner = 'PLAYER', style, orientation = 'row' }: TrapZ
           // armadilhas tenha SEMPRE a mesma altura fixa dos slots.
           numberOfLines={1}
         >
-          {isColumn ? CAPTION_SHORT[owner] : CAPTION[owner]}
+          {isColumn ? captionShort : caption}
         </Text>
 
         <View style={[styles.slots, isColumn && styles.slotsColumn]}>
