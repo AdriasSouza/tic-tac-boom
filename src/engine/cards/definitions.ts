@@ -4,8 +4,8 @@ import type { Rng } from '@/engine/rng';
 // arquivo, e este arquivo importa `GameState` de lá. Com `import type` o
 // TypeScript apaga as duas linhas na compilação e não sobra ciclo em runtime.
 import type {
+  AcknowledgementCode,
   AcknowledgementKind,
-  AcknowledgementTone,
   Combatant,
   GameState,
 } from '@/engine/rules';
@@ -182,15 +182,19 @@ export interface CardEffectResult {
    * não adia nada — o efeito da carta (revelar) já aconteceu. Existe só para
    * garantir que o jogador realmente LEIA o que foi descoberto antes de
    * seguir jogando. Usado por cartas de espionagem.
+   *
+   * Semântico, como `log`/`notice`: a carta diz O QUE revelou e de quem, e a
+   * apresentação escreve "MÃO DO RIVAL" ou "MÃO DA CPU" conforme quem está
+   * segurando o aparelho.
    */
   acknowledge?: {
+    code: AcknowledgementCode;
     /** Padrão `INFO`. `SPY_PICK`/`INTEL_FLIP` viram cartas com o dedo. */
     kind?: AcknowledgementKind;
-    /** Padrão `INTEL` — cartas de informação. */
-    tone?: AcknowledgementTone;
-    subtitle: string;
-    title: string;
-    description: string;
+    subject: Combatant;
+    /** Dono da mão revelada / alvo do efeito. */
+    target?: Combatant;
+    cardId?: CardId;
     /** Cartas exibidas viradas para baixo (espionagem) ou em miniatura. */
     revealedCards?: CardId[];
   };

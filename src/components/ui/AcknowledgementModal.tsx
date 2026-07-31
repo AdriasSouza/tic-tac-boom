@@ -6,23 +6,20 @@ import { FlipCard } from './FlipCard';
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
 import { colors } from '@/theme/colors';
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
+import { formatAcknowledgement, type AcknowledgementTone } from '@/i18n/logMessages';
 import { canLocalAcknowledge, netAcknowledge } from '@/services/syncBridge';
-import {
-  selectPendingAcknowledgement,
-  useGameStore,
-  type AcknowledgementTone,
-} from '@/store/gameStore';
-import { selectMultiplayerStatus, useMultiplayerStore } from '@/store/multiplayerStore';
+import { selectPendingAcknowledgement, useGameStore } from '@/store/gameStore';
 
 /** Cor de destaque por intenção do aviso. */
 const TONE_COLOR: Record<AcknowledgementTone, string> = {
   DANGER: colors.danger,
-  CPU: colors.markO,
+  OPPONENT: colors.markO,
   INTEL: colors.winGlow,
 };
 
 /**
- * Pausa de confirmação manual: quando uma armadilha dispara, a CPU joga uma
+ * Pausa de confirmação manual: quando uma armadilha dispara, alguém joga uma
  * carta ou uma carta de espionagem revela informação, o jogo trava aqui até o
  * jogador clicar "ENTENDI". `canPlaceAt`/`resolveCardPlay`/a CPU já recusam
  * qualquer ação enquanto isto está montado — o modal só existe para dar ao
@@ -45,6 +42,12 @@ const TONE_COLOR: Record<AcknowledgementTone, string> = {
 export function AcknowledgementModal() {
   const pending = useGameStore(selectPendingAcknowledgement);
 
+  /* O descritor guardado é um FATO em coordenadas do motor (`subject:
+     'MACHINE'`). As palavras nascem aqui, já do ponto de vista deste aparelho
+     — é o que faz o MESMO evento aparecer como "VOCÊ JOGOU" num cliente e "O
+     OPONENTE JOGOU" no outro, em vez de chamar de CPU a pessoa do outro lado. */
+  const perspective = useMatchPerspective();
+
   /* --- Padrão de autoridade -------------------------------------------------
      Só UM cliente publica o `ACKNOWLEDGE`: o autor da ação que criou esta
      pausa (ver `getAcknowledgementAuthority`). Se os dois publicassem, a fila
@@ -57,7 +60,7 @@ export function AcknowledgementModal() {
      sem nenhuma interação local. É por isso que a leitura de `pending` já é a
      única condição de exibição: a "trava de estado global" liberar É o
      fechamento do modal.                                                    */
-  const isOnline = useMultiplayerStore(selectMultiplayerStatus) === 'MATCH_STARTED';
+  const { isOnline } = perspective;
 
   // Recalculado a cada render em vez de assinado: a autoridade deriva do log
   // de ações (estado de módulo da ponte), e o que dispara o re-render é a
@@ -104,7 +107,8 @@ export function AcknowledgementModal() {
 
   if (!pending) return null;
 
-  const accent = TONE_COLOR[pending.tone];
+  const text = formatAcknowledgement(pending, perspective);
+  const accent = TONE_COLOR[text.tone];
   const hasCards = pending.revealedCards.length > 0;
   // Na Espionagem o botão só libera depois da escolha: confirmar sem virar
   // nada desperdiçaria a carta em silêncio.
@@ -149,7 +153,7 @@ export function AcknowledgementModal() {
 
         <Animated.View entering={ZoomIn.springify().damping(13).mass(0.8)} style={styles.holder}>
           <PixelPanel accent={accent} contentStyle={styles.panelContent}>
-            <Text style={[styles.subtitle, { color: accent }]}>{pending.subtitle}</Text>
+            <Text style={[styles.subtitle, { color: accent }]}>{text.subtitle}</Text>
 
             {/* O brasão grande só faz sentido quando ELE é a informação. Com
                 cartas para virar, ele roubaria a altura de que a grade
@@ -157,13 +161,13 @@ export function AcknowledgementModal() {
             {!hasCards && (
               <View style={[styles.artSlot, { borderColor: accent }]}>
                 <Text style={[styles.artGlyph, { color: accent }]}>
-                  {pending.title.charAt(0)}
+                  {text.title.charAt(0)}
                 </Text>
               </View>
             )}
 
-            <Text style={styles.title}>{pending.title}</Text>
-            <Text style={styles.description}>{pending.description}</Text>
+            <Text style={styles.title}>{text.title}</Text>
+            <Text style={styles.description}>{text.description}</Text>
 
             {hasCards && (
               // Rola quando a mão do oponente é grande — sem isto, 5 cartas

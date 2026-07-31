@@ -390,11 +390,10 @@ const SPY_CARD: CardDefinition = {
         value: opponentHand.length,
       },
       acknowledge: {
+        code: 'HAND_REVEALED',
         kind: 'SPY_PICK',
-        tone: 'INTEL',
-        subtitle: 'ESPIONAGEM',
-        title: 'MÃO DA CPU',
-        description: 'Escolha UMA carta e toque para virar.',
+        subject: caster,
+        target: opponentOf(caster),
         revealedCards: rng.shuffle(opponentHand).map((c) => c.cardId),
       },
     };
@@ -437,11 +436,10 @@ const FULL_INTEL: CardDefinition = {
       // Sem embaralhar, ao contrário da ESPIONAGEM: aqui TODAS podem ser
       // viradas, então não há posição privilegiada a proteger.
       acknowledge: {
+        code: 'HAND_REVEALED',
         kind: 'INTEL_FLIP',
-        tone: 'INTEL',
-        subtitle: 'VISÃO ABSOLUTA',
-        title: 'MÃO DA CPU',
-        description: `${opponentHand.length} carta(s). Toque para virar e desvirar.`,
+        subject: caster,
+        target: opponentOf(caster),
         revealedCards: opponentHand.map((c) => c.cardId),
       },
     };

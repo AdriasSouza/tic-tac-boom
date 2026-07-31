@@ -110,17 +110,32 @@ export type {
 export type AcknowledgementKind = 'INFO' | 'SPY_PICK' | 'INTEL_FLIP';
 
 /**
- * Intenção visual do modal. Só cor e selo — nenhuma regra depende disto.
+ * O QUE fez o jogo pausar — o fato, nunca a frase.
  *
- * `CPU` existe para o anúncio de jogada da máquina não usar o mesmo vermelho
- * de "você caiu numa armadilha": são eventos de gravidade bem diferente.
+ * Mesmo princípio do `LogCode` (ver `./log`): o motor informa o tipo do evento
+ * e quem é o sujeito, e a apresentação decide as palavras. Enquanto o
+ * descritor carregava `title`/`subtitle`/`description` prontos, o pronome
+ * ficava congelado no instante do fato — e numa sala online, onde o convidado
+ * controla o `MACHINE`, o selo "ARMADILHA DA CPU" aparecia em cima da
+ * armadilha DELE, e "A CPU JOGOU" chamava de robô a pessoa do outro lado.
+ *
+ * - `TRAP_TRIGGERED` — armadilha disparou. `subject` é o DONO dela,
+ *                      `target` quem caiu, `cardId` a carta revelada.
+ * - `TRAP_ARMED`     — alguém virou uma armadilha na mesa. `cardId` viaja
+ *                      junto, mas só o dono pode lê-lo (ver a tradução).
+ * - `CARD_PLAYED`    — anúncio de carta jogada, antes de o efeito aplicar.
+ * - `HAND_REVEALED`  — espionagem: `target` é o dono da mão exibida.
  */
-export type AcknowledgementTone = 'DANGER' | 'CPU' | 'INTEL';
+export type AcknowledgementCode =
+  | 'TRAP_TRIGGERED'
+  | 'TRAP_ARMED'
+  | 'CARD_PLAYED'
+  | 'HAND_REVEALED';
 
 /**
- * Pausa de confirmação manual — uma armadilha disparou, a CPU jogou uma carta,
- * ou uma carta revelou informação, e o jogo espera o jogador clicar "Entendi"
- * antes de continuar.
+ * Pausa de confirmação manual — uma armadilha disparou, alguém jogou uma
+ * carta, ou uma carta revelou informação, e o jogo espera o clique em
+ * "Entendi" antes de continuar.
  *
  * Substitui um timer automático: dar um tempo fixo (ex: 1.8s) não garante que
  * o jogador realmente LEU a informação — só que ela ficou na tela por tempo
@@ -130,18 +145,19 @@ export type AcknowledgementTone = 'DANGER' | 'CPU' | 'INTEL';
 export interface PendingAcknowledgement {
   /** Monotônico — `key` estável na UI e evita reabrir a mesma pausa duas vezes. */
   id: number;
+  code: AcknowledgementCode;
+  /** Como o modal se comporta (virar cartas ou não). Comportamento, não texto. */
   kind: AcknowledgementKind;
-  tone: AcknowledgementTone;
-  /** Selo curto no topo (ex: "SUA ARMADILHA", "A CPU JOGOU", "ESPIONAGEM"). */
-  subtitle: string;
-  /** Nome em destaque (o nome da carta revelada, ou um título como "MÃO DA CPU"). */
-  title: string;
-  /** Texto explicativo — a `description` da carta, ou uma frase sobre o que foi descoberto. */
-  description: string;
+  /** Quem causou o evento, em coordenadas absolutas do motor. */
+  subject: Combatant;
+  /** Quem sofreu/possui, quando o evento tem dois lados. */
+  target?: Combatant;
+  /** A carta em destaque, quando há uma. */
+  cardId?: CardId;
   /**
-   * Cartas envolvidas. Em `INFO` normalmente vazio (o destaque principal já
-   * está em `title`/`description`); em `SPY_PICK`/`INTEL_FLIP` é a mão que o
-   * jogador vai virar carta a carta.
+   * Cartas envolvidas. Em `INFO` normalmente vazio (o destaque principal já é
+   * a `cardId`); em `SPY_PICK`/`INTEL_FLIP` é a mão que o jogador vai virar
+   * carta a carta.
    */
   revealedCards: CardId[];
 }

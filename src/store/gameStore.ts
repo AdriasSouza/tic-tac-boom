@@ -35,8 +35,8 @@ import {
   opponentOf,
   pickFreeCell,
   trapsKeyFor,
+  type AcknowledgementCode,
   type AcknowledgementKind,
-  type AcknowledgementTone,
   type ChaosRule,
   type Combatant,
   type GameState,
@@ -105,8 +105,8 @@ export type {
 } from '@/engine/rules';
 
 export type {
+  AcknowledgementCode,
   AcknowledgementKind,
-  AcknowledgementTone,
   CardId,
   Combatant,
   GameState,
@@ -474,11 +474,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
    */
   function queueAcknowledgement(
     descriptor: {
+      code: AcknowledgementCode;
       kind?: AcknowledgementKind;
-      tone?: AcknowledgementTone;
-      subtitle: string;
-      title: string;
-      description: string;
+      subject: Combatant;
+      target?: Combatant;
+      cardId?: CardId;
       revealedCards?: CardId[];
     },
     apply: () => void,
@@ -488,18 +488,33 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
     acknowledgementQueue.push({
       descriptor: {
+        ...descriptor,
         id,
         kind: descriptor.kind ?? 'INFO',
-        tone: descriptor.tone ?? 'DANGER',
-        subtitle: descriptor.subtitle,
-        title: descriptor.title,
-        description: descriptor.description,
         revealedCards: descriptor.revealedCards ?? [],
       },
       apply,
     });
 
     syncPendingAcknowledgement();
+  }
+
+  /**
+   * Este evento vira uma pausa de anúncio?
+   *
+   * Offline, só as jogadas da CPU — o jogador não precisa que lhe anunciem a
+   * própria carta. Online, TODAS: a fila de confirmação é consumida por uma
+   * ação de rede (`ACKNOWLEDGE`) e por isso precisa ser idêntica nos dois
+   * aparelhos. Um cliente que pulasse o anúncio da própria jogada receberia o
+   * `ACKNOWLEDGE` do outro com a fila vazia, o `apply()` correspondente nunca
+   * rodaria, e os dois estados divergiriam em silêncio.
+   *
+   * A condição é deliberadamente cega à perspectiva: `state.isOnline` vale o
+   * mesmo nos dois clientes, `caster === 'MACHINE'` também. Quem sabe se o
+   * anúncio diz "VOCÊ JOGOU" ou "O OPONENTE JOGOU" é a apresentação.
+   */
+  function announcesCardPlay(state: GameState, caster: Combatant): boolean {
+    return state.isOnline || caster === 'MACHINE';
   }
 
   /** Implementação compartilhada de `drawCard`/`drawMachineCard`. */
@@ -568,12 +583,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
       if (result.log) get().pushLog(result.log);
 
       queueAcknowledgement(
-        {
-          tone: 'DANGER',
-          subtitle: defender === 'PLAYER' ? 'SUA ARMADILHA' : 'ARMADILHA DA CPU',
-          title: card.name,
-          description: card.description,
-        },
+        { code: 'TRAP_TRIGGERED', subject: defender, target: actor, cardId: trap.cardId },
         () => {}, // efeito já aplicado — isto só pausa para leitura
       );
       return true;
@@ -630,20 +640,12 @@ export const useGameStore = create<GameStore>()((set, get) => {
          mantém um log único e correto para os dois lados. */
       get().pushLog({ code: 'TRAP_ARMED', subject: caster, value: cardId });
 
-      /* A jogada da CPU é anunciada, mas o NOME da armadilha não: revelá-lo
-         destruiria a única coisa que faz uma armadilha valer o custo. O
-         jogador fica sabendo que existe uma ameaça nova na mesa — que é o
-         mesmo que ele já vê na zona de armadilhas — e não qual é. */
-      if (caster === 'MACHINE') {
-        queueAcknowledgement(
-          {
-            tone: 'CPU',
-            subtitle: 'A CPU JOGOU',
-            title: 'ARMADILHA',
-            description: 'A CPU virou uma carta na mesa. Você não sabe qual é — ainda.',
-          },
-          () => {},
-        );
+      /* O anúncio sai, mas o NOME da armadilha só é legível para o DONO:
+         revelá-lo ao adversário destruiria a única coisa que faz a carta
+         valer o custo. Mesma decisão do `TRAP_ARMED` do log — o `cardId`
+         viaja no fato e quem o esconde é a tradução, que sabe quem lê. */
+      if (announcesCardPlay(state, caster)) {
+        queueAcknowledgement({ code: 'TRAP_ARMED', subject: caster, cardId }, () => {});
       }
 
       get().dispatchEvent({ type: 'TRAP_ARMED', player: caster, cardId });
@@ -753,41 +755,23 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // jogo com um modal até o jogador confirmar que leu. `apply` vazio: não
       // há efeito mecânico para adiar, diferente do caso das armadilhas.
       if (result.acknowledge) {
-        queueAcknowledgement(
-          {
-            kind: result.acknowledge.kind ?? 'INFO',
-            tone: result.acknowledge.tone ?? 'INTEL',
-            subtitle: result.acknowledge.subtitle,
-            title: result.acknowledge.title,
-            description: result.acknowledge.description,
-            revealedCards: result.acknowledge.revealedCards,
-          },
-          () => {},
-        );
+        queueAcknowledgement(result.acknowledge, () => {});
       }
 
       get().dispatchEvent({ type: 'CARD_PLAYED', player: caster, cardId });
     };
 
-    /* --- Anúncio da jogada da CPU -------------------------------------------
-       A máquina jogar uma carta e o efeito aparecer no mesmo frame é a origem
-       da sensação de "aconteceu do nada": o jogador vê o HP cair, a mão
-       encolher ou a casa travar sem nunca ter visto a causa. Enfileirar o
-       anúncio ANTES de aplicar inverte isso — primeiro ele lê "A CPU JOGOU
-       SAQUE", confirma, e só então o efeito acontece.
+    /* --- Anúncio da jogada --------------------------------------------------
+       A carta ser jogada e o efeito aparecer no mesmo frame é a origem da
+       sensação de "aconteceu do nada": o jogador vê o HP cair, a mão encolher
+       ou a casa travar sem nunca ter visto a causa. Enfileirar o anúncio ANTES
+       de aplicar inverte isso — primeiro ele lê "O OPONENTE JOGOU SAQUE",
+       confirma, e só então o efeito acontece.
 
-       A carta já saiu da mão da CPU aqui (o `patch` está montado), mas nada
+       A carta já saiu da mão do caster aqui (o `patch` está montado), mas nada
        dele foi escrito ainda: `applyResult` é o `apply` da fila. */
-    if (caster === 'MACHINE') {
-      queueAcknowledgement(
-        {
-          tone: 'CPU',
-          subtitle: 'A CPU JOGOU',
-          title: card.name,
-          description: card.description,
-        },
-        applyResult,
-      );
+    if (announcesCardPlay(state, caster)) {
+      queueAcknowledgement({ code: 'CARD_PLAYED', subject: caster, cardId }, applyResult);
       return true;
     }
 
@@ -1172,12 +1156,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
              mensagem só aplicam quando o JOGADOR confirmar (`acknowledgePending`)
              — nunca depois de um timer fixo, que não garante leitura nenhuma. */
           queueAcknowledgement(
-            {
-              tone: 'DANGER',
-              subtitle: defender === 'PLAYER' ? 'SUA ARMADILHA' : 'ARMADILHA DA CPU',
-              title: card.name,
-              description: card.description,
-            },
+            { code: 'TRAP_TRIGGERED', subject: defender, target: actor, cardId: trap.cardId },
             () => {
               // Mesma blindagem de `resolveCardPlay`: uma armadilha também não
               // tem por que mexer no relógio global.

@@ -1,7 +1,7 @@
 import { getCard } from '@/engine/cards/registry';
 import type { CardId } from '@/engine/cards/definitions';
 import type { LogPayload, NoticeTone } from '@/engine/log';
-import type { ChaosRule, Combatant } from '@/engine/rules';
+import type { ChaosRule, Combatant, PendingAcknowledgement } from '@/engine/rules';
 
 /**
  * A camada de idioma do jogo.
@@ -209,4 +209,114 @@ export function resolveNoticeTone(
   if (explicit) return explicit;
   if (entry.subject === undefined) return 'NEUTRAL';
   return entry.subject === p.localCombatant ? 'GOOD' : 'BAD';
+}
+
+/* -------------------------------------------------------------------------- */
+/*                        TEXTO DO MODAL DE CONFIRMAÇÃO                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Intenção visual do modal. Só cor e selo — nenhuma regra depende disto, e por
+ * isso o tipo mora AQUI e não no domínio: o motor não escolhe cores.
+ *
+ * `OPPONENT` (antes `CPU`) existe para o anúncio de jogada do adversário não
+ * usar o mesmo vermelho de "você caiu numa armadilha": são eventos de gravidade
+ * bem diferente. O nome deixou de citar a CPU porque, no online, o adversário
+ * é gente.
+ */
+export type AcknowledgementTone = 'DANGER' | 'OPPONENT' | 'INTEL';
+
+export interface AcknowledgementText {
+  subtitle: string;
+  title: string;
+  description: string;
+  tone: AcknowledgementTone;
+}
+
+function cardOf(cardId: PendingAcknowledgement['cardId']) {
+  if (cardId === undefined) return null;
+  try {
+    return getCard(cardId);
+  } catch {
+    return null;
+  }
+}
+
+/** "VOCÊ JOGOU" / "O OPONENTE JOGOU" / "A CPU JOGOU". */
+function playedByLabel(subject: Combatant, p: LogPerspective): string {
+  if (subject === p.localCombatant) return 'VOCÊ JOGOU';
+  return p.isOnline ? 'O OPONENTE JOGOU' : 'A CPU JOGOU';
+}
+
+/**
+ * Descritor semântico ➜ as três linhas do `AcknowledgementModal`.
+ *
+ * Mesmo contrato do `formatLogEntry`: `switch` sem `default`, para que um
+ * `AcknowledgementCode` novo sem tradução seja erro de compilação em vez de um
+ * modal em branco travando a partida.
+ */
+export function formatAcknowledgement(
+  ack: PendingAcknowledgement,
+  p: LogPerspective,
+): AcknowledgementText {
+  const card = cardOf(ack.cardId);
+  const isMine = ack.subject === p.localCombatant;
+
+  switch (ack.code) {
+    case 'TRAP_TRIGGERED':
+      return {
+        subtitle: isMine
+          ? 'SUA ARMADILHA'
+          : `ARMADILHA ${nameOf(ack.subject, p, 'possessive').toUpperCase()}`,
+        title: card?.name ?? 'ARMADILHA',
+        description: card?.description ?? 'Uma armadilha disparou.',
+        tone: 'DANGER',
+      };
+
+    /* O dono vê o nome da própria carta; o adversário vê que existe uma ameaça
+       nova na mesa — que é o mesmo que ele já enxerga na zona de armadilhas — e
+       não qual é. O segredo é decidido aqui, na leitura, e não na escrita: um
+       descritor único e correto serve os dois lados. */
+    case 'TRAP_ARMED':
+      return isMine
+        ? {
+            subtitle: 'VOCÊ JOGOU',
+            title: card?.name ?? 'ARMADILHA',
+            description: card?.description ?? 'Sua armadilha está na mesa.',
+            tone: 'OPPONENT',
+          }
+        : {
+            subtitle: playedByLabel(ack.subject, p),
+            title: 'ARMADILHA',
+            description: `${nameOf(ack.subject, p, 'subject')} virou uma carta na mesa. Você não sabe qual é — ainda.`,
+            tone: 'OPPONENT',
+          };
+
+    case 'CARD_PLAYED':
+      return {
+        subtitle: playedByLabel(ack.subject, p),
+        title: card?.name ?? 'CARTA',
+        description: card?.description ?? '',
+        tone: 'OPPONENT',
+      };
+
+    case 'HAND_REVEALED': {
+      // O dono da mão é o `target`; "SUA MÃO" acontece quando é você que foi
+      // espionado — e é justamente aí que o pronome invertido doía mais.
+      const title =
+        ack.target === p.localCombatant
+          ? 'SUA MÃO'
+          : `MÃO ${nameOf(ack.target, p, 'possessive').toUpperCase()}`;
+
+      return {
+        subtitle: ack.kind === 'SPY_PICK' ? 'ESPIONAGEM' : 'VISÃO ABSOLUTA',
+        title,
+        description:
+          ack.kind === 'SPY_PICK'
+            ? 'Escolha UMA carta e toque para virar.'
+            : `${ack.revealedCards.length} carta(s). Toque para virar e desvirar.`,
+        tone: 'INTEL',
+      };
+    }
+  }
 }

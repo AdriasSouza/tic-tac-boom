@@ -4,6 +4,7 @@ import { getDb } from '@/config/firebase';
 import { generateSeed } from '@/engine/rng';
 import type {
   MultiplayerAction,
+  PlayerPresence,
   PlayerSlot,
   RoomRecord,
   RoomSnapshot,
@@ -150,6 +151,27 @@ function roomRef(code: string) {
   return ref(getDb(), `${ROOMS_PATH}/${code}`);
 }
 
+/**
+ * Referência CIRÚRGICA a um assento — não à sala inteira.
+ *
+ * É o que faz a transação de `joinRoom` ser segura mesmo com o cache local
+ * frio (cliente que acabou de abrir o app, nunca leu este caminho). O SDK do
+ * RTDB, sem valor em cache, chuta `null` na primeira passada do callback de
+ * `runTransaction` — e se o callback ABORTA justamente quando vê `null`
+ * (como uma transação na sala inteira checando "ela existe?"), a transação
+ * desiste ali mesmo, sem nunca perguntar ao servidor se o chute estava certo.
+ *
+ * Escopar no assento inverte a polaridade: o palpite otimista (`null` = vago)
+ * agora é o caminho que ESCREVE, nunca o que aborta. Na pior hipótese (a vaga
+ * já estava ocupada e o cache frio não sabia), o SDK tenta gravar, o servidor
+ * rejeita por divergência, e só ENTÃO o callback roda de novo com o valor
+ * real — processo transparente do próprio `runTransaction`, até 25 vezes.
+ * Abortar por engano deixou de ser possível.
+ */
+function playerRef(code: string, slot: PlayerSlot) {
+  return ref(getDb(), `${ROOMS_PATH}/${code}/players/${slot}`);
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                CRIAR SALA                                   */
 /* -------------------------------------------------------------------------- */
@@ -225,38 +247,23 @@ export interface JoinRoomResult {
   slot: PlayerSlot;
 }
 
-/**
- * Ocupa o assento `player2` e vira a sala para `PLAYING`.
- *
- * Também em transação: sem ela, dois jogadores lendo a sala ao mesmo tempo
- * veriam `player2: null` e ambos gravariam por cima, e a sala terminaria com
- * um dos dois silenciosamente expulso — um bug que só aparece em produção,
- * com jogadores reais, e é quase impossível de reproduzir depois.
- *
- * O motivo da recusa é capturado numa variável de fechamento porque o
- * resultado da transação só informa `committed: false`, sem dizer por quê — e
- * "código não existe" e "sala cheia" pedem mensagens diferentes na UI.
- */
-/** Veredito sobre o que fazer com uma sala, dado o estado atual dela. */
+/** Veredito do pré-check, dado o snapshot atual da sala. */
 type JoinDecision =
   | { kind: 'JOIN' }
   | { kind: 'REJOIN'; slot: PlayerSlot }
   | { kind: 'FAIL'; reason: MultiplayerErrorCode };
 
 /**
- * Decide se este cliente pode entrar na sala — **função pura**.
+ * Pré-check rápido — **função pura**, não decide nada sob concorrência.
  *
- * Separada do handler da transação para poder ser chamada duas vezes: uma
- * DENTRO dele (para decidir se grava) e outra DEPOIS (para explicar por que
- * não gravou). A alternativa seria o handler comunicar o motivo por variável
- * de fechamento, mas isso é ao mesmo tempo frágil — o handler roda várias
- * vezes sob contenção — e indefensável para o TypeScript, que não consegue
- * rastrear atribuições dentro de callback e trata a variável como se nunca
- * tivesse mudado.
+ * Só distingue, a partir do snapshot que acabou de chegar, "este cliente já
+ * tem assento aqui" (REJOIN — reentrada depois de recarregar o app) de "sala
+ * cheia ou já começou, nem tente" (FAIL) de "prossiga" (JOIN). Quem decide de
+ * fato se a vaga está livre, sob concorrência de dois clientes entrando ao
+ * mesmo tempo, é a transação cirúrgica em `playerRef` logo abaixo — isto aqui
+ * só evita a viagem de rede óbvia quando a resposta já dá para saber sem ela.
  */
-function classifyJoin(current: RoomRecord | null, clientId: string): JoinDecision {
-  if (current === null) return { kind: 'FAIL', reason: 'ROOM_NOT_FOUND' };
-
+function classifyJoin(current: RoomRecord, clientId: string): JoinDecision {
   // Reentrada: este cliente JÁ ocupa um assento (voltou da tela de jogo,
   // recarregou o app). Não é entrada nova — devolve o assento que ele já
   // tinha, em vez de recusar por "sala cheia" e deixá-lo de fora da própria
@@ -270,50 +277,74 @@ function classifyJoin(current: RoomRecord | null, clientId: string): JoinDecisio
   return { kind: 'JOIN' };
 }
 
+/**
+ * Ocupa o assento `player2`.
+ *
+ * Dois passos deliberadamente separados:
+ *
+ * 1. `get()` na sala inteira — só para EXISTÊNCIA, seed e o pré-check de
+ *    `classifyJoin` (reentrada / sala já encerrada). Rápido de descartar sem
+ *    gastar uma transação.
+ * 2. Transação CIRÚRGICA em `players/player2` — a única fonte de verdade
+ *    sobre a vaga estar livre. Ver `playerRef` para o porquê de o escopo
+ *    importar: uma transação na sala inteira (a versão anterior desta função)
+ *    aborta em silêncio contra um cache frio, porque o palpite otimista do
+ *    SDK (`null`) coincide com a condição de abort ("sala não existe"). Aqui
+ *    o palpite otimista coincide com a condição de ESCREVER ("vaga livre"),
+ *    então o cache frio nunca impede a transação de perguntar ao servidor.
+ *
+ * Depois de garantir a vaga, vira a sala para `PLAYING` — sinal que acorda o
+ * listener do outro cliente (`multiplayerStore`) para a partida ter começado.
+ * Ninguém além do dono da vaga faz essa escrita, então não há corrida aqui.
+ */
 export async function joinRoom(rawCode: string): Promise<JoinRoomResult> {
   const code = normalizeRoomCode(rawCode);
 
-  let settled: RoomRecord | null;
+  const probe = await get(roomRef(code)).catch((error: unknown) => {
+    throw toNetworkError(error);
+  });
+
+  if (!probe.exists()) {
+    throw new MultiplayerError('ROOM_NOT_FOUND', describeJoinFailure('ROOM_NOT_FOUND', code));
+  }
+
+  const room = probe.val() as RoomRecord;
+  const decision = classifyJoin(room, CLIENT_ID);
+
+  if (decision.kind === 'REJOIN') {
+    return { code, seed: room.seed, slot: decision.slot };
+  }
+  if (decision.kind === 'FAIL') {
+    throw new MultiplayerError(decision.reason, describeJoinFailure(decision.reason, code));
+  }
+
   let committed: boolean;
-
   try {
-    const result = await runTransaction(roomRef(code), (current: RoomRecord | null) => {
-      if (current === null) return undefined; // aborta sem gravar
-      if (classifyJoin(current, CLIENT_ID).kind !== 'JOIN') return undefined;
-
-      return {
-        ...current,
-        status: 'PLAYING' as const,
-        players: {
-          player1: current.players?.player1 ?? null,
-          player2: { clientId: CLIENT_ID, joinedAt: Date.now() },
-        },
-      };
-    });
-
-    // `result.snapshot` traz o estado da sala como ficou — o valor gravado se
-    // commitou, ou o valor lido do servidor se abortou. É a fonte de verdade
-    // tanto para a seed quanto para o diagnóstico da recusa, sem precisar de
-    // uma segunda ida à rede.
-    settled = result.snapshot.val() as RoomRecord | null;
-    committed = result.committed;
+    const txResult = await runTransaction(
+      playerRef(code, 'player2'),
+      (currentP2: PlayerPresence | null) => {
+        if (currentP2 !== null) return undefined; // vaga ocupada, aborta
+        return { clientId: CLIENT_ID, joinedAt: Date.now() } satisfies PlayerPresence;
+      },
+    );
+    committed = txResult.committed;
   } catch (error) {
     throw toNetworkError(error);
   }
 
-  if (committed && settled !== null) {
-    return { code, seed: settled.seed, slot: 'player2' };
+  // A vaga foi ocupada por outra pessoa entre o pré-check e agora — a mesma
+  // corrida que o comentário de `playerRef` descreve, só que desta vez real.
+  if (!committed) {
+    throw new MultiplayerError('ROOM_FULL', describeJoinFailure('ROOM_FULL', code));
   }
 
-  // Reentrada aborta a transação de propósito (não há nada a gravar), então
-  // chega aqui com `committed: false` — mas é sucesso, não falha.
-  const decision = classifyJoin(settled, CLIENT_ID);
-  if (decision.kind === 'REJOIN' && settled !== null) {
-    return { code, seed: settled.seed, slot: decision.slot };
+  try {
+    await update(roomRef(code), { status: 'PLAYING' satisfies RoomRecord['status'] });
+  } catch (error) {
+    throw toNetworkError(error);
   }
 
-  const reason = decision.kind === 'FAIL' ? decision.reason : 'ROOM_NOT_FOUND';
-  throw new MultiplayerError(reason, describeJoinFailure(reason, code));
+  return { code, seed: room.seed, slot: 'player2' };
 }
 
 function describeJoinFailure(code: MultiplayerErrorCode, roomCode: string): string {
