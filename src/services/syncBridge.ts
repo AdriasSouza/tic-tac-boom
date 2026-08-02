@@ -1,6 +1,6 @@
 import { pushAction } from '@/services/multiplayerService';
 import { useGameStore } from '@/store/gameStore';
-import { useMultiplayerStore } from '@/store/multiplayerStore';
+import { selectOpponentConnectionStatus, useMultiplayerStore } from '@/store/multiplayerStore';
 import type { Combatant } from '@/engine/rules';
 import type { MultiplayerAction, PlayerSlot, StoredAction } from '@/types/multiplayer';
 
@@ -75,6 +75,24 @@ export function isOnlineMatch(): boolean {
 export function isLocalTurn(): boolean {
   if (!isOnlineMatch()) return true;
   return useGameStore.getState().turn === getLocalCombatant();
+}
+
+/**
+ * O OPONENTE está com o socket vivo agora?
+ *
+ * `selectOpponentConnectionStatus` é escrito pelo `onDisconnect` armado em
+ * `multiplayerService.attachPresence` — nunca por este cliente sobre si
+ * mesmo. Distinto de "é a vez dele": um oponente pode estar conectado e
+ * travado esperando a própria vez, ou desconectado bem no meio da própria
+ * vez — os dois eixos são independentes.
+ *
+ * Fora do online devolve `true` pelo mesmo motivo de `isLocalTurn`: não
+ * existe "o outro lado" para cair nos modos local/CPU. `null` (ainda sem
+ * snapshot) também conta como conectado — não bloqueia por falta de dado.
+ */
+export function isOpponentConnected(): boolean {
+  if (!isOnlineMatch()) return true;
+  return selectOpponentConnectionStatus(useMultiplayerStore.getState()) !== 'DISCONNECTED';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -255,6 +273,34 @@ export function netAcknowledge(): void {
   broadcast((by) => ({ type: 'ACKNOWLEDGE', by, at: Date.now() }));
 }
 
+/**
+ * Declara vitória por W.O. e replica.
+ *
+ * `by` é QUEM DECLAROU (o lado ainda conectado) — a UI só libera o botão que
+ * chama isto depois de um período de graça vendo `isOpponentConnected()`
+ * falso, então não há checagem extra aqui. Publicada como uma ação comum:
+ * se o desistente reconectar mais tarde, `consumeRemoteActions` entrega este
+ * `FORFEIT` do log como entregaria uma jogada perdida — sem mecanismo novo.
+ */
+export function netForfeit(): void {
+  useGameStore.getState().forfeitMatch(getLocalCombatant());
+  broadcast((by) => ({ type: 'FORFEIT', by, at: Date.now() }));
+}
+
+/**
+ * Confirma o sacrifício do Altar e replica.
+ *
+ * Único ponto de contato do `<AltarModal />` com a rede — tudo antes disto
+ * (arrastar cartas para os slots, tocar para trocar a seleção) é estado local
+ * do modal, que este arquivo nunca vê. Só o clique em "Confirmar Sacrifício"
+ * vira uma ação, exatamente como uma jogada de tabuleiro ou de carta.
+ */
+export function netSacrificeCards(uid1: string, uid2: string): void {
+  const caster = getLocalCombatant();
+  useGameStore.getState().sacrificeCards(caster, [uid1, uid2]);
+  broadcast((by) => ({ type: 'SACRIFICE_CARDS', by, at: Date.now(), uids: [uid1, uid2] }));
+}
+
 /* -------------------------------------------------------------------------- */
 /*                      ENTRADA: REDE ➜ LOCAL                                  */
 /* -------------------------------------------------------------------------- */
@@ -306,6 +352,27 @@ function applyRemoteAction(action: StoredAction): void {
     case 'ACKNOWLEDGE':
       game.acknowledgePending();
       break;
+
+    // `combatant` aqui é quem DECLAROU o W.O. (ver `netForfeit`) — vencedor,
+    // não desistente. `forfeitMatch` já é o mesmo no-op em ambos os clientes
+    // se a partida tiver acabado por HP antes deste log chegar.
+    case 'FORFEIT':
+      game.forfeitMatch(combatant);
+      break;
+
+    case 'SACRIFICE_CARDS': {
+      const removed = game.sacrificeCards(combatant, action.uids);
+      if (removed !== action.uids.length) {
+        console.error(
+          '[syncBridge] DESSINCRONIA: o sacrifício remoto removeu',
+          removed,
+          'de',
+          action.uids.length,
+          'cartas esperadas.',
+        );
+      }
+      break;
+    }
   }
 }
 

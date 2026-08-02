@@ -14,7 +14,9 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 
+import MiniHand from './MiniHand';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
+import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import {
   INITIAL_HP,
   selectMachineHp,
@@ -39,8 +41,13 @@ const SHAKE_AMPLITUDE = 7;
 /** Quanto tempo o bloco perdido fica em animação de quebra. */
 const BREAK_DURATION = 480;
 
-const BLOCK_SIZE = 18;
-const BLOCK_GAP = 4;
+/**
+ * Folga entre blocos de HP. Único número da barra que NÃO escala: abaixo de
+ * ~3dp dois blocos vizinhos deixam de se ler como separados, e o medidor
+ * inteiro vira uma barra contínua — que é exatamente a leitura que o formato
+ * em blocos existe para evitar.
+ */
+const BLOCK_GAP = 3;
 
 /* -------------------------------------------------------------------------- */
 /*                                    PROPS                                    */
@@ -60,11 +67,36 @@ export interface HUDProps {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Painel de status entre o `<ChaosTerminal />` e o `<Board />`.
+ * **Linha superior do layout** — a barra de status.
  *
- * Mostra o HP dos dois lados em blocos pixelados e sinaliza o turno ativo.
- * Cada `<HpTracker />` assina só o próprio HP, então dano no Player não
- * re-renderiza o lado da Máquina.
+ * Uma única fileira `space-between` com três grupos:
+ *
+ * ```
+ * [ HP · mão (você) ]      [ TURNO ]      [ mão · HP (rival) ]
+ * ```
+ *
+ * As duas mãos vivem aqui (e não mais numa faixa própria abaixo, como fazia o
+ * antigo `<OpponentHandZone />`) por dois motivos: a comparação "quantas
+ * cartas eu tenho × quantas ele tem" passa a ser um único olhar em vez de dois
+ * pontos distantes da tela, e a coluna vertical — o recurso mais escasso do
+ * layout empilhado — economiza a faixa inteira que aquela zona reservava.
+ *
+ * Cada grupo lateral (HP + mão) muda de EIXO conforme a orientação da tela —
+ * mesma lógica de "usar o eixo que está sobrando" já aplicada à área de
+ * combate (ver `[mode].tsx`):
+ *
+ * - **Retrato**: o grupo empilha em coluna (mão logo abaixo do HP). A largura
+ *   de cada lado fica pequena, mas a coluna vertical tem folga — é o mesmo
+ *   motivo pelo qual a mão de baixo (`<CardHand />`) também é vertical de
+ *   sobra nesse eixo.
+ * - **Paisagem**: o grupo volta a ser uma fileira (HP e mão lado a lado,
+ *   centralizados verticalmente) — há largura de monitor sobrando para os
+ *   dois convivendo na mesma linha, e cartas maiores (ver
+ *   `useResponsiveLayout`) aproveitam esse espaço em vez de ficar diminutas
+ *   num canto.
+ *
+ * Cada `<HpTracker />` assina só o próprio HP, então dano num lado não
+ * re-renderiza o outro.
  */
 export function HUD({
   style,
@@ -74,6 +106,11 @@ export function HUD({
 }: HUDProps) {
   const turn = useGameStore(selectTurn);
   const status = useGameStore(selectStatus);
+  // Barra de status inteira escalada pela MESMA fonte do resto da tela: aqui
+  // ela divide uma única fileira entre HP, miniatura de mão e turno dos dois
+  // lados, e com as medidas fixas de antes essa soma estourava a largura de um
+  // celular pequeno.
+  const { hpBlockSize, isPortrait } = useResponsiveLayout();
 
   /* O lado esquerdo (vermelho) é sempre QUEM ESTÁ SEGURANDO O APARELHO, e o
      direito (azul) sempre o adversário — mesmo numa sala online, onde o
@@ -91,15 +128,24 @@ export function HUD({
         <View style={styles.bevelLight} pointerEvents="none" />
         <View style={styles.bevelShadow} pointerEvents="none" />
 
-        <View style={styles.row}>
-          <HpTracker
-            target={localCombatant}
-            label={playerLabel}
-            accent={colors.markX}
-            align="left"
-            isActive={isLive && turn === localCombatant}
-            hapticsEnabled={hapticsEnabled}
-          />
+        <View style={[styles.row, isPortrait && styles.rowPortrait]}>
+          {/* Esquerda: você. Em paisagem, HP e mão lado a lado; em retrato,
+              a mão empilha abaixo do HP — os dois alinhados à borda externa
+              (`flex-start`: a mais próxima do canto esquerdo da tela). */}
+          <View style={[styles.side, isPortrait ? styles.sideColumn : styles.sideRow]}>
+            <HpTracker
+              target={localCombatant}
+              label={playerLabel}
+              accent={colors.markX}
+              align="left"
+              isActive={isLive && turn === localCombatant}
+              hapticsEnabled={hapticsEnabled}
+              blockSize={hpBlockSize}
+            />
+            {/* `revealed`: são as MINHAS cartas — o leque lá embaixo já as
+                mostra por extenso, então a miniatura não vaza nada. */}
+            <MiniHand owner={localCombatant} revealed align="left" />
+          </View>
 
           <TurnBadge
             isLocalTurn={turn === localCombatant}
@@ -107,14 +153,23 @@ export function HUD({
             opponentLabel={opponentLabel}
           />
 
-          <HpTracker
-            target={remoteCombatant}
-            label={opponentLabel}
-            accent={colors.markO}
-            align="right"
-            isActive={isLive && turn === remoteCombatant}
-            hapticsEnabled={hapticsEnabled}
-          />
+          {/* Direita: o rival, espelhado. Em paisagem `row-reverse` põe o HP
+              na borda externa e a mão para dentro; em retrato os dois só
+              alinham à direita (`flex-end`), na mesma ordem vertical do lado
+              esquerdo — não há "borda externa" a espelhar numa coluna. */}
+          <View style={[styles.side, isPortrait ? styles.sideColumnRight : styles.sideRowReverse]}>
+            <HpTracker
+              target={remoteCombatant}
+              label={opponentLabel}
+              accent={colors.markO}
+              align="right"
+              isActive={isLive && turn === remoteCombatant}
+              hapticsEnabled={hapticsEnabled}
+              blockSize={hpBlockSize}
+            />
+            {/* Sem `revealed`: versos idênticos. Só a contagem é pública. */}
+            <MiniHand owner={remoteCombatant} align="right" />
+          </View>
         </View>
       </View>
     </View>
@@ -134,6 +189,8 @@ interface HpTrackerProps {
   align: 'left' | 'right';
   isActive: boolean;
   hapticsEnabled: boolean;
+  /** Lado de cada bloco em dp, já resolvido para esta tela. */
+  blockSize: number;
 }
 
 const HpTracker = memo(function HpTracker({
@@ -143,6 +200,7 @@ const HpTracker = memo(function HpTracker({
   align,
   isActive,
   hapticsEnabled,
+  blockSize,
 }: HpTrackerProps) {
   const hp = useGameStore(target === 'PLAYER' ? selectPlayerHp : selectMachineHp);
 
@@ -229,6 +287,7 @@ const HpTracker = memo(function HpTracker({
             breaking={breakingIndex === i}
             accent={accent}
             damage={damage}
+            size={blockSize}
           />
         ))}
       </View>
@@ -246,9 +305,11 @@ interface HpBlockProps {
   accent: string;
   /** Shared value do tracker — 0..1 durante o flash de dano. */
   damage: SharedValue<number>;
+  /** Lado do bloco em dp. */
+  size: number;
 }
 
-const HpBlock = memo(function HpBlock({ filled, breaking, accent, damage }: HpBlockProps) {
+const HpBlock = memo(function HpBlock({ filled, breaking, accent, damage, size }: HpBlockProps) {
   const burst = useSharedValue(0);
 
   useEffect(() => {
@@ -276,10 +337,16 @@ const HpBlock = memo(function HpBlock({ filled, breaking, accent, damage }: HpBl
   });
 
   return (
-    <View style={styles.blockSlot}>
+    <View style={[styles.blockSlot, { width: size, height: size }]}>
       {/* Slot vazio sempre visível: comunica quanto HP já foi perdido. */}
       <View style={[styles.blockEmpty, { borderColor: accent }]} pointerEvents="none" />
-      <Animated.View style={[styles.blockFill, animatedStyle]} pointerEvents="none" />
+      <Animated.View
+        // O miolo cheio é sempre menor que o slot pela mesma proporção do
+        // desenho original (12 de 18) — com um recuo fixo em dp, num aparelho
+        // pequeno o miolo desapareceria dentro da própria borda.
+        style={[{ width: Math.round(size * 0.66), height: Math.round(size * 0.66) }, animatedStyle]}
+        pointerEvents="none"
+      />
     </View>
   );
 });
@@ -400,16 +467,62 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: 'row',
-    alignItems: 'center',
+    // `flex-end` (não `center`): em paisagem cada grupo lateral é uma FILEIRA
+    // (HP + mão lado a lado), e o medidor de HP tem duas linhas (rótulo +
+    // blocos) enquanto a mão tem uma só (contagem + fichas) — ancorar pela
+    // BASE alinha os dois na mesma linha do olhar. Centralizar deixava a mão
+    // flutuando no meio do HP.
+    alignItems: 'flex-end',
     justifyContent: 'space-between',
+  },
+  // Retrato: cada grupo lateral virou uma COLUNA (HP em cima, mão embaixo) —
+  // "base" deixa de fazer sentido como referência entre os dois grupos, então
+  // centraliza a fileira toda em relação ao badge de turno do meio.
+  rowPortrait: {
+    alignItems: 'center',
   },
   rowReverse: {
     flexDirection: 'row-reverse',
   },
 
+  /**
+   * Grupo lateral: HP + miniatura da mão. `flex:1` divide a sobra igualmente
+   * entre os dois lados, e o `<TurnBadge />` no meio fica com a largura fixa
+   * dele — é o que mantém o indicador de turno visualmente centrado mesmo com
+   * mãos de tamanhos diferentes nos dois lados.
+   *
+   * A DIREÇÃO do grupo (variantes abaixo) é quem decide se HP e mão dividem a
+   * largura (paisagem, sobrando) ou a altura (retrato, sobrando) — nunca o
+   * eixo que já está apertado.
+   */
+  side: {
+    flex: 1,
+    gap: 8,
+  },
+  // Paisagem, lado esquerdo (você): HP e mão em fileira, centralizados.
+  sideRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  // Paisagem, lado direito (rival): espelha — HP na borda externa, mão para
+  // dentro — mesmo papel que `rowReverse` já cumpre em outros componentes.
+  sideRowReverse: {
+    flexDirection: 'row-reverse',
+    alignItems: 'center',
+  },
+  // Retrato, lado esquerdo: empilha, ancorado à borda externa (esquerda).
+  sideColumn: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+  },
+  // Retrato, lado direito: empilha, ancorado à borda externa (direita).
+  sideColumnRight: {
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+  },
+
   /* Tracker */
   tracker: {
-    flex: 1,
     alignItems: 'flex-start',
     gap: 6,
   },
@@ -422,8 +535,8 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   trackerLabel: {
-    fontSize: 11,
-    letterSpacing: 2,
+    fontSize: 10,
+    letterSpacing: 1.5,
     fontWeight: '700',
     color: colors.textDim,
   },
@@ -438,8 +551,7 @@ const styles = StyleSheet.create({
     gap: BLOCK_GAP,
   },
   blockSlot: {
-    width: BLOCK_SIZE,
-    height: BLOCK_SIZE,
+    // width/height chegam inline, escalados por `useResponsiveLayout`.
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -448,17 +560,16 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     opacity: 0.28,
   },
-  blockFill: {
-    width: BLOCK_SIZE - 6,
-    height: BLOCK_SIZE - 6,
-  },
 
   /* Badge central */
   turnBadge: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 10,
-    minWidth: 72,
+    paddingHorizontal: 6,
+    // Sem `minWidth` fixo: agora que os dois grupos laterais são `flex:1`,
+    // uma largura mínima aqui só serviria para roubar espaço deles em telas
+    // estreitas. O badge fica com o que o próprio texto pede.
+    flexShrink: 0,
   },
   turnBadgeCaption: {
     fontSize: 8,

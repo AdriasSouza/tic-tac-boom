@@ -1,12 +1,14 @@
-import { TRAP_CARD_IDS } from '@/engine/cards/registry';
+import { TRAP_CARD_IDS, getCard } from '@/engine/cards/registry';
 import { getChannel } from '@/engine/rng';
 import {
   HAND_LIMIT,
   INITIAL_HP,
   MARK_BY_COMBATANT,
   TRAP_LIMIT,
+  energyKeyFor,
   findWinner,
   getOldestPieceIndex,
+  getPieceIndexes,
   handKeyFor,
   hpOf,
   isCellUnavailable,
@@ -174,7 +176,15 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   if (state.machineCardTurn === state.turnCount) return null;
 
   const hand = state[handKeyFor(CPU)];
-  const find = (id: CardId) => hand.find((c) => c.cardId === id);
+  const energy = state[energyKeyFor(CPU)];
+  // Cego a `canPlay`/alvo — só a carta ESTAR na mão e CABER na energia do
+  // turno. Sem este filtro a CPU tentaria a carta de maior prioridade, seria
+  // recusada em silêncio por falta de ⚡ e não jogaria nada, mesmo tendo uma
+  // carta mais barata perfeitamente jogável logo abaixo na lista.
+  const find = (id: CardId) => {
+    const entry = hand.find((c) => c.cardId === id);
+    return entry && getCard(id).cost <= energy ? entry : undefined;
+  };
   const rng = getChannel('AI');
 
   // 1. Cura crítica — sobreviver vem antes de qualquer outra jogada.
@@ -185,19 +195,26 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   const attack = find('DIRECT_DAMAGE');
   if (attack && hpOf(state, HUMAN) <= 2) return { uid: attack.uid, cardId: attack.cardId };
 
-  // 3. Remove a própria interdição antes de tentar jogar no tabuleiro.
+  // 3. Remove a própria interdição antes de tentar jogar no tabuleiro. LIMPAR
+  // só cobre o bloqueio do caos; PURIFICAR cobre os dois — ambas exigem alvo
+  // agora (a própria célula interditada), diferente da antiga CLEANSE global.
+  const clearBlock = find('CLEAR_BLOCK');
+  if (clearBlock && state.activeRule === 'BLOCKED_CELL' && state.blockedCell !== null) {
+    return { uid: clearBlock.uid, cardId: clearBlock.cardId, targetIndex: state.blockedCell };
+  }
   const cleanse = find('CLEANSE');
-  if (cleanse && (state.activeRule === 'BLOCKED_CELL' || state.lockedCell !== null)) {
-    return { uid: cleanse.uid, cardId: cleanse.cardId };
+  if (cleanse) {
+    const target = state.activeRule === 'BLOCKED_CELL' ? state.blockedCell : state.lockedCell;
+    if (target !== null) return { uid: cleanse.uid, cardId: cleanse.cardId, targetIndex: target };
   }
 
-  // 4. Turno extra é sempre bom e nunca tem alvo — sem desvantagem em usar.
+  // 4. PULAR (turno extra) é sempre bom e nunca tem alvo — sem desvantagem.
   const extra = find('EXTRA_TURN');
   if (extra && state.extraTurnPending !== CPU) return { uid: extra.uid, cardId: extra.cardId };
 
   // 5. Arma a primeira armadilha disponível, se sobrar espaço na mesa.
   if (state[trapsKeyFor(CPU)].length < TRAP_LIMIT) {
-    const trap = hand.find((c) => TRAP_CARD_IDS.includes(c.cardId));
+    const trap = hand.find((c) => TRAP_CARD_IDS.includes(c.cardId) && getCard(c.cardId).cost <= energy);
     if (trap) return { uid: trap.uid, cardId: trap.cardId };
   }
 
@@ -209,10 +226,16 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (target !== null) return { uid: breakPiece.uid, cardId: breakPiece.cardId, targetIndex: target };
   }
 
-  // 7. Saque oportunista — só incomoda se o oponente tiver o que perder.
+  // 7. SAQUE e ESPIONAGEM: as duas mexem na mão do humano de verdade agora
+  // (SAQUE tem 50% de chance de roubar; ESPIONAGEM sempre descobre E
+  // descarta) — prioridade parecida, só incomodam se ele tiver o que perder.
   const raid = find('HAND_RAID');
   if (raid && state[handKeyFor(HUMAN)].length > 0 && rng.chance(0.5)) {
     return { uid: raid.uid, cardId: raid.cardId };
+  }
+  const spyCard = find('SPY_CARD');
+  if (spyCard && state[handKeyFor(HUMAN)].length > 0 && rng.chance(0.5)) {
+    return { uid: spyCard.uid, cardId: spyCard.cardId };
   }
 
   // 8. Trava uma célula vazia aleatória — disrupção de baixo custo. Nunca a
@@ -225,29 +248,49 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (empty.length > 0) return { uid: lock.uid, cardId: lock.cardId, targetIndex: rng.pick(empty) };
   }
 
-  // 9. Informação de baixo custo, quando nada mais se aplicou ainda.
+  // 9. VIDENTE agora DESTRÓI a peça marcada (não só revela) — mirar na mais
+  // ANTIGA do humano seria desperdício, ela já sumiria sozinha em breve pelo
+  // "infinito"; a mais NOVA é o alvo que rende de verdade, porque não sairia
+  // do tabuleiro por conta própria tão cedo.
   const reveal = find('REVEAL_OLDEST');
-  if (reveal && getOldestPieceIndex(state.board, HUMAN) !== null) {
-    return { uid: reveal.uid, cardId: reveal.cardId };
+  if (reveal) {
+    const humanPieces = getPieceIndexes(state.board, HUMAN); // mais antiga → mais nova
+    const newest = humanPieces.at(-1) ?? null;
+    if (newest !== null) return { uid: reveal.uid, cardId: reveal.cardId, targetIndex: newest };
   }
 
   // 10. Cura não-crítica — melhor que deixar a carta parada na mão.
   if (heal) return { uid: heal.uid, cardId: heal.cardId };
 
   // 11. Compra por último: preenche a mão quando nada mais se aplica.
+  // PROCRASTINAR II primeiro — mesma ideia, mais cartas — quando a energia
+  // alcançar; `find` já garante que só é escolhida se couber no turno.
+  const drawBig = find('DRAW_CARD_BIG');
+  if (drawBig && hand.length < HAND_LIMIT) return { uid: drawBig.uid, cardId: drawBig.cardId };
   const draw = find('DRAW_CARD');
   if (draw && hand.length < HAND_LIMIT) return { uid: draw.uid, cardId: draw.cardId };
 
-  // 12. Espionagem: a CPU não ganha nada mecânico com ela (já decide com o
-  // estado inteiro à vista), mas deixar a carta apodrecer na mão é pior — e
-  // do lado do jogador ela aparece como um aviso concreto de que foi espiado.
-  const spy = find('SPY_CARD') ?? find('FULL_INTEL');
-  if (spy && state[handKeyFor(HUMAN)].length > 0) return { uid: spy.uid, cardId: spy.cardId };
+  // 12. Puramente informativas — a CPU já decide com o estado inteiro à
+  // vista, então não ganham nada mecânico, mas apodrecer na mão é pior. Do
+  // lado do jogador viram um aviso concreto de que foi espiado.
+  const fullIntel = find('FULL_INTEL');
+  if (fullIntel && state[handKeyFor(HUMAN)].length > 0) {
+    return { uid: fullIntel.uid, cardId: fullIntel.cardId };
+  }
+  const peek = find('PEEK_RANDOM');
+  if (peek && state[handKeyFor(HUMAN)].length > 0) return { uid: peek.uid, cardId: peek.cardId };
 
-  // 13. Troca de mãos é alto risco (pode devolver cartas melhores ao
-  // oponente) — só ocasionalmente, nunca como prioridade.
-  const swap = find('HAND_SWAP');
-  if (swap && rng.chance(0.15)) return { uid: swap.uid, cardId: swap.cardId };
+  // 13. TROCAR é alto risco (pode devolver uma carta melhor ao oponente) —
+  // só ocasionalmente, nunca como prioridade. Mesma cautela da antiga TROCA
+  // (mão inteira), agora só entre uma carta de cada lado.
+  const trade = find('CARD_TRADE');
+  if (trade && rng.chance(0.15)) return { uid: trade.uid, cardId: trade.cardId };
+
+  // 14. TIC TAC BOOM! é de graça (custo 0) e o resultado é imprevisível para
+  // os dois lados — sem leitura estratégica clara, só entra ocasionalmente
+  // como uma última cartada em vez de deixar a energia sobrando sem uso.
+  const roulette = find('CHAOS_ROULETTE');
+  if (roulette && rng.chance(0.2)) return { uid: roulette.uid, cardId: roulette.cardId };
 
   return null;
 }

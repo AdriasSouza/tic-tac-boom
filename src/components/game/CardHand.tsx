@@ -22,6 +22,7 @@ import { colors } from '@/theme/colors';
 import { getCard } from '@/engine/cards/registry';
 import {
   selectCanUseCard,
+  selectEnergy,
   selectHandOf,
   selectHasPendingAcknowledgement,
   selectPendingAction,
@@ -78,6 +79,9 @@ export function CardHand({ style }: CardHandProps) {
   // `selectPlayerHand` fixo mostrava ao convidado a mão do adversário.
   const { localCombatant } = useMatchPerspective();
   const hand = useGameStore(useMemo(() => selectHandOf(localCombatant), [localCombatant]));
+  // Energia do combatente local — cada carta compara o PRÓPRIO `cost` contra
+  // este valor para decidir se aparece esmaecida (ver o `.map()` mais abaixo).
+  const currentEnergy = useGameStore(useMemo(() => selectEnergy(localCombatant), [localCombatant]));
   // `useCanPlayCardsNow` no lugar de `selectCanPlayCards`: o seletor original
   // testa `turn === 'PLAYER'`, o que travaria permanentemente quem entrou
   // como `player2` numa sala online (do lado dele o combatente local é
@@ -184,10 +188,39 @@ export function CardHand({ style }: CardHandProps) {
    */
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
 
+  /**
+   * Índice da carta sob o cursor. Mesmo papel do `draggingIndex` acima, pelo
+   * mesmo motivo: a decisão de qual carta fica por cima é uma comparação entre
+   * IRMÃS, e só o pai tem essa visão.
+   *
+   * Guardado como índice único (não um booleano por carta) porque no máximo
+   * uma carta pode estar sobrevoada por vez — e é isso que resolve o caso
+   * chato de o ponteiro atravessar rápido a região sobreposta de duas cartas:
+   * se o `enter` da nova chegar ANTES do `leave` da antiga, o índice já é o
+   * novo e o `leave` atrasado (que traz o índice velho) é descartado pela
+   * comparação abaixo, em vez de apagar um destaque que acabou de nascer.
+   */
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
   // Callbacks estáveis: uma arrow inline nas props anularia o `memo` do
   // CardItem e re-renderizaria a mão inteira a cada render do pai.
   const handleDragStart = useCallback((index: number) => setDraggingIndex(index), []);
   const handleDragEnd = useCallback(() => setDraggingIndex(null), []);
+
+  const handleHoverChange = useCallback((index: number, hovered: boolean) => {
+    setHoveredIndex((prev) => (hovered ? index : prev === index ? null : prev));
+  }, []);
+
+  /**
+   * O destaque é por ÍNDICE, e o índice muda de dono quando a mão muda de
+   * tamanho: jogar a 2ª de 4 cartas faz a antiga 3ª virar a 2ª, e ela herdaria
+   * um realce que o cursor nunca lhe deu — a carta some por baixo do ponteiro,
+   * então não existe `pointerleave` para desfazê-lo. Zerar aqui é o mesmo
+   * cuidado que o `onDragEnd` já toma com o `draggingIndex`.
+   */
+  useEffect(() => {
+    setHoveredIndex(null);
+  }, [hand.length]);
 
   const handleCancelTargeting = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
@@ -266,6 +299,12 @@ export function CardHand({ style }: CardHandProps) {
           hand.map(({ uid, cardId }, index) => {
             const { baseX, baseY, baseRotation } = layout[index];
             const isSelected = pendingAction?.uid === uid;
+            // Energia insuficiente trava a carta pelo MESMO mecanismo visual
+            // de "não é sua vez"/"mira ativa": `canDrag={false}` já esmaece
+            // via `cardDisabled` no `<CardItem />` (opacidade reduzida) e
+            // desliga o gesto de arrastar — nenhum estilo novo precisou ser
+            // criado, só mais uma condição na mesma trava.
+            const canAfford = getCard(cardId).cost <= currentEnergy;
 
             return (
               <CardItem
@@ -283,11 +322,18 @@ export function CardHand({ style }: CardHandProps) {
                 baseRotation={baseRotation}
                 playZoneBottom={playZoneBottom}
                 // Durante a mira ninguém arrasta: ou resolve, ou cancela.
-                canDrag={canPlayCards && !isTargeting && !hasPendingAcknowledgement}
+                canDrag={canPlayCards && !isTargeting && !hasPendingAcknowledgement && canAfford}
                 isSelected={isSelected}
                 isDragging={draggingIndex === index}
+                // Destaque de cursor: independente de `canDrag`. Uma carta que
+                // o jogador não pode usar agora (energia curta, vez do rival)
+                // continua precisando ser LIDA — o toque/clique nela abre o
+                // `<CardFocusModal />` de qualquer jeito, e apagar o realce
+                // faria a carta parecer inerte quando na verdade responde.
+                isHovered={hoveredIndex === index}
                 onDragStart={handleDragStart}
                 onDragEnd={handleDragEnd}
+                onHoverChange={handleHoverChange}
                 onFocus={handleFocusCard}
               />
             );

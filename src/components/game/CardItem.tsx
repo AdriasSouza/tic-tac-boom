@@ -42,6 +42,25 @@ const DRAG_LIFT = 14;
 /** Quanto a carta em mira sobe e fica, em dp. */
 const SELECTED_LIFT = 26;
 
+/**
+ * Destaque de foco da linha inferior: a carta sob o cursor sobe e cresce, e
+ * passa por cima das vizinhas (o `zIndex` vem do `<CardHand />`, ver
+ * `isHovered`).
+ *
+ * A carta se move SOZINHA — nada de reflow. Num leque as cartas se sobrepõem
+ * de propósito, e empurrar as vizinhas para abrir espaço reorganizaria a
+ * fileira inteira a cada passagem do mouse, tornando impossível mirar numa
+ * carta específica. É o mesmo motivo pelo qual `translateY`/`scale` (que não
+ * participam do cálculo de layout) são preferíveis a margem ou altura aqui.
+ *
+ * Só dispara com ponteiro de verdade. Em toque não existe estado "sobrevoado":
+ * lá o toque já é o próprio gesto de jogar/abrir o foco, e o destaque
+ * equivalente é o `SELECTED_LIFT` acima.
+ */
+const HOVER_LIFT = 20;
+const HOVER_SCALE = 0.1; // 1.0 ➜ 1.1
+const HOVER_DURATION = 200;
+
 /** Mola de retorno à mão. Sem overshoot exagerado: a carta é pesada. */
 const RETURN_SPRING = { damping: 16, stiffness: 220, mass: 0.9 } as const;
 
@@ -75,8 +94,16 @@ export interface CardItemProps {
   isSelected: boolean;
   /** z-index elevado enquanto arrasta. */
   isDragging: boolean;
+  /**
+   * Cursor sobre esta carta. Vem do `<CardHand />` (e não de estado local)
+   * porque o z-index precisa ser resolvido entre IRMÃS: só o pai sabe qual das
+   * cartas deve ficar por cima, e apenas uma pode estar sobrevoada por vez.
+   */
+  isHovered: boolean;
   onDragStart: (index: number) => void;
   onDragEnd: () => void;
+  /** Entrada/saída do ponteiro. Nunca dispara em toque. */
+  onHoverChange: (index: number, hovered: boolean) => void;
   /**
    * Toque rápido (sem arrastar) numa carta que NÃO está em mira. Abre o modo
    * foco (`<CardFocusModal />`) — a alternativa amigável ao mouse do fluxo de
@@ -116,8 +143,10 @@ function CardItemComponent({
   canDrag,
   isSelected,
   isDragging,
+  isHovered,
   onDragStart,
   onDragEnd,
+  onHoverChange,
   onFocus,
 }: CardItemProps) {
   const card = getCard(cardId);
@@ -127,6 +156,7 @@ function CardItemComponent({
   const translateY = useSharedValue(0);
   const dragging = useSharedValue(0); // 0..1 — escala, rotação e sombra
   const selected = useSharedValue(0); // 0..1 — destaque do modo mira
+  const hovered = useSharedValue(0); // 0..1 — destaque do cursor
   const launching = useSharedValue(0); // trava o reset do onFinalize
 
   /* --- Destaque de carta em mira ------------------------------------------ */
@@ -136,6 +166,21 @@ function CardItemComponent({
       easing: Easing.out(Easing.quad),
     });
   }, [isSelected, selected]);
+
+  /* --- Destaque de cursor --------------------------------------------------
+     Mesma forma do bloco acima, e de propósito: a transição de 200ms com
+     easing de saída é o equivalente Reanimated do `transition: all .2s ease`
+     do CSS — só que rodando na UI thread, então o realce continua fluido
+     mesmo com o JS ocupado resolvendo uma jogada.                            */
+  useEffect(() => {
+    hovered.value = withTiming(isHovered ? 1 : 0, {
+      duration: HOVER_DURATION,
+      easing: Easing.out(Easing.quad),
+    });
+  }, [isHovered, hovered]);
+
+  const handlePointerEnter = useCallback(() => onHoverChange(index, true), [onHoverChange, index]);
+  const handlePointerLeave = useCallback(() => onHoverChange(index, false), [onHoverChange, index]);
 
   /* --- Ponte para a thread JS --------------------------------------------- */
 
@@ -298,21 +343,28 @@ function CardItemComponent({
   const animatedStyle = useAnimatedStyle(() => {
     const drag = dragging.value;
     const sel = selected.value;
-    // Enquanto arrasta, o destaque de mira não deve somar elevação.
-    const lift = drag * DRAG_LIFT + sel * SELECTED_LIFT * (1 - drag);
+    /* Os três destaques (arrasto, mira, cursor) NÃO se somam: são graus
+       diferentes do mesmo gesto de "levantar a carta", e empilhá-los mandaria
+       uma carta arrastada com o mouse ainda em cima dela para 60dp acima do
+       leque. A precedência é arrasto > mira > cursor, e cada nível anula o
+       seguinte na proporção em que está ativo. */
+    const hov = hovered.value * (1 - drag) * (1 - sel);
+    const lift = drag * DRAG_LIFT + sel * SELECTED_LIFT * (1 - drag) + hov * HOVER_LIFT;
 
     return {
       transform: [
         { translateX: baseX + translateX.value },
         { translateY: baseY + translateY.value - lift },
-        // A rotação do leque se desfaz conforme a carta é levantada.
-        { rotate: `${baseRotation * (1 - Math.max(drag, sel))}deg` },
-        { scale: 1 + drag * DRAG_SCALE + sel * 0.06 },
+        // A rotação do leque se desfaz conforme a carta é levantada — inclusive
+        // sob o cursor: uma carta destacada e ainda torta fica mais difícil de
+        // ler do que a vizinha em repouso, o que anularia o próprio destaque.
+        { rotate: `${baseRotation * (1 - Math.max(drag, sel, hov))}deg` },
+        { scale: 1 + drag * DRAG_SCALE + sel * 0.06 + hov * HOVER_SCALE },
       ],
       borderColor: sel > 0.5 ? colors.winGlow : colors.boardFrameShadow,
-      shadowOpacity: drag * 0.5 + sel * 0.6,
-      shadowRadius: drag * 10 + sel * 8,
-      elevation: drag * 14 + sel * 10,
+      shadowOpacity: drag * 0.5 + sel * 0.6 + hov * 0.35,
+      shadowRadius: drag * 10 + sel * 8 + hov * 8,
+      elevation: drag * 14 + sel * 10 + hov * 6,
     };
   });
 
@@ -331,7 +383,16 @@ function CardItemComponent({
       // Layout animations vivem aqui, isoladas do transform do gesto.
       entering={FadeInDown.springify().damping(15).mass(0.7)}
       exiting={FadeOutUp.duration(220)}
-      style={[styles.slot, isDragging && styles.slotDragging, isSelected && styles.slotSelected]}
+      style={[
+        styles.slot,
+        // Precedência de empilhamento, do mais forte ao mais fraco. A carta
+        // sob o cursor precisa passar por CIMA das vizinhas — sem isto ela
+        // cresce por baixo delas e o destaque some justamente na parte que a
+        // sobreposição do leque já escondia.
+        isHovered && styles.slotHovered,
+        isSelected && styles.slotSelected,
+        isDragging && styles.slotDragging,
+      ]}
       pointerEvents="box-none"
     >
       <GestureDetector gesture={gesture}>
@@ -347,6 +408,10 @@ function CardItemComponent({
             !canDrag && !isSelected && styles.cardDisabled,
             animatedStyle,
           ]}
+          // Ponteiro (mouse/caneta) apenas — em toque nunca dispara, que é o
+          // comportamento desejado: lá o toque já resolve na hora.
+          onPointerEnter={handlePointerEnter}
+          onPointerLeave={handlePointerLeave}
           accessibilityRole="button"
           accessibilityState={{ selected: isSelected, disabled: !canDrag && !isSelected }}
           accessibilityLabel={`Carta ${card.name}. ${card.description}`}
@@ -414,6 +479,15 @@ const styles = StyleSheet.create({
   slotSelected: {
     zIndex: 50,
     elevation: 50,
+  },
+  /**
+   * Abaixo de arrasto e mira: os dois são estados DELIBERADOS do jogador e
+   * devem vencer o simples passar do mouse. Ainda assim bem acima do repouso,
+   * para a carta sobrevoada cobrir todas as vizinhas do leque.
+   */
+  slotHovered: {
+    zIndex: 25,
+    elevation: 25,
   },
   card: {
     position: 'absolute',

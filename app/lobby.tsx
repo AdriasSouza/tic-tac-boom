@@ -20,6 +20,7 @@ import {
   selectError,
   selectIsBusy,
   selectMultiplayerStatus,
+  selectPendingReconnectCode,
   selectPlayerId,
   selectRoomCode,
   selectSeed,
@@ -54,11 +55,14 @@ export default function LobbyScreen() {
   const seed = useMultiplayerStore(selectSeed);
   const error = useMultiplayerStore(selectError);
   const isBusy = useMultiplayerStore(selectIsBusy);
+  const pendingReconnectCode = useMultiplayerStore(selectPendingReconnectCode);
 
   const createRoom = useMultiplayerStore((s) => s.createRoom);
   const joinRoom = useMultiplayerStore((s) => s.joinRoom);
   const leaveRoom = useMultiplayerStore((s) => s.leaveRoom);
   const clearError = useMultiplayerStore((s) => s.clearError);
+  const reconnect = useMultiplayerStore((s) => s.reconnect);
+  const dismissReconnect = useMultiplayerStore((s) => s.dismissReconnect);
 
   const [codeInput, setCodeInput] = useState('');
 
@@ -105,6 +109,16 @@ export default function LobbyScreen() {
     router.back();
   }, [leaveRoom, router]);
 
+  const handleReconnect = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    void reconnect();
+  }, [reconnect]);
+
+  const handleDismissReconnect = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
+    dismissReconnect();
+  }, [dismissReconnect]);
+
   /* --- Sem configuração ---------------------------------------------------- */
   if (!configured) {
     return (
@@ -126,6 +140,12 @@ export default function LobbyScreen() {
      mesmo instante, sem espera.                                             */
   const isWaiting = status === 'IN_LOBBY' && roomCode !== null;
 
+  /* --- Oferta de reconexão --------------------------------------------------
+     `status === 'DISCONNECTED'` exclui o instante em que `reconnect()` já
+     está em voo (aí `enterRoom` já pôs `isBusy`/`IN_LOBBY` e este bloco
+     precisa sair da frente para o spinner normal de "entrando" aparecer). */
+  const showReconnectOffer = pendingReconnectCode !== null && status === 'DISCONNECTED';
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       <View style={styles.header}>
@@ -134,7 +154,34 @@ export default function LobbyScreen() {
         </Text>
       </View>
 
-      {isWaiting ? (
+      {showReconnectOffer ? (
+        <PixelPanel accent={colors.markX} style={styles.panel} contentStyle={styles.panelContent}>
+          <Text style={styles.subtitle}>PARTIDA EM ANDAMENTO</Text>
+
+          <Text style={styles.hint}>
+            Encontramos uma sessão salva da sala{' '}
+            <Text style={styles.reconnectCode}>{pendingReconnectCode}</Text>. Reconectar entra de
+            volta de onde parou.
+          </Text>
+
+          <PixelButton
+            label="RECONECTAR"
+            onPress={handleReconnect}
+            disabled={isBusy}
+            style={styles.action}
+          />
+
+          {isBusy && <ActivityIndicator color={colors.markX} style={styles.busy} />}
+
+          <PixelButton
+            label="COMEÇAR DO ZERO"
+            variant="ghost"
+            onPress={handleDismissReconnect}
+            disabled={isBusy}
+            style={styles.action}
+          />
+        </PixelPanel>
+      ) : isWaiting ? (
         <PixelPanel accent={colors.winGlow} style={styles.panel} contentStyle={styles.panelContent}>
           <Text style={styles.subtitle}>CÓDIGO DA SALA</Text>
 
@@ -312,6 +359,11 @@ const styles = StyleSheet.create({
     fontSize: 9,
     letterSpacing: 1.5,
     textAlign: 'center',
+  },
+  reconnectCode: {
+    color: colors.markX,
+    fontWeight: '900',
+    letterSpacing: 2,
   },
   input: {
     borderWidth: 2,

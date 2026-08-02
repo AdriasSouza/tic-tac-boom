@@ -187,6 +187,18 @@ export interface GameState {
   playerHp: number;
   machineHp: number;
 
+  /**
+   * Energia (⚡) disponível AGORA para cada combatente.
+   *
+   * Não cumulativa: cravada em `STARTING_ENERGY` a cada início de turno (ver
+   * `refillEnergy` no store), nunca somada ao que sobrou do turno anterior.
+   * O valor do combatente que NÃO está na vez é irrelevante para qualquer
+   * regra — `resolveCardPlay` só lê a energia de quem já passou pela guarda
+   * `turn === caster` — e existe só para o campo nunca ficar `undefined`.
+   */
+  playerEnergy: number;
+  machineEnergy: number;
+
   /** Regra caótica em vigor no tabuleiro. */
   activeRule: ChaosRule;
   /** Célula interditada enquanto `activeRule === 'BLOCKED_CELL'`. */
@@ -206,14 +218,18 @@ export interface GameState {
   lockedCellExpiresAtTurn: number | null;
 
   /**
-   * Combatente cuja peça condenada está REVELADA pela carta VIDENTE.
+   * Peça marcada pela carta VIDENTE — destruída no início do PRÓXIMO turno
+   * do dono dela (`owner`).
    *
-   * Guarda o dono, não o índice: a peça condenada é derivada do tabuleiro
-   * (`getOldestPieceIndex`), então guardar o índice congelaria a revelação
-   * num alvo que outra carta pode ter destruído no meio tempo. Limpo quando
-   * esse combatente joga — que é exatamente o momento previsto pela carta.
+   * Guarda `owner` e `turnPlaced` além do `index`, e não só o índice, porque
+   * a marca precisa se AUTO-INVALIDAR se a peça sair dali por outro caminho
+   * antes do gatilho (um DEMOLIR, o sumiço natural do "infinito", ou outra
+   * peça simplesmente ocupando a mesma casa depois): o gatilho (ver
+   * `resolveDoomedPiece` no store) só dispara se as três informações ainda
+   * baterem com o que está no tabuleiro — senão a marca expira em silêncio
+   * em vez de destruir uma peça diferente da que foi de fato marcada.
    */
-  revealDoomedFor: Combatant | null;
+  doomedCell: { index: number; owner: Combatant; turnPlaced: number } | null;
 
   /**
    * Mão do jogador. Os dados da carta (nome, efeito, arte) vêm do
@@ -308,6 +324,22 @@ export interface GameState {
   nextNoticeId: number;
 
   /**
+   * ALTAR DE SACRIFÍCIO acabou de resolver — mesmo padrão efêmero de
+   * `lastExtraTurn`/`lastNotice`, com `id` monotônico para o `id` disparar o
+   * `useEffect` do `<AltarModal />` mesmo se o MESMO combatente jogar a carta
+   * duas vezes seguidas (dois valores idênticos de `caster` não mudariam nada
+   * para uma comparação sem `id`).
+   *
+   * `caster` é quem deve VER o modal — nos dois clientes de uma partida
+   * online este fato chega idêntico, mas só o lado cujo `caster` bate com o
+   * `localCombatant` de fato abre o modal (ver `useMatchPerspective`); o outro
+   * lado só recebe o anúncio genérico de "carta jogada" que qualquer carta já
+   * emite.
+   */
+  lastAltarPrompt: { caster: Combatant; id: number } | null;
+  nextAltarPromptId: number;
+
+  /**
    * Partida pausada pelo menu de pause.
    *
    * Verificado em `canPlaceAt` (bloqueia o tabuleiro) e no hook da CPU
@@ -352,8 +384,17 @@ export interface GameState {
   roundWinner: Combatant | null;
   /** Linha vencedora — a UI usa para animar o traço/explosão. */
   winningLine: readonly [number, number, number] | null;
-  /** Quem venceu a partida inteira (zerou o HP do oponente). */
+  /** Quem venceu a partida inteira (zerou o HP do oponente, ou W.O.). */
   matchWinner: Combatant | null;
+  /**
+   * Por que a partida acabou, quando não foi por HP zerado.
+   *
+   * `null` cobre o caminho normal (vitória por dano) — a UI já sabe contar
+   * essa história a partir do placar de HP sozinha. `FORFEIT` existe só para
+   * o `GameOverOverlay` distinguir "venci jogando" de "venci porque o outro
+   * lado sumiu", que merecem textos diferentes na tela final.
+   */
+  matchOverReason: 'FORFEIT' | null;
 
   /** Índice da peça removida na última jogada. Efêmero, só para animação. */
   lastVanishedIndex: number | null;
@@ -374,6 +415,16 @@ export const MAX_PIECES_PER_PLAYER = 3;
 
 /** Vidas iniciais de cada lado. */
 export const INITIAL_HP = 5;
+
+/**
+ * Energia cravada a cada início de turno. Fixa, não cumulativa — ver
+ * `playerEnergy`/`machineEnergy` em `GameState`.
+ *
+ * Teto de facto do `cost` de qualquer carta: como a energia NUNCA acumula
+ * entre turnos, uma carta custando mais que isto seria impossível de jogar
+ * para sempre. Nenhuma carta do registry atual passa de 3.
+ */
+export const STARTING_ENERGY = 3;
 
 /** Dano padrão aplicado ao perdedor de uma rodada. Cartas podem alterar. */
 export const ROUND_DAMAGE = 1;
@@ -482,6 +533,16 @@ export function trapsKeyFor(combatant: Combatant): 'playerTraps' | 'machineTraps
 /** HP atual de um combatente. */
 export function hpOf(state: GameState, combatant: Combatant): number {
   return combatant === 'PLAYER' ? state.playerHp : state.machineHp;
+}
+
+/** Mesma ideia de `handKeyFor`, para a energia. */
+export function energyKeyFor(combatant: Combatant): 'playerEnergy' | 'machineEnergy' {
+  return combatant === 'PLAYER' ? 'playerEnergy' : 'machineEnergy';
+}
+
+/** Energia atual de um combatente. */
+export function energyOf(state: GameState, combatant: Combatant): number {
+  return state[energyKeyFor(combatant)];
 }
 
 /** Mão atual de um combatente. */

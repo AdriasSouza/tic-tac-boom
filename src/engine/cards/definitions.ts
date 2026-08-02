@@ -29,16 +29,19 @@ export type CardId =
   | 'HEAL_SELF'
   | 'DIRECT_DAMAGE'
   | 'DRAW_CARD'
+  | 'DRAW_CARD_BIG'
   | 'HAND_RAID'
   | 'CLEANSE'
-  | 'HAND_SWAP'
+  | 'CLEAR_BLOCK'
   | 'REVEAL_OLDEST'
   | 'LOCK_CELL'
   | 'SHIELD_TRAP'
-  | 'COUNTER_TRAP'
   | 'SPY_CARD'
+  | 'PEEK_RANDOM'
+  | 'CARD_TRADE'
   | 'FULL_INTEL'
-  | 'MIND_SHIELD_TRAP';
+  | 'CHAOS_ROULETTE'
+  | 'ALTAR_OF_SACRIFICE';
 
 /**
  * - `ACTION`  — resolve imediatamente ao ser jogada.
@@ -56,8 +59,21 @@ export type CardType = 'ACTION' | 'TRAP' | 'COUNTER';
 /*                                  RARIDADE                                   */
 /* -------------------------------------------------------------------------- */
 
-/** Faixa de raridade da carta. Define a chance de ela sair numa compra. */
-export type CardRarity = 'COMMON' | 'RARE' | 'EPIC' | 'LEGENDARY';
+/**
+ * Faixa de raridade da carta. Define a chance de ela sair numa compra E a
+ * intenção de design por trás dela (ver `RARITY_DRAW_WEIGHT`):
+ *
+ * - `COMMON`    — o pilar do jogo. Controle de tabuleiro (bloquear, limpar,
+ *                 demolir): mantém a disputa tática do "jogo da velha" viva.
+ * - `RARE`      — vantagem tática. Manipulação de mão, compra extra, roubo,
+ *                 espionagem.
+ * - `EPIC`      — impacto direto. Dano, cura, pular turno — taxa baixa de
+ *                 propósito, para o jogo não virar um tiroteio de HP.
+ * - `LEGENDARY` — pesada e punitiva, capaz de virar a partida de uma vez.
+ * - `BOOM`      — caos puro, quebra as regras provisoriamente. Ainda SEM
+ *                 cartas registradas — ver a nota em `RARITY_DRAW_WEIGHT`.
+ */
+export type CardRarity = 'COMMON' | 'RARE' | 'EPIC' | 'LEGENDARY' | 'BOOM';
 
 /**
  * Chance de a COMPRA cair em cada faixa, em pontos percentuais.
@@ -67,14 +83,21 @@ export type CardRarity = 'COMMON' | 'RARE' | 'EPIC' | 'LEGENDARY';
  * dependeria de QUANTAS cartas existem nela — acrescentar uma armadilha nova
  * aumentaria silenciosamente a chance de sair armadilha. Foi exatamente esse
  * efeito que fazia a mão da CPU virar um paredão de armadilhas. Sorteando a
- * faixa primeiro, estes 50/30/15/5 valem sempre, independente do tamanho do
- * deck.
+ * faixa primeiro, estes 50/25/15/6/4 valem sempre, independente do tamanho
+ * do deck.
+ *
+ * `BOOM` ainda não tem nenhuma carta no registry (chega numa etapa futura).
+ * `drawCardId` descarta faixas vazias antes de sortear (ver `RARITY_POOL`),
+ * então os 4% de `BOOM` hoje são redistribuídos proporcionalmente entre as
+ * outras quatro — não é um bug, é a mesma rede de segurança que já existia
+ * para "um deck sem lendárias não deveria derrubar o jogo".
  */
 export const RARITY_DRAW_WEIGHT: Record<CardRarity, number> = {
   COMMON: 50,
-  RARE: 30,
+  RARE: 25,
   EPIC: 15,
-  LEGENDARY: 5,
+  LEGENDARY: 6,
+  BOOM: 4,
 };
 
 /** Rótulo exibido na UI. */
@@ -83,6 +106,7 @@ export const RARITY_LABEL: Record<CardRarity, string> = {
   RARE: 'RARA',
   EPIC: 'ÉPICA',
   LEGENDARY: 'LENDÁRIA',
+  BOOM: 'BOOM!',
 };
 
 /** O que a carta exige como alvo antes de poder ser jogada. */
@@ -166,6 +190,27 @@ export interface CardEffectResult {
   /** `true` faz a carta gastar o turno do jogador. Padrão: `false`. */
   consumesTurn?: boolean;
   /**
+   * `true` dispara um surto de caos ao final da aplicação — mesma "roleta"
+   * automática do relógio global (`triggerTerminalGlitch`), só que provocada
+   * pelo jogador em vez do turno global. Declarativo como os demais campos:
+   * o efeito não pode chamar `triggerTerminalGlitch()` ele mesmo (não é uma
+   * função pura), então só sinaliza a intenção e o store decide quando/como.
+   */
+  triggersChaosGlitch?: boolean;
+  /**
+   * `true` abre o `<AltarModal />` para o CASTER escolher 2 cartas a
+   * sacrificar. Mesma razão declarativa de `triggersChaosGlitch`: abrir um
+   * modal é decisão de apresentação, e o efeito só sinaliza a intenção — quem
+   * decide QUANDO/COMO mostrar é o store (`lastAltarPrompt`) e a UI que o
+   * observa.
+   *
+   * O sacrifício em si (`sacrificeCards`) é uma ação PRÓPRIA, publicada só no
+   * clique de "Confirmar" — nunca parte do resultado desta carta, porque a
+   * escolha de quais cartas ainda não existe no instante em que o efeito
+   * roda.
+   */
+  opensAltar?: boolean;
+  /**
    * Fato a registrar no log de combate.
    *
    * Um EVENTO, não uma frase: a carta descreve o que aconteceu em termos
@@ -229,6 +274,15 @@ export interface CardDefinition {
    * daquela faixa.
    */
   weight: number;
+  /**
+   * Custo em ⚡ para jogar. Debitado da energia do `caster` em
+   * `resolveCardPlay` ANTES de qualquer efeito rodar — uma carta sem energia
+   * suficiente aborta como qualquer outra jogada inválida, sem consumir nada.
+   *
+   * Vale para TRAPs também (armar uma armadilha custa): o motor não distingue
+   * "gastar energia para armar" de "gastar energia para resolver na hora".
+   */
+  cost: number;
 
   /**
    * A carta entra em **modo mira** ao ser jogada: em vez de resolver na hora,

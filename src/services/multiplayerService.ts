@@ -1,9 +1,21 @@
-import { get, onValue, push, ref, runTransaction, serverTimestamp, update } from 'firebase/database';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  get,
+  onDisconnect,
+  onValue,
+  push,
+  ref,
+  runTransaction,
+  serverTimestamp,
+  set,
+  update,
+} from 'firebase/database';
 
 import { getDb } from '@/config/firebase';
 import { generateSeed } from '@/engine/rng';
 import type {
   MultiplayerAction,
+  PlayerConnectionStatus,
   PlayerPresence,
   PlayerSlot,
   RoomRecord,
@@ -48,17 +60,107 @@ const CODE_COLLISION_RETRIES = 5;
 /* -------------------------------------------------------------------------- */
 
 /**
- * Id anônimo deste cliente, gerado uma vez por execução do app.
+ * Id anônimo deste cliente — persistido em disco, não gerado a cada boot.
  *
  * Não é autenticação — serve para o cliente reconhecer o PRÓPRIO assento
  * quando relê a sala (ex: reentrar e descobrir se já é `player1`). Quando o
  * projeto ganhar Firebase Auth anônimo, este é o ponto único a trocar pelo
  * `uid` real, e nada além deste arquivo precisa saber.
+ *
+ * A persistência é o que torna a RECONEXÃO possível. Antes, um `Math.random()`
+ * fresco a cada carregamento do módulo significava que um F5 trocava a
+ * identidade do jogador no meio da partida: ele reabria o app, tentava entrar
+ * na MESMA sala, e `classifyJoin` via um `clientId` que nunca tinha visto —
+ * um estranho batendo numa vaga já ocupada (a dele mesmo, `ROOM_FULL`). Ler o
+ * id salvo antes de sortear um novo é o que faz o app reconhecer "sou eu de
+ * novo" depois do refresh, sem precisar de nenhuma lógica extra em
+ * `classifyJoin` — a REJOIN que já existia lá passa a disparar sozinha.
  */
-const CLIENT_ID = `c_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+const CLIENT_ID_KEY = '@tic-tac-boom/clientId';
 
-export function getClientId(): string {
-  return CLIENT_ID;
+let cachedClientId: string | null = null;
+
+async function resolveClientId(): Promise<string> {
+  if (cachedClientId) return cachedClientId;
+
+  const stored = await AsyncStorage.getItem(CLIENT_ID_KEY).catch(() => null);
+  if (stored) {
+    cachedClientId = stored;
+    return stored;
+  }
+
+  const fresh = `c_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
+  cachedClientId = fresh;
+  await AsyncStorage.setItem(CLIENT_ID_KEY, fresh).catch(() => {
+    // Sem disco (modo privado, quota cheia): segue só com a cópia em memória.
+    // Pior caso é perder a reconexão pós-F5 — não a partida em andamento.
+  });
+  return fresh;
+}
+
+export async function getClientId(): Promise<string> {
+  return resolveClientId();
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          PRESENÇA (onDisconnect)                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Gatilho nativo do servidor: se ESTE cliente cair sem avisar (rede caiu, aba
+ * fechada, app morto), o próprio RTDB escreve `DISCONNECTED` no lugar dele.
+ *
+ * O padrão é o recomendado pela documentação do RTDB, e a razão de escutar
+ * `.info/connected` em vez de armar o `onDisconnect` uma vez só é sutil: um
+ * `onDisconnect` é consumido pelo servidor na hora em que a queda acontece —
+ * ele não "continua vigiando" para a PRÓXIMA queda depois que o cliente
+ * reconecta. `.info/connected` dispara `true` a cada nova conexão (a
+ * primeira E qualquer reconexão depois de uma queda), e é isso que garante
+ * o gatilho estar sempre armado de novo antes de escrever `CONNECTED`.
+ *
+ * Chamado depois de garantir o assento (`createRoom`/`joinRoom`, inclusive no
+ * caminho de REJOIN) — nunca antes, porque só faz sentido vigiar um caminho
+ * que já sabemos que existe.
+ */
+function attachPresence(code: string, slot: PlayerSlot): void {
+  detachPresence(); // nunca dois gatilhos vivos ao mesmo tempo neste cliente
+
+  const statusRef = ref(getDb(), `${ROOMS_PATH}/${code}/players/${slot}/status`);
+  const connectedRef = ref(getDb(), '.info/connected');
+
+  const stopWatchingConnection = onValue(connectedRef, (snapshot) => {
+    if (snapshot.val() !== true) return;
+
+    // Ordem importa: arma o gatilho de queda ANTES de anunciar presença. Uma
+    // queda entre as duas escritas com a ordem invertida deixaria o status
+    // preso em CONNECTED para sempre — o pior tipo de falha aqui, porque é
+    // silenciosa.
+    onDisconnect(statusRef)
+      .set('DISCONNECTED' satisfies PlayerConnectionStatus)
+      .then(() => set(statusRef, 'CONNECTED' satisfies PlayerConnectionStatus))
+      .catch((error: unknown) => {
+        console.warn('[multiplayerService] falha ao armar presença:', error);
+      });
+  });
+
+  activePresence = {
+    detach: () => {
+      stopWatchingConnection();
+      void onDisconnect(statusRef).cancel();
+    },
+  };
+}
+
+let activePresence: { detach: () => void } | null = null;
+
+/**
+ * Desarma a presença deste cliente. Chamado ao sair deliberadamente da sala —
+ * sem isto, o `onDisconnect` continuaria armado apontando para uma sala que o
+ * jogador já decidiu abandonar por vontade própria, não por queda.
+ */
+export function detachPresence(): void {
+  activePresence?.detach();
+  activePresence = null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -197,6 +299,7 @@ export interface CreateRoomResult {
  */
 export async function createRoom(): Promise<CreateRoomResult> {
   const seed = generateSeed();
+  const clientId = await getClientId();
 
   for (let attempt = 0; attempt < CODE_COLLISION_RETRIES; attempt++) {
     const code = randomRoomCode();
@@ -212,7 +315,7 @@ export async function createRoom(): Promise<CreateRoomResult> {
       // (e o que lemos de volta) é um número.
       createdAt: serverTimestamp() as unknown as number,
       players: {
-        player1: { clientId: CLIENT_ID, joinedAt: Date.now() },
+        player1: { clientId, joinedAt: Date.now(), status: 'CONNECTED' },
         player2: null,
       },
     };
@@ -224,7 +327,10 @@ export async function createRoom(): Promise<CreateRoomResult> {
         current === null ? room : undefined,
       );
 
-      if (result.committed) return { code, seed, slot: 'player1' };
+      if (result.committed) {
+        attachPresence(code, 'player1');
+        return { code, seed, slot: 'player1' };
+      }
     } catch (error) {
       throw toNetworkError(error);
     }
@@ -309,9 +415,14 @@ export async function joinRoom(rawCode: string): Promise<JoinRoomResult> {
   }
 
   const room = probe.val() as RoomRecord;
-  const decision = classifyJoin(room, CLIENT_ID);
+  const clientId = await getClientId();
+  const decision = classifyJoin(room, clientId);
 
   if (decision.kind === 'REJOIN') {
+    // Reconexão (F5, app reaberto): a vaga já é dele, só falta rearmar a
+    // presença — o `onDisconnect` da sessão anterior morreu junto com a
+    // conexão antiga e não vigia mais a PRÓXIMA queda sozinho.
+    attachPresence(code, decision.slot);
     return { code, seed: room.seed, slot: decision.slot };
   }
   if (decision.kind === 'FAIL') {
@@ -324,7 +435,7 @@ export async function joinRoom(rawCode: string): Promise<JoinRoomResult> {
       playerRef(code, 'player2'),
       (currentP2: PlayerPresence | null) => {
         if (currentP2 !== null) return undefined; // vaga ocupada, aborta
-        return { clientId: CLIENT_ID, joinedAt: Date.now() } satisfies PlayerPresence;
+        return { clientId, joinedAt: Date.now(), status: 'CONNECTED' } satisfies PlayerPresence;
       },
     );
     committed = txResult.committed;
@@ -344,6 +455,7 @@ export async function joinRoom(rawCode: string): Promise<JoinRoomResult> {
     throw toNetworkError(error);
   }
 
+  attachPresence(code, 'player2');
   return { code, seed: room.seed, slot: 'player2' };
 }
 

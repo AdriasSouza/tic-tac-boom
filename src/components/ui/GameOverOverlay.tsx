@@ -59,6 +59,7 @@ function GameOverContent({ haptics }: { haptics: boolean }) {
   const router = useRouter();
 
   const matchWinner = useGameStore((s) => s.matchWinner);
+  const matchOverReason = useGameStore((s) => s.matchOverReason);
   const matchSeed = useGameStore(selectMatchSeed);
   const startMatch = useGameStore((s) => s.startMatch);
 
@@ -163,7 +164,13 @@ function GameOverContent({ haptics }: { haptics: boolean }) {
           </Animated.Text>
 
           <Text style={styles.verdict}>
-            {playerWon ? 'o caos não foi suficiente' : 'o caos levou a melhor'}
+            {matchOverReason === 'FORFEIT'
+              ? playerWon
+                ? `${opponentLabel} ficou tempo demais desconectado`
+                : 'você ficou tempo demais desconectado'
+              : playerWon
+                ? 'o caos não foi suficiente'
+                : 'o caos levou a melhor'}
           </Text>
 
           <View style={styles.scoreRow}>

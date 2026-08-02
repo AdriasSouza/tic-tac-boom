@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { Platform, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
@@ -32,7 +32,9 @@ type OutboundMessage =
   /** Acrescenta linhas ao log. Em lote para evitar N injeções seguidas. */
   | { type: 'PRINT'; lines: string[] }
   /** Limpa o log — usado ao reimprimir o histórico depois de um reload. */
-  | { type: 'CLEAR' };
+  | { type: 'CLEAR' }
+  /** Esconde o log, mostrando só regra + contador. Ver `collapsed` na prop. */
+  | { type: 'SET_COLLAPSED'; collapsed: boolean };
 
 /** Página CRT ➜ Nativo/Web (host) */
 type InboundMessage = { type: 'READY' };
@@ -153,6 +155,24 @@ const CRT_HTML = `<!DOCTYPE html>
     line-height: 12px;
     letter-spacing: 0.5px;
     scrollbar-width: none;
+  }
+
+  /* Colapsado: tela baixa (terminalCollapsed) - só regra + contador cabem
+     no espaço reduzido. O host controla o tamanho de fato do monitor (a
+     altura do container React Native); esta classe só esconde o que não
+     cabe mais e recentraliza o cabeçalho verticalmente no espaço que sobrou. */
+  body.collapsed .screen {
+    justify-content: center;
+    padding: 4px 12px;
+  }
+
+  body.collapsed .header {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+
+  body.collapsed .log {
+    display: none;
   }
 
   .log::-webkit-scrollbar { display: none; }
@@ -350,6 +370,10 @@ const CRT_HTML = `<!DOCTYPE html>
     countdownEl.textContent = turnsLeft === null ? '' : turnsLeft + 't';
   }
 
+  function setCollapsed(collapsed) {
+    document.body.classList.toggle('collapsed', collapsed === true);
+  }
+
   function print(lines) {
     if (!lines || lines.length === 0) return;
 
@@ -390,6 +414,8 @@ const CRT_HTML = `<!DOCTYPE html>
         print(msg.lines);
       } else if (msg.type === 'CLEAR') {
         logEl.innerHTML = '';
+      } else if (msg.type === 'SET_COLLAPSED') {
+        setCollapsed(msg.collapsed === true);
       }
     }
   };
@@ -425,16 +451,30 @@ const CRT_SOURCE = { html: CRT_HTML, baseUrl: '' } as const;
  */
 const HANDSHAKE_FALLBACK_MS = 1200;
 
+/**
+ * Altura do monitor quando `collapsed` e não expandido — só a linha de regra
+ * + contador cabe aqui, o log fica escondido (ver `SET_COLLAPSED` no CRT).
+ */
+const COLLAPSED_HEIGHT = 56;
+
 /* -------------------------------------------------------------------------- */
 /*                                 COMPONENTE                                  */
 /* -------------------------------------------------------------------------- */
 
 export interface ChaosTerminalProps {
-  /** Altura fixa do monitor em dp. */
+  /** Altura do monitor em dp quando NÃO colapsado (e quando expandido). */
   height?: number;
   style?: StyleProp<ViewStyle>;
   /** Vibra o device quando a regra caótica muda de verdade. */
   hapticsEnabled?: boolean;
+  /**
+   * Tela baixa (`useResponsiveLayout().terminalCollapsed`, celular deitado é
+   * o caso real): o terminal nasce reduzido a `COLLAPSED_HEIGHT` — só a
+   * regra ativa e o contador — e ganha um toque que expande por cima do jogo
+   * enquanto o jogador quiser ler o log completo. `false` (padrão): o
+   * terminal é só decorativo, do jeito que sempre foi, sem toque nenhum.
+   */
+  collapsed?: boolean;
 }
 
 /**
@@ -453,9 +493,15 @@ export interface ChaosTerminalProps {
  * mais quando ela acontece. (Antes, um timer de 5–9s de relógio real deixava
  * o jogador simplesmente esperar uma regra ruim passar sem jogar.)
  *
- * Decorativo: não captura toques, para não roubar gestos do tabuleiro.
+ * Decorativo por padrão: não captura toques, para não roubar gestos do
+ * tabuleiro. Só fica tocável quando `collapsed` — ver `handleToggleExpanded`.
  */
-export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: ChaosTerminalProps) {
+export function ChaosTerminal({
+  height = 120,
+  style,
+  hapticsEnabled = true,
+  collapsed = false,
+}: ChaosTerminalProps) {
   const isWeb = Platform.OS === 'web';
 
   const webViewRef = useRef<WebView>(null);
@@ -568,6 +614,29 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
   }, [turnsLeft, post]);
 
   /**
+   * Estado de expansão — puramente apresentacional, vive só aqui. Só faz
+   * sentido enquanto `collapsed`; se a tela crescer e `collapsed` virar
+   * `false` no meio de uma expansão, o `useEffect` abaixo fecha sozinho, sem
+   * deixar uma expansão "presa" que a prop já não pede mais.
+   */
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!collapsed) setExpanded(false);
+  }, [collapsed]);
+
+  const handleToggleExpanded = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpanded((prev) => !prev);
+  }, []);
+
+  // Nativo/Web ➜ Página: esconde o log quando reduzido. Expandir volta a
+  // mostrá-lo mesmo com `collapsed` ainda `true` — é o ponto inteiro do toque.
+  useEffect(() => {
+    post({ type: 'SET_COLLAPSED', collapsed: collapsed && !expanded });
+  }, [collapsed, expanded, post]);
+
+  /**
    * Haptic na mudança REAL de regra. Ignora o primeiro render (senão vibra
    * assim que a tela abre, o que não é uma mudança de verdade).
    */
@@ -671,52 +740,91 @@ export function ChaosTerminal({ height = 120, style, hapticsEnabled = true }: Ch
     handleReady();
   }, [handleReady]);
 
-  const containerStyle = useMemo(() => [styles.container, { height }, style], [height, style]);
+  /**
+   * Altura de fato exibida: reduzida quando colapsado e não expandido; a
+   * `height` normal (a mesma de sempre) nos outros três casos — não
+   * colapsado, ou colapsado mas expandido pelo toque.
+   */
+  const effectiveHeight = collapsed && !expanded ? COLLAPSED_HEIGHT : height;
 
-  if (isWeb) {
+  const containerStyle = useMemo(
+    () => [styles.container, { height: effectiveHeight }, collapsed && expanded && styles.containerExpanded, style],
+    [effectiveHeight, collapsed, expanded, style],
+  );
+
+  const content = isWeb ? (
+    <iframe
+      ref={iframeRef}
+      srcDoc={CRT_HTML}
+      onLoad={handleIframeLoad}
+      title="chaos-terminal"
+      sandbox="allow-scripts"
+      style={{ width: '100%', height: '100%', border: 'none', backgroundColor: '#000' }}
+    />
+  ) : (
+    <WebView
+      ref={webViewRef}
+      source={CRT_SOURCE}
+      originWhitelist={['*']}
+      onMessage={handleWebViewMessage}
+      onLoadStart={handleWebViewLoadStart}
+      // Conteúdo é estático e local: nenhuma navegação externa é permitida.
+      onShouldStartLoadWithRequest={(request) =>
+        request.url === 'about:blank' || request.url.startsWith('data:')
+      }
+      style={styles.webview}
+      containerStyle={styles.webviewContainer}
+      // --- Performance / aparência ---
+      androidLayerType="hardware"
+      scrollEnabled={false}
+      overScrollMode="never"
+      bounces={false}
+      showsVerticalScrollIndicator={false}
+      showsHorizontalScrollIndicator={false}
+      // --- Superfície mínima: nada aqui precisa de rede, storage ou popups ---
+      javaScriptEnabled
+      domStorageEnabled={false}
+      allowFileAccess={false}
+      allowsInlineMediaPlayback={false}
+      setSupportMultipleWindows={false}
+      cacheEnabled={false}
+    />
+  );
+
+  /* Não colapsado: exatamente o componente de sempre — uma `View` normal,
+     sem toque, sem camada extra. Zero risco de regressão em `regular`/`wide`,
+     onde nada deste comportamento se aplica. */
+  if (!collapsed) {
     return (
       <View style={containerStyle} pointerEvents="none">
-        <iframe
-          ref={iframeRef}
-          srcDoc={CRT_HTML}
-          onLoad={handleIframeLoad}
-          title="chaos-terminal"
-          sandbox="allow-scripts"
-          style={{ width: '100%', height: '100%', border: 'none', backgroundColor: '#000' }}
-        />
+        {content}
       </View>
     );
   }
 
+  /**
+   * Colapsado: DUAS camadas.
+   *
+   * A externa (`collapsedSlot`) reserva `COLLAPSED_HEIGHT` no FLUXO normal,
+   * sempre — é o que os irmãos da coluna (HUD, área de combate, mão) veem, e
+   * é o que nunca muda quando o jogador expande. A interna (`containerStyle`)
+   * é quem de fato cresce: normal, ocupa a caixa reservada; expandida, vira
+   * `position:'absolute'` (relativa a esta `View` — o valor padrão de
+   * `position` no React Native já é `'relative'`, não precisa declarar) e
+   * cresce por CIMA de quem estiver abaixo (HUD, tabuleiro), sem empurrar
+   * nada — exatamente por isto o resto da tela não pula quando o log abre ou
+   * fecha.
+   */
   return (
-    <View style={containerStyle} pointerEvents="none">
-      <WebView
-        ref={webViewRef}
-        source={CRT_SOURCE}
-        originWhitelist={['*']}
-        onMessage={handleWebViewMessage}
-        onLoadStart={handleWebViewLoadStart}
-        // Conteúdo é estático e local: nenhuma navegação externa é permitida.
-        onShouldStartLoadWithRequest={(request) =>
-          request.url === 'about:blank' || request.url.startsWith('data:')
-        }
-        style={styles.webview}
-        containerStyle={styles.webviewContainer}
-        // --- Performance / aparência ---
-        androidLayerType="hardware"
-        scrollEnabled={false}
-        overScrollMode="never"
-        bounces={false}
-        showsVerticalScrollIndicator={false}
-        showsHorizontalScrollIndicator={false}
-        // --- Superfície mínima: nada aqui precisa de rede, storage ou popups ---
-        javaScriptEnabled
-        domStorageEnabled={false}
-        allowFileAccess={false}
-        allowsInlineMediaPlayback={false}
-        setSupportMultipleWindows={false}
-        cacheEnabled={false}
-      />
+    <View style={styles.collapsedSlot}>
+      <Pressable
+        onPress={handleToggleExpanded}
+        style={containerStyle}
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? 'Recolher o terminal de caos' : 'Expandir o terminal de caos'}
+      >
+        {content}
+      </Pressable>
     </View>
   );
 }
@@ -728,6 +836,22 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#1c3a24',
     overflow: 'hidden',
+  },
+  collapsedSlot: {
+    width: '100%',
+    height: COLLAPSED_HEIGHT,
+  },
+  containerExpanded: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 50,
+    elevation: 50,
+    shadowColor: '#000',
+    shadowOpacity: 0.6,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
   },
   webviewContainer: {
     backgroundColor: '#000',

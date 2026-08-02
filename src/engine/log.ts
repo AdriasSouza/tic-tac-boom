@@ -43,19 +43,15 @@ export type LogCode =
    * lados, cada um vendo o que tem direito de ver.
    */
   | 'TRAP_ARMED'
-  /** Armadilha de `subject` anulou um SAQUE. */
+  /** Armadilha de `subject` anulou um SAQUE ou uma ESPIONAGEM. */
   | 'TRAP_SHIELD'
-  /** Armadilha de `subject` anulou uma ação. */
-  | 'TRAP_COUNTER'
-  /** Armadilha de `subject` anulou uma espionagem. */
-  | 'TRAP_MIND_SHIELD'
   /** A MINA de `subject` detonou no centro. */
   | 'TRAP_BOMB'
 
   /* --- Cartas ------------------------------------------------------------- */
   /** `subject` destruiu uma peça. `value` = índice. */
   | 'CARD_BREAK_PIECE'
-  /** `subject` armou turno extra. */
+  /** `subject` fez o oponente perder a próxima jogada dele. */
   | 'CARD_EXTRA_TURN'
   /** `subject` recuperou 1 HP. */
   | 'CARD_HEAL'
@@ -65,22 +61,28 @@ export type LogCode =
   | 'CARD_DRAW'
   /** `subject` roubou uma carta de `target`. `value` = `CardId` roubada. */
   | 'CARD_RAID_STOLE'
-  /** `subject` destruiu uma carta de `target`. `value` = `CardId` destruída. */
-  | 'CARD_RAID_DESTROYED'
-  /** `subject` liberou uma célula interditada. */
+  /** SAQUE de `subject` contra `target` falhou — nada aconteceu. */
+  | 'CARD_RAID_FAILED'
+  /** `subject` liberou uma célula interditada. `value` = índice. */
   | 'CARD_CLEANSE'
-  /** `subject` trocou de mão com `target`. */
-  | 'CARD_SWAP'
-  /** `subject` revelou a peça condenada de `target`. `value` = índice. */
-  | 'CARD_REVEAL_DOOMED'
+  /** `subject` trocou uma carta com `target`. `value` = `CardId` que `subject` cedeu. */
+  | 'CARD_TRADE'
+  /** `subject` marcou uma peça de `target` para ser destruída no início do turno dele. `value` = índice. */
+  | 'CARD_MARK_DOOMED'
+  /** A peça marcada pelo VIDENTE foi destruída ao começar o turno de `subject` (o dono dela). `value` = índice. */
+  | 'CARD_DOOM_TRIGGERED'
   /** `subject` lacrou uma célula. `value` = índice. */
   | 'CARD_LOCK_CELL'
-  /** `subject` (IA) espiou uma carta específica de `target`. `value` = `CardId`. */
+  /** `subject` espiou uma carta aleatória de `target`. `value` = `CardId`. */
   | 'CARD_SPY_PEEK'
-  /** `subject` espiou a mão de `target`. `value` = nº de cartas. */
-  | 'CARD_SPY_HAND'
+  /** `subject` revelou e descartou uma carta de `target`. `value` = `CardId` descartada. */
+  | 'CARD_SPY_DISCARD'
   /** `subject` leu a mão inteira de `target`. `value` = nº de cartas. */
-  | 'CARD_INTEL_HAND';
+  | 'CARD_INTEL_HAND'
+  /** `subject` disparou a roleta do caos. */
+  | 'CARD_CHAOS_ROULETTE'
+  /** `subject` abriu o Altar de Sacrifício (a escolha das cartas acontece depois, fora do motor). */
+  | 'CARD_ALTAR_OPENED';
 
 /**
  * O fato, sem identidade. É o que os produtores (store, cartas) emitem.

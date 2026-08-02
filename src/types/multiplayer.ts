@@ -28,12 +28,24 @@
  */
 export type PlayerSlot = 'player1' | 'player2';
 
+/**
+ * Presença de rede, distinta de OCUPAR o assento.
+ *
+ * `PlayerPresence` existir (não ser `null`) já significa "alguém está sentado
+ * aqui". Este campo responde a uma pergunta diferente: "o socket dele está
+ * vivo AGORA?" — a resposta muda sozinha, escrita pelo PRÓPRIO servidor via
+ * `onDisconnect` (ver `attachPresence` no serviço), nunca pelo cliente que caiu
+ * (por definição, ele não está em condições de avisar ninguém).
+ */
+export type PlayerConnectionStatus = 'CONNECTED' | 'DISCONNECTED';
+
 /** Presença de um jogador no assento. `null` = assento vago. */
 export interface PlayerPresence {
-  /** Id anônimo gerado no cliente. Estável enquanto o app estiver aberto. */
+  /** Id anônimo gerado no cliente. Persistido localmente — sobrevive a um F5. */
   clientId: string;
   /** `Date.now()` do cliente no momento em que entrou. Só informativo. */
   joinedAt: number;
+  status: PlayerConnectionStatus;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -95,6 +107,18 @@ export interface RoomRecord {
  * - `PLACE_MARK`  ➜ `placeMark(index)`
  * - `PLAY_CARD`   ➜ `playCard(uid, targetIndex)`
  * - `ACKNOWLEDGE` ➜ `acknowledgePending()`
+ * - `FORFEIT`     ➜ `forfeitMatch(winner)` — `by` é quem DECLAROU (o vencedor
+ *                    conectado), não quem desistiu. Um input como qualquer
+ *                    outro: se `by` estiver offline no momento da declaração,
+ *                    a ação fica no log e é entregue normalmente quando ele
+ *                    reconectar — nenhum mecanismo novo de entrega, o mesmo
+ *                    que já resolve `PLACE_MARK`/`PLAY_CARD` atrasados.
+ * - `SACRIFICE_CARDS` ➜ `sacrificeCards(caster, uids)` — a escolha de QUAIS
+ *                    duas cartas sacrificar acontece inteiramente em estado
+ *                    local do `AltarModal` (nunca publicada card a card); só
+ *                    a decisão FINAL, no clique de "Confirmar Sacrifício",
+ *                    vira uma ação — pelo mesmo motivo de `PLACE_MARK`/
+ *                    `PLAY_CARD`: só os inputs trafegam, nunca o estado.
  */
 export type MultiplayerAction =
   | MultiplayerActionBase & { type: 'PLACE_MARK'; index: number }
@@ -108,7 +132,9 @@ export type MultiplayerAction =
        */
       targetIndex: number | null;
     }
-  | MultiplayerActionBase & { type: 'ACKNOWLEDGE' };
+  | MultiplayerActionBase & { type: 'ACKNOWLEDGE' }
+  | MultiplayerActionBase & { type: 'FORFEIT' }
+  | MultiplayerActionBase & { type: 'SACRIFICE_CARDS'; uids: [string, string] };
 
 interface MultiplayerActionBase {
   /** Quem produziu o input. O outro cliente usa isto para ignorar o eco do próprio envio. */

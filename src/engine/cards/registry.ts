@@ -3,7 +3,6 @@ import {
   CARD_RULE_MIN_DURATION_TURNS,
   HAND_LIMIT,
   INITIAL_HP,
-  getOldestPieceIndex,
   handKeyFor,
   hpOf,
   occupiedIndexes,
@@ -36,10 +35,112 @@ function isAIController(state: GameState, caster: Combatant): boolean {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                    CARTAS                                   */
+/*                          CUSTO 1 — AÇÕES TÁTICAS                            */
 /* -------------------------------------------------------------------------- */
-/* PoC: duas cartas de ação. Adicionar uma nova = criar o objeto aqui e somar
-   o id em `CardId`. O TypeScript acusa se você esquecer um dos dois lados.   */
+
+const CLEAR_BLOCK: CardDefinition = {
+  id: 'CLEAR_BLOCK',
+  name: 'LIMPAR',
+  type: 'ACTION',
+  description: 'Libera a célula interditada pelo caos.',
+  targeting: 'CELL',
+  rarity: 'COMMON',
+  weight: 3,
+  cost: 1,
+
+  requiresTarget: true,
+  isValidTarget: ({ state, index }) =>
+    state.activeRule === 'BLOCKED_CELL' && state.blockedCell === index,
+
+  canPlay: ({ state }) => state.activeRule === 'BLOCKED_CELL' && state.blockedCell !== null,
+
+  effect: ({ state, caster, targetIndex }) => {
+    if (targetIndex === undefined) return null;
+    if (state.activeRule !== 'BLOCKED_CELL' || state.blockedCell !== targetIndex) return null;
+
+    return {
+      patch: { activeRule: 'NORMAL', blockedCell: null, ruleExpiresAtTurn: null },
+      log: { code: 'CARD_CLEANSE', subject: caster, value: targetIndex },
+      notice: { code: 'CARD_CLEANSE', subject: caster, value: targetIndex, tone: 'NEUTRAL' },
+    };
+  },
+};
+
+/**
+ * Sucessora da antiga CLEANSE (mesmo id, mesmo nome): antes limpava as DUAS
+ * interdições de uma vez, sem escolher onde — agora exige um alvo específico,
+ * igual LIMPAR, mas cobre os dois subsistemas (bloqueio do caos OU trava da
+ * TRAVAR), nunca só um.
+ */
+const CLEANSE: CardDefinition = {
+  id: 'CLEANSE',
+  name: 'PURIFICAR',
+  type: 'ACTION',
+  description: 'Libera uma célula de qualquer efeito persistente — o bloqueio do caos ou o lacre da TRAVAR.',
+  targeting: 'CELL',
+  rarity: 'COMMON',
+  weight: 2,
+  cost: 1,
+
+  requiresTarget: true,
+  isValidTarget: ({ state, index }) =>
+    (state.activeRule === 'BLOCKED_CELL' && state.blockedCell === index) || state.lockedCell === index,
+
+  canPlay: ({ state }) =>
+    (state.activeRule === 'BLOCKED_CELL' && state.blockedCell !== null) || state.lockedCell !== null,
+
+  effect: ({ state, caster, targetIndex }) => {
+    if (targetIndex === undefined) return null;
+
+    const clearsChaos = state.activeRule === 'BLOCKED_CELL' && state.blockedCell === targetIndex;
+    const clearsLock = state.lockedCell === targetIndex;
+    if (!clearsChaos && !clearsLock) return null;
+
+    return {
+      patch: {
+        ...(clearsChaos ? { activeRule: 'NORMAL' as const, blockedCell: null, ruleExpiresAtTurn: null } : null),
+        ...(clearsLock ? { lockedCell: null, lockedCellExpiresAtTurn: null } : null),
+      },
+      log: { code: 'CARD_CLEANSE', subject: caster, value: targetIndex },
+      notice: { code: 'CARD_CLEANSE', subject: caster, value: targetIndex, tone: 'NEUTRAL' },
+    };
+  },
+};
+
+const LOCK_CELL: CardDefinition = {
+  id: 'LOCK_CELL',
+  name: 'TRAVAR',
+  type: 'ACTION',
+  description: 'Lacra uma célula vazia — o oponente não pode jogar nela no turno dele.',
+  targeting: 'CELL',
+  rarity: 'COMMON',
+  weight: 3,
+  cost: 1,
+
+  requiresTarget: true,
+  isValidTarget: ({ state, index }) => state.board[index] === null && state.lockedCell !== index,
+
+  canPlay: ({ state }) => state.board.some((cell, i) => cell === null && state.lockedCell !== i),
+
+  effect: ({ state, caster, targetIndex }) => {
+    if (targetIndex === undefined) return null;
+    if (state.board[targetIndex] !== null) return null;
+
+    return {
+      /* Duração = CARD_RULE_MIN_DURATION_TURNS (2), NUNCA 1: quem lança a
+         carta ainda vai completar a PRÓPRIA jogada (+1 em `turnCount`) antes
+         do oponente sequer decidir. Com +1 a trava venceria na jogada de quem
+         a lançou — o "paradoxo do turno". Com +2 ela cobre a fase de ação
+         inteira do adversário e só vence quando ELE termina de jogar. */
+      patch: {
+        lockedCell: targetIndex,
+        lockedCellExpiresAtTurn: state.turnCount + CARD_RULE_MIN_DURATION_TURNS,
+      },
+      log: { code: 'CARD_LOCK_CELL', subject: caster, value: targetIndex },
+      notice: { code: 'CARD_LOCK_CELL', subject: caster, value: targetIndex, tone: 'NEUTRAL' },
+    };
+  },
+};
 
 const BREAK_PIECE: CardDefinition = {
   id: 'BREAK_PIECE',
@@ -47,8 +148,9 @@ const BREAK_PIECE: CardDefinition = {
   type: 'ACTION',
   description: 'Escolha uma peça no tabuleiro e destrua.',
   targeting: 'OCCUPIED_CELL',
-  rarity: 'RARE',
+  rarity: 'COMMON',
   weight: 3,
+  cost: 1,
 
   requiresTarget: true,
 
@@ -82,68 +184,50 @@ const BREAK_PIECE: CardDefinition = {
   },
 };
 
-const EXTRA_TURN: CardDefinition = {
-  id: 'EXTRA_TURN',
-  name: 'REBOBINAR',
+const PEEK_RANDOM: CardDefinition = {
+  id: 'PEEK_RANDOM',
+  name: 'ESPIADA',
   type: 'ACTION',
-  description: 'Sua próxima jogada não passa a vez.',
+  description: 'Revela uma carta aleatória da mão do oponente.',
   targeting: 'NONE',
   rarity: 'RARE',
   weight: 3,
+  cost: 1,
 
-  // Não empilha: jogar duas seguidas desperdiçaria a segunda.
-  canPlay: ({ state, caster }) => state.extraTurnPending !== caster,
+  canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
-  effect: ({ caster }) => ({
-    patch: { extraTurnPending: caster },
-    log: { code: 'CARD_EXTRA_TURN', subject: caster },
-  }),
+  // Sem ramo de IA: ao contrário da antiga ESPIONAGEM, esta carta nunca abriu
+  // modal — é sempre um peek automático, então funciona igual para os dois
+  // lados desde o início. Não existe "atalho da IA" para simplificar aqui.
+  effect: ({ state, caster, rng }) => {
+    const opponentHand = state[handKeyFor(opponentOf(caster))];
+    if (opponentHand.length === 0) return null;
+
+    const spied = rng.pick(opponentHand).cardId;
+    const event = {
+      code: 'CARD_SPY_PEEK',
+      subject: caster,
+      target: opponentOf(caster),
+      value: spied,
+    } as const;
+
+    return { log: event, notice: event };
+  },
 };
 
 /* -------------------------------------------------------------------------- */
-/*                              AÇÃO DIRETA                                    */
+/*                          CUSTO 2 — VANTAGEM                                  */
 /* -------------------------------------------------------------------------- */
-
-const HEAL_SELF: CardDefinition = {
-  id: 'HEAL_SELF',
-  name: 'CURAR',
-  type: 'ACTION',
-  description: 'Recupera 1 HP.',
-  targeting: 'NONE',
-  rarity: 'COMMON',
-  weight: 3,
-
-  canPlay: ({ state, caster }) => hpOf(state, caster) < INITIAL_HP,
-
-  effect: ({ caster }) => ({
-    heal: { target: caster, amount: 1 },
-    log: { code: 'CARD_HEAL', subject: caster },
-  }),
-};
-
-const DIRECT_DAMAGE: CardDefinition = {
-  id: 'DIRECT_DAMAGE',
-  name: 'ATAQUE',
-  type: 'ACTION',
-  description: 'Causa 1 de dano direto ao oponente.',
-  targeting: 'NONE',
-  rarity: 'COMMON',
-  weight: 3,
-
-  effect: ({ caster }) => ({
-    damage: { target: opponentOf(caster), amount: 1 },
-    log: { code: 'CARD_DAMAGE', subject: caster, target: opponentOf(caster) },
-  }),
-};
 
 const DRAW_CARD: CardDefinition = {
   id: 'DRAW_CARD',
-  name: 'ESTUDAR',
+  name: 'PROCRASTINAR',
   type: 'ACTION',
   description: 'Compra 2 cartas novas.',
   targeting: 'NONE',
-  rarity: 'COMMON',
+  rarity: 'RARE',
   weight: 3,
+  cost: 2,
 
   // Comprar 1 gastando 1 era um no-op disfarçado de carta: o jogador terminava
   // a jogada com a mesma quantidade de cartas e um turno a menos de informação.
@@ -157,14 +241,20 @@ const DRAW_CARD: CardDefinition = {
   }),
 };
 
+/**
+ * Sucessora do antigo SAQUE: mesma carta, mas sem o ramo de "destrói se
+ * falhar" — agora uma falha é só isso, uma falha. O golpe garantido virava a
+ * carta boa demais para o custo dela.
+ */
 const HAND_RAID: CardDefinition = {
   id: 'HAND_RAID',
   name: 'SAQUE',
   type: 'ACTION',
-  description: '50% de chance de roubar uma carta aleatória do oponente; senão, destrói.',
+  description: '50% de chance de roubar uma carta aleatória do oponente. Se falhar, nada acontece.',
   targeting: 'NONE',
-  rarity: 'EPIC',
+  rarity: 'RARE',
   weight: 2,
+  cost: 2,
 
   canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
@@ -172,30 +262,35 @@ const HAND_RAID: CardDefinition = {
   // outra operação — sem isso ela sobreviveria "fantasma" dentro do patch,
   // já que o efeito é a única camada que sabe qual entrada é a jogada.
   effect: ({ state, caster, uid, rng }) => {
-    const casterHand = state[handKeyFor(caster)].filter((c) => c.uid !== uid);
-    const victimHand = state[handKeyFor(opponentOf(caster))];
+    const target = opponentOf(caster);
+    const victimHand = state[handKeyFor(target)];
     if (victimHand.length === 0) return null;
 
+    if (!rng.chance(0.5)) {
+      // Sem `patch`: a remoção padrão da própria carta (feita pelo store,
+      // fora daqui) é a ÚNICA mudança de estado de uma tentativa que falhou.
+      return { log: { code: 'CARD_RAID_FAILED', subject: caster, target } };
+    }
+
+    const casterHand = state[handKeyFor(caster)].filter((c) => c.uid !== uid);
     const stolen = rng.pick(victimHand);
     const remainingVictimHand = victimHand.filter((c) => c.uid !== stolen.uid);
-    const steals = rng.chance(0.5);
 
-    // O `cardId` atingido viaja no evento. Sem ele o jogador via a mão
+    // O `cardId` roubado viaja no evento. Sem ele o jogador via a mão
     // encolher e não tinha como saber o que perdeu — o pior tipo de
     // "aconteceu do nada", porque o prejuízo é real mas invisível. Quem
     // resolve o id em nome legível é a apresentação.
-    const code = steals ? 'CARD_RAID_STOLE' : 'CARD_RAID_DESTROYED';
     const event = {
-      code,
+      code: 'CARD_RAID_STOLE',
       subject: caster,
-      target: opponentOf(caster),
+      target,
       value: stolen.cardId,
     } as const;
 
     return {
       patch: {
-        [handKeyFor(caster)]: steals ? [...casterHand, stolen] : casterHand,
-        [handKeyFor(opponentOf(caster))]: remainingVictimHand,
+        [handKeyFor(caster)]: [...casterHand, stolen],
+        [handKeyFor(target)]: remainingVictimHand,
       },
       // Sem `tone`: quem rouba ganha e quem é roubado perde, e só a
       // perspectiva sabe quem é quem. O tradutor decide a cor.
@@ -205,199 +300,236 @@ const HAND_RAID: CardDefinition = {
   },
 };
 
-const CLEANSE: CardDefinition = {
-  id: 'CLEANSE',
-  name: 'PURIFICAR',
+/**
+ * Nova carta: troca UMA carta (não a mão inteira, como a antiga TROCA) por
+ * uma carta do oponente.
+ *
+ * Quem sai e quem entra são sorteados pelo RNG dos dois lados — o pedido
+ * original descrevia "o jogador escolhe 1 carta própria", mas dar essa
+ * escolha de verdade exigiria um modo de seleção dentro da PRÓPRIA mão (o
+ * sistema de mira atual só sabe apontar para o TABULEIRO). Implementar isso
+ * é trabalho de UI novo, fora do escopo desta etapa — fica anotado para uma
+ * futura, se vocês quiserem a escolha manual.
+ */
+const CARD_TRADE: CardDefinition = {
+  id: 'CARD_TRADE',
+  name: 'TROCAR',
   type: 'ACTION',
-  description: 'Libera qualquer célula interditada — pelo caos ou por uma carta TRAVAR.',
+  description: 'Troca uma carta aleatória da sua mão por uma carta aleatória da mão do oponente.',
   targeting: 'NONE',
-  rarity: 'COMMON',
+  rarity: 'RARE',
   weight: 2,
+  cost: 2,
 
-  // Cobre os DOIS subsistemas de interdição. Quando eram um campo só, esta
-  // carta parecia funcionar sempre; agora que TRAVAR tem estado próprio ela
-  // precisa checar e limpar os dois, senão viraria uma carta morta metade das
-  // vezes em que o jogador a joga achando que vai destravar a casa.
-  canPlay: ({ state }) => state.activeRule === 'BLOCKED_CELL' || state.lockedCell !== null,
+  // Precisa de mais alguma carta além da própria TROCAR na mão — senão não
+  // haveria o que oferecer em troca.
+  canPlay: ({ state, caster, uid }) =>
+    state[handKeyFor(caster)].some((c) => c.uid !== uid) &&
+    state[handKeyFor(opponentOf(caster))].length > 0,
 
-  effect: ({ state, caster }) => {
-    const clearsChaos = state.activeRule === 'BLOCKED_CELL';
-    const clearsLock = state.lockedCell !== null;
-    if (!clearsChaos && !clearsLock) return null;
+  effect: ({ state, caster, uid, rng }) => {
+    const target = opponentOf(caster);
+    const casterHandWithoutSelf = state[handKeyFor(caster)].filter((c) => c.uid !== uid);
+    const opponentHand = state[handKeyFor(target)];
+    if (casterHandWithoutSelf.length === 0 || opponentHand.length === 0) return null;
+
+    const given = rng.pick(casterHandWithoutSelf);
+    const received = rng.pick(opponentHand);
 
     return {
       patch: {
-        ...(clearsChaos ? { activeRule: 'NORMAL' as const, blockedCell: null, ruleExpiresAtTurn: null } : null),
-        ...(clearsLock ? { lockedCell: null, lockedCellExpiresAtTurn: null } : null),
+        [handKeyFor(caster)]: [...casterHandWithoutSelf.filter((c) => c.uid !== given.uid), received],
+        [handKeyFor(target)]: [...opponentHand.filter((c) => c.uid !== received.uid), given],
       },
-      log: { code: 'CARD_CLEANSE', subject: caster },
-      notice: { code: 'CARD_CLEANSE', subject: caster, tone: 'NEUTRAL' },
+      log: { code: 'CARD_TRADE', subject: caster, target, value: given.cardId },
+      notice: { code: 'CARD_TRADE', subject: caster, target, value: given.cardId },
     };
   },
 };
 
-const HAND_SWAP: CardDefinition = {
-  id: 'HAND_SWAP',
-  name: 'TROCA',
-  type: 'ACTION',
-  description: 'Troca sua mão inteira pela mão do oponente.',
-  targeting: 'NONE',
-  rarity: 'LEGENDARY',
-  weight: 2,
-
-  effect: ({ state, caster, uid }) => {
-    // Exclui a própria TROCA da mão do caster antes de copiá-la para o
-    // oponente — senão a carta "sobreviveria" na mão de quem a recebeu.
-    const casterHand = state[handKeyFor(caster)].filter((c) => c.uid !== uid);
-    const opponentHand = state[handKeyFor(opponentOf(caster))];
-
-    return {
-      patch: {
-        [handKeyFor(caster)]: opponentHand,
-        [handKeyFor(opponentOf(caster))]: casterHand,
-      },
-      log: { code: 'CARD_SWAP', subject: caster, target: opponentOf(caster) },
-      notice: { code: 'CARD_SWAP', subject: caster, target: opponentOf(caster) },
-    };
-  },
-};
-
-const REVEAL_OLDEST: CardDefinition = {
+/**
+ * Sucessora do antigo VIDENTE (mesmo id): antes só REVELAVA a peça mais
+ * antiga que já ia sumir sozinha pela regra do "infinito" — informação pura,
+ * nenhum efeito novo. Agora MARCA uma peça inimiga à escolha do jogador, e
+ * ela é destruída de verdade no início do próximo turno do dono — um efeito
+ * ativo, não mais um aviso do que já ia acontecer.
+ */
+const MARK_DOOMED: CardDefinition = {
   id: 'REVEAL_OLDEST',
   name: 'VIDENTE',
   type: 'ACTION',
-  description: 'Marca no tabuleiro a peça do oponente que vai sumir na próxima jogada dele.',
-  targeting: 'NONE',
+  description: 'Marca uma peça do oponente. No início do próximo turno dele, ela é destruída.',
+  targeting: 'OCCUPIED_CELL',
   rarity: 'RARE',
   weight: 3,
-
-  canPlay: ({ state, caster }) => getOldestPieceIndex(state.board, opponentOf(caster)) !== null,
-
-  effect: ({ state, caster }) => {
-    const index = getOldestPieceIndex(state.board, opponentOf(caster));
-    if (index === null) return null;
-
-    return {
-      // Guarda o DONO, não o índice: o destaque é recalculado a cada render a
-      // partir do tabuleiro vivo, então continua correto mesmo se um DEMOLIR
-      // destruir a peça marcada antes da hora. Ler uma coordenada no log era
-      // informação verdadeira que ninguém usava — traduzir "2x3" de volta para
-      // uma casa no meio da partida custa mais atenção do que a carta vale.
-      patch: { revealDoomedFor: opponentOf(caster) },
-      log: {
-        code: 'CARD_REVEAL_DOOMED',
-        subject: caster,
-        target: opponentOf(caster),
-        value: index,
-      },
-      notice: { code: 'CARD_REVEAL_DOOMED', subject: caster, target: opponentOf(caster) },
-    };
-  },
-};
-
-const LOCK_CELL: CardDefinition = {
-  id: 'LOCK_CELL',
-  name: 'TRAVAR',
-  type: 'ACTION',
-  description: 'Lacra uma célula vazia — o oponente não pode jogar nela no turno dele.',
-  targeting: 'CELL',
-  rarity: 'RARE',
-  weight: 3,
+  cost: 2,
 
   requiresTarget: true,
-  isValidTarget: ({ state, index }) => state.board[index] === null && state.lockedCell !== index,
+  isValidTarget: ({ state, caster, index }) => state.board[index]?.owner === opponentOf(caster),
 
-  canPlay: ({ state }) => state.board.some((cell, i) => cell === null && state.lockedCell !== i),
+  canPlay: ({ state, caster }) => occupiedIndexes(state, opponentOf(caster)).length > 0,
 
   effect: ({ state, caster, targetIndex }) => {
     if (targetIndex === undefined) return null;
-    if (state.board[targetIndex] !== null) return null;
+    const piece = state.board[targetIndex];
+    if (!piece || piece.owner !== opponentOf(caster)) return null;
 
     return {
-      /* Campo PRÓPRIO (`lockedCell`), não mais o `blockedCell` da regra
-         caótica. Dividir o mesmo campo com o caos era o bug: um surto
-         sorteando RANDOM_FADE trocava `activeRule` e a trava sumia no meio do
-         turno do oponente — exatamente a "expiração errada" relatada.
-
-         Duração = CARD_RULE_MIN_DURATION_TURNS (2), NUNCA 1: quem lança a
-         carta ainda vai completar a PRÓPRIA jogada (+1 em `turnCount`) antes
-         do oponente sequer decidir. Com +1 a trava venceria na jogada de quem
-         a lançou — o "paradoxo do turno". Com +2 ela cobre a fase de ação
-         inteira do adversário e só vence quando ELE termina de jogar. */
+      // Guarda dono E `turnPlaced`, não só o índice: é o que permite ao motor
+      // detectar se ESTA peça específica saiu dali por outro caminho (um
+      // DEMOLIR, o sumiço natural) antes do gatilho — ver `classifyDoom` no
+      // store. Sem isso a marca destruiria QUALQUER peça que acabasse
+      // ocupando a mesma casa depois, mesmo sem relação com a marcada.
       patch: {
-        lockedCell: targetIndex,
-        lockedCellExpiresAtTurn: state.turnCount + CARD_RULE_MIN_DURATION_TURNS,
+        doomedCell: { index: targetIndex, owner: piece.owner, turnPlaced: piece.turnPlaced },
       },
-      log: { code: 'CARD_LOCK_CELL', subject: caster, value: targetIndex },
-      notice: { code: 'CARD_LOCK_CELL', subject: caster, value: targetIndex, tone: 'NEUTRAL' },
+      log: { code: 'CARD_MARK_DOOMED', subject: caster, target: opponentOf(caster), value: targetIndex },
+      notice: {
+        code: 'CARD_MARK_DOOMED',
+        subject: caster,
+        target: opponentOf(caster),
+        value: targetIndex,
+        tone: 'NEUTRAL',
+      },
     };
   },
 };
 
-/* -------------------------------------------------------------------------- */
-/*                                  INFORMAÇÃO                                  */
-/* -------------------------------------------------------------------------- */
-/* Diferente de VIDENTE (que só imprime uma linha de log), estas pausam o jogo
-   com o modal de confirmação (`acknowledge`) — a informação é importante o
-   suficiente para exigir que o jogador realmente a leia antes de seguir.     */
-
+/**
+ * Sucessora da antiga ESPIONAGEM (mesmo id): antes só REVELAVA (o jogador
+ * escolhia qual carta virar, nada saía da mão do oponente). Agora ela mesma
+ * decide (RNG) qual carta descobre — e a REMOVE da mão dele. "O jogador
+ * seleciona um índice" do pedido virou sorteio pelo mesmo motivo do TROCAR:
+ * dar essa escolha de verdade exigiria uma seleção síncrona com consequência
+ * real, o que pediria um novo tipo de ação replicada em rede (como
+ * ACKNOWLEDGE/FORFEIT) só para isto — fora do escopo desta etapa de cartas.
+ */
 const SPY_CARD: CardDefinition = {
   id: 'SPY_CARD',
   name: 'ESPIONAGEM',
   type: 'ACTION',
-  description: 'Mostra a mão do oponente virada para baixo. Escolha 1 carta e vire.',
+  description: 'Revela e descarta uma carta aleatória da mão do oponente.',
   targeting: 'NONE',
-  rarity: 'RARE',
+  rarity: 'EPIC',
   weight: 3,
+  cost: 2,
 
   canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
   effect: ({ state, caster, rng }) => {
-    const opponentHand = state[handKeyFor(opponentOf(caster))];
+    const target = opponentOf(caster);
+    const opponentHand = state[handKeyFor(target)];
     if (opponentHand.length === 0) return null;
 
-    /* --- IA: não abre modal ------------------------------------------------
-       A máquina já "sabe" a mão do jogador; o modal é uma ferramenta humana.
-       Mas o jogador precisa ver que foi espionado, senão a carta some da mão
-       da CPU sem nenhum efeito aparente.
+    const found = rng.pick(opponentHand);
+    const remainingOpponentHand = opponentHand.filter((c) => c.uid !== found.uid);
 
-       `isAI` em vez de `caster === 'MACHINE'`: no modo online o `MACHINE` é
-       uma PESSOA no outro aparelho, que precisa do modal tanto quanto o
-       `PLAYER`. A suposição "MACHINE ⇒ inteligência artificial" só valia
-       enquanto o jogo era offline. */
-    if (isAIController(state, caster)) {
-      const spied = rng.pick(opponentHand).cardId;
-      const event = {
-        code: 'CARD_SPY_PEEK',
-        subject: caster,
-        target: opponentOf(caster),
-        value: spied,
-      } as const;
-      return { log: event, notice: event };
-    }
+    const event = {
+      code: 'CARD_SPY_DISCARD',
+      subject: caster,
+      target,
+      value: found.cardId,
+    } as const;
 
-    /* --- Jogador: ele escolhe qual virar -------------------------------------
-       Embaralhar antes é o que impede o vazamento de posição: sem isto a
-       ordem do array seria a ordem real da mão da CPU, e virar a 1ª carta
-       ensinaria algo sobre as outras. Com o embaralhamento (determinístico,
-       canal CARDS), escolher é uma aposta honesta — e a escolha ser DO JOGADOR
-       é o que torna a carta uma decisão em vez de um sorteio. */
     return {
-      log: {
-        code: 'CARD_SPY_HAND',
-        subject: caster,
-        target: opponentOf(caster),
-        value: opponentHand.length,
-      },
-      acknowledge: {
-        code: 'HAND_REVEALED',
-        kind: 'SPY_PICK',
-        subject: caster,
-        target: opponentOf(caster),
-        revealedCards: rng.shuffle(opponentHand).map((c) => c.cardId),
-      },
+      patch: { [handKeyFor(target)]: remainingOpponentHand },
+      log: event,
+      notice: event,
+      /* Só quem jogou vê QUAL carta era. O oponente já sabe a própria mão —
+         não há nada para ele "descobrir" no próprio prejuízo — e a IA não
+         precisa de modal nenhum (é uma ferramenta de leitura humana). */
+      acknowledge: isAIController(state, caster)
+        ? undefined
+        : {
+            code: 'HAND_REVEALED',
+            kind: 'INFO',
+            subject: caster,
+            target,
+            cardId: found.cardId,
+          },
     };
   },
+};
+
+const DRAW_CARD_BIG: CardDefinition = {
+  id: 'DRAW_CARD_BIG',
+  name: 'PROCRASTINAR II',
+  type: 'ACTION',
+  description: 'Compra 3 cartas novas.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 2,
+  cost: 2,
+
+  canPlay: ({ state, caster }) => state[handKeyFor(caster)].length < HAND_LIMIT,
+
+  effect: ({ caster }) => ({
+    draw: { target: caster, count: 3 },
+    log: { code: 'CARD_DRAW', subject: caster, value: 3 },
+  }),
+};
+
+/* -------------------------------------------------------------------------- */
+/*                          CUSTO 3 — IMPACTO TOTAL                            */
+/* -------------------------------------------------------------------------- */
+
+const DIRECT_DAMAGE: CardDefinition = {
+  id: 'DIRECT_DAMAGE',
+  name: 'ATAQUE',
+  type: 'ACTION',
+  description: 'Causa 1 de dano direto ao oponente.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 3,
+  cost: 3,
+
+  effect: ({ caster }) => ({
+    damage: { target: opponentOf(caster), amount: 1 },
+    log: { code: 'CARD_DAMAGE', subject: caster, target: opponentOf(caster) },
+  }),
+};
+
+const HEAL_SELF: CardDefinition = {
+  id: 'HEAL_SELF',
+  name: 'CURA',
+  type: 'ACTION',
+  description: 'Recupera 1 HP.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 3,
+  cost: 3,
+
+  canPlay: ({ state, caster }) => hpOf(state, caster) < INITIAL_HP,
+
+  effect: ({ caster }) => ({
+    heal: { target: caster, amount: 1 },
+    log: { code: 'CARD_HEAL', subject: caster },
+  }),
+};
+
+/**
+ * Sucessora do antigo REBOBINAR (mesmo id, mesmo mecanismo): a moldura virou
+ * "o oponente perde a próxima jogada dele" em vez de "sua próxima jogada não
+ * passa a vez" — mas as duas descrevem o MESMO fato (`extraTurnPending:
+ * caster`, lido por `placeMark`), só narrado de lados opostos.
+ */
+const EXTRA_TURN: CardDefinition = {
+  id: 'EXTRA_TURN',
+  name: 'PULAR',
+  type: 'ACTION',
+  description: 'O oponente perde a fase de colocar peça no próximo turno dele.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 3,
+  cost: 3,
+
+  // Não empilha: jogar duas seguidas desperdiçaria a segunda.
+  canPlay: ({ state, caster }) => state.extraTurnPending !== caster,
+
+  effect: ({ caster }) => ({
+    patch: { extraTurnPending: caster },
+    log: { code: 'CARD_EXTRA_TURN', subject: caster },
+  }),
 };
 
 const FULL_INTEL: CardDefinition = {
@@ -408,6 +540,7 @@ const FULL_INTEL: CardDefinition = {
   targeting: 'NONE',
   rarity: 'LEGENDARY',
   weight: 3,
+  cost: 3,
 
   canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
@@ -418,8 +551,6 @@ const FULL_INTEL: CardDefinition = {
     const opponentHand = state[handKeyFor(opponentOf(caster))];
     if (opponentHand.length === 0) return null;
 
-    // Ver a nota em ESPIONAGEM: quem pula o modal é a IA, não o combatente
-    // `MACHINE` — no online os dois não são a mesma coisa.
     const intel = {
       code: 'CARD_INTEL_HAND',
       subject: caster,
@@ -446,74 +577,19 @@ const FULL_INTEL: CardDefinition = {
   },
 };
 
-/* -------------------------------------------------------------------------- */
-/*                              TRAPS DE DEFESA                                 */
-/* -------------------------------------------------------------------------- */
-/* Diferente de BOMB_TRAP (que reage a um evento já consumado), estas reagem a
-   `CARD_ABOUT_TO_RESOLVE` — resolvido de forma SÍNCRONA por
-   `resolveCounterTraps` no gameStore, antes do efeito da carta do oponente
-   rodar. `cancelsAction: true` é o sinal para o store abortar aquela carta. */
-
-const SHIELD_TRAP: CardDefinition = {
-  id: 'SHIELD_TRAP',
-  name: 'PROTEÇÃO',
-  type: 'TRAP',
-  description: 'Virada na mesa. Impede que uma carta sua seja roubada pelo SAQUE do oponente.',
-  targeting: 'NONE',
-  rarity: 'EPIC',
-  weight: 2,
-
-  triggerCondition: (event) =>
-    event.type === 'CARD_ABOUT_TO_RESOLVE' && event.cardId === 'HAND_RAID',
-
-  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_SHIELD', subject: caster } }),
-};
-
-const COUNTER_TRAP: CardDefinition = {
-  id: 'COUNTER_TRAP',
-  name: 'ANTI-MAGIA',
-  type: 'TRAP',
-  description: 'Virada na mesa. Anula a próxima carta de ação jogada pelo oponente.',
-  targeting: 'NONE',
-  rarity: 'EPIC',
-  weight: 2,
-
-  // Precisa do tipo da carta do EVENTO, não da própria — por isso consulta o
-  // registry pelo id em vez de assumir algo sobre `event`.
-  triggerCondition: (event) =>
-    event.type === 'CARD_ABOUT_TO_RESOLVE' && CARD_REGISTRY[event.cardId].type === 'ACTION',
-
-  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_COUNTER', subject: caster } }),
-};
-
-const MIND_SHIELD_TRAP: CardDefinition = {
-  id: 'MIND_SHIELD_TRAP',
-  name: 'MENTE BLINDADA',
-  type: 'TRAP',
-  description: 'Virada na mesa. Anula qualquer carta do oponente que tente espiar sua mão.',
-  targeting: 'NONE',
-  rarity: 'LEGENDARY',
-  weight: 2,
-
-  // Específica (ao contrário de ANTI-MAGIA, que é genérica p/ qualquer AÇÃO):
-  // só veta ESPIONAGEM e VISÃO ABSOLUTA, nomeadas explicitamente. Continua
-  // vencendo a corrida se ANTI-MAGIA também estiver armada e casar primeiro
-  // — "primeira armadilha que casa" já é a regra de `resolveCounterTraps`.
-  triggerCondition: (event) =>
-    event.type === 'CARD_ABOUT_TO_RESOLVE' &&
-    (event.cardId === 'SPY_CARD' || event.cardId === 'FULL_INTEL'),
-
-  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_MIND_SHIELD', subject: caster } }),
-};
-
+/**
+ * Sucessora da antiga MINA (mesmo id, mesmo mecanismo): virou Lendária/custo 3
+ * por ser a punição mais dura do baralho — nenhuma mudança na lógica.
+ */
 const BOMB_TRAP: CardDefinition = {
   id: 'BOMB_TRAP',
   name: 'MINA',
   type: 'TRAP',
   description: 'Virada na mesa. Detona se o oponente ocupar o centro: 2 de dano e ele perde a vez.',
   targeting: 'NONE',
-  rarity: 'EPIC',
+  rarity: 'LEGENDARY',
   weight: 3,
+  cost: 3,
 
   /**
    * O barramento já filtrou por autoria — só eventos causados pelo oponente
@@ -539,6 +615,85 @@ const BOMB_TRAP: CardDefinition = {
 };
 
 /* -------------------------------------------------------------------------- */
+/*                          CUSTO 1 — ARMADILHA                                 */
+/* -------------------------------------------------------------------------- */
+/* Reage a `CARD_ABOUT_TO_RESOLVE` — resolvido de forma SÍNCRONA por
+   `resolveCounterTraps` no gameStore, antes do efeito da carta do oponente
+   rodar. `cancelsAction: true` é o sinal para o store abortar aquela carta. */
+
+/**
+ * Sucessora da antiga PROTEÇÃO (mesmo id): antes só anulava SAQUE; agora
+ * também anula ESPIONAGEM, já que as duas mexem na mão do jogador. Rebaixada
+ * de Épica/custo 2 para Rara/custo 1 — era cara demais para o que faz.
+ */
+const SHIELD_TRAP: CardDefinition = {
+  id: 'SHIELD_TRAP',
+  name: 'PROTEÇÃO',
+  type: 'TRAP',
+  description: 'Virada na mesa. Anula o SAQUE ou a ESPIONAGEM do oponente contra você, destruindo a armadilha.',
+  targeting: 'NONE',
+  rarity: 'RARE',
+  weight: 2,
+  cost: 1,
+
+  triggerCondition: (event) =>
+    event.type === 'CARD_ABOUT_TO_RESOLVE' && (event.cardId === 'HAND_RAID' || event.cardId === 'SPY_CARD'),
+
+  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_SHIELD', subject: caster } }),
+};
+
+/* -------------------------------------------------------------------------- */
+/*                          CUSTO 0 — CAOS                                      */
+/* -------------------------------------------------------------------------- */
+
+const CHAOS_ROULETTE: CardDefinition = {
+  id: 'CHAOS_ROULETTE',
+  name: 'TIC TAC BOOM!',
+  type: 'ACTION',
+  description: 'Dispara um surto de caos imediato — a mesma roleta do relógio global.',
+  targeting: 'NONE',
+  rarity: 'BOOM',
+  weight: 1,
+  cost: 0,
+
+  // Sem `canPlay`: `triggerTerminalGlitch` é sempre seguro de chamar, em
+  // qualquer regra ativa (inclusive já dentro de um surto — ela troca para
+  // outra regra caótica, nunca repete a atual).
+  effect: ({ caster }) => ({
+    triggersChaosGlitch: true,
+    log: { code: 'CARD_CHAOS_ROULETTE', subject: caster },
+  }),
+};
+
+/**
+ * O efeito só ABRE o modal (`opensAltar: true`) — a escolha das 2 cartas, a
+ * remoção delas e (numa iteração futura) a invocação em troca acontecem fora
+ * daqui, no `<AltarModal />` e na action `sacrificeCards`. Não dá para o
+ * `effect` fazer isso sozinho: ele é puro e roda num único instante, e a
+ * escolha do jogador ainda nem existe nesse momento.
+ */
+const ALTAR_OF_SACRIFICE: CardDefinition = {
+  id: 'ALTAR_OF_SACRIFICE',
+  name: 'ALTAR DE SACRIFÍCIO',
+  type: 'ACTION',
+  description: 'Escolha 2 cartas da mão para sacrificar. O que nasce da oferenda ainda será revelado.',
+  targeting: 'NONE',
+  rarity: 'BOOM',
+  weight: 1,
+  cost: 0,
+
+  // Precisa de 2 OUTRAS cartas na mão além do próprio Altar — senão o modal
+  // abriria para um ritual impossível de completar.
+  canPlay: ({ state, caster, uid }) =>
+    state[handKeyFor(caster)].filter((c) => c.uid !== uid).length >= 2,
+
+  effect: ({ caster }) => ({
+    opensAltar: true,
+    log: { code: 'CARD_ALTAR_OPENED', subject: caster },
+  }),
+};
+
+/* -------------------------------------------------------------------------- */
 /*                                   REGISTRY                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -549,22 +704,25 @@ const BOMB_TRAP: CardDefinition = {
  * `CardId` e esquecer de registrar aqui, o build quebra.
  */
 export const CARD_REGISTRY: Record<CardId, CardDefinition> = {
+  CLEAR_BLOCK,
+  CLEANSE,
+  LOCK_CELL,
   BREAK_PIECE,
-  EXTRA_TURN,
-  BOMB_TRAP,
-  HEAL_SELF,
-  DIRECT_DAMAGE,
+  PEEK_RANDOM,
+  SHIELD_TRAP,
   DRAW_CARD,
   HAND_RAID,
-  CLEANSE,
-  HAND_SWAP,
-  REVEAL_OLDEST,
-  LOCK_CELL,
-  SHIELD_TRAP,
-  COUNTER_TRAP,
+  CARD_TRADE,
+  REVEAL_OLDEST: MARK_DOOMED,
   SPY_CARD,
+  DRAW_CARD_BIG,
+  DIRECT_DAMAGE,
+  HEAL_SELF,
+  EXTRA_TURN,
+  BOMB_TRAP,
   FULL_INTEL,
-  MIND_SHIELD_TRAP,
+  CHAOS_ROULETTE,
+  ALTAR_OF_SACRIFICE,
 };
 
 export const CARD_IDS = Object.keys(CARD_REGISTRY) as CardId[];
@@ -591,44 +749,42 @@ const IDS_BY_RARITY = CARD_IDS.reduce(
     acc[CARD_REGISTRY[id].rarity].push(id);
     return acc;
   },
-  { COMMON: [], RARE: [], EPIC: [], LEGENDARY: [] } as Record<CardRarity, CardId[]>,
+  { COMMON: [], RARE: [], EPIC: [], LEGENDARY: [], BOOM: [] } as Record<CardRarity, CardId[]>,
 );
 
 /**
  * Pool de faixas, já filtrado para descartar faixas vazias.
  *
  * O filtro não é decorativo: `rng.weighted` sortearia uma faixa sem cartas e o
- * `pick` seguinte estouraria. Enquanto o deck tiver ao menos uma carta de cada
- * raridade isso nunca acontece, mas nada no tipo garante isso — e um deck
- * futuro sem lendárias não deveria derrubar o jogo.
+ * `pick` seguinte estouraria. Hoje é o que absorve `BOOM` não ter carta
+ * nenhuma ainda — os 4% dela ficam redistribuídos proporcionalmente entre as
+ * demais faixas até a primeira carta `BOOM` ser registrada.
  */
 const RARITY_POOL = (Object.keys(RARITY_DRAW_WEIGHT) as CardRarity[])
   .filter((rarity) => IDS_BY_RARITY[rarity].length > 0)
   .map((rarity) => [rarity, RARITY_DRAW_WEIGHT[rarity]] as const);
 
-/** Pesos internos de cada faixa, prontos para `rng.weighted`. */
-const POOL_BY_RARITY = (Object.keys(IDS_BY_RARITY) as CardRarity[]).reduce(
-  (acc, rarity) => {
-    acc[rarity] = IDS_BY_RARITY[rarity].map((id) => [id, CARD_REGISTRY[id].weight] as const);
-    return acc;
-  },
-  {} as Record<CardRarity, (readonly [CardId, number])[]>,
-);
-
 /**
  * Sorteia um id de carta pelo canal `CARDS` do RNG, em **dois estágios**:
- * primeiro a faixa de raridade (50/30/15/5), depois a carta dentro dela.
+ * primeiro a faixa de raridade — ponderada, 50/25/15/6/4 — depois uma carta
+ * DENTRO dela, essa sim uniforme: todas as cartas da faixa têm a mesma chance,
+ * independente do `weight` de cada uma.
  *
- * O modelo anterior era um pool único ponderado carta a carta, e por isso a
- * chance de sair armadilha crescia junto com a quantidade de armadilhas no
- * deck — foi assim que a mão da CPU virou um paredão delas. Sorteando a faixa
- * antes, as proporções entre faixas ficam fixas por construção e acrescentar
- * cartas novas só redistribui a probabilidade DENTRO da própria faixa.
+ * `weight` continua existindo em `CardDefinition` (não é mais consultado por
+ * este sorteio) — não removido nesta etapa por não ter sido pedido, e porque
+ * uma faixa futura pode voltar a precisar de desempate ponderado. Mas é bom
+ * estar ciente: hoje ele é um campo morto para fins de compra.
+ *
+ * O modelo de duas faixas (e não um pool único ponderado carta a carta) segue
+ * valendo pelo mesmo motivo de sempre: com um pool único, a chance de sair
+ * armadilha cresceria junto com a quantidade de armadilhas no deck — foi assim
+ * que a mão da CPU virou um paredão delas. Sorteando a faixa antes, as
+ * proporções entre faixas ficam fixas por construção.
  *
  * Consome exatamente 2 números do canal por compra — quantidade fixa, então o
  * determinismo do replay não depende de qual faixa saiu.
  */
 export function drawCardId(rng: Rng): CardId {
   const rarity = rng.weighted(RARITY_POOL);
-  return rng.weighted(POOL_BY_RARITY[rarity]);
+  return rng.pick(IDS_BY_RARITY[rarity]);
 }

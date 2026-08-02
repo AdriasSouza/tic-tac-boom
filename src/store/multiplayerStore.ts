@@ -1,15 +1,17 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
 
 import {
   MultiplayerError,
   createRoom as createRoomRequest,
+  detachPresence,
   getClientId,
   joinRoom as joinRoomRequest,
   leaveRoom as leaveRoomRequest,
   listenToRoom,
   type Unsubscribe,
 } from '@/services/multiplayerService';
-import type { PlayerSlot, RoomSnapshot } from '@/types/multiplayer';
+import type { PlayerConnectionStatus, PlayerSlot, RoomSnapshot } from '@/types/multiplayer';
 
 /**
  * Estado da REDE. Nada de regras de jogo.
@@ -50,6 +52,17 @@ export interface MultiplayerState {
   error: string | null;
   /** Uma requisição de rede está em andamento? Trava os botões do lobby. */
   isBusy: boolean;
+  /**
+   * Código de uma sala que este dispositivo estava jogando antes do app
+   * fechar/recarregar, lido do armazenamento local no boot. `null` quando não
+   * há nada a oferecer, ou depois que o jogador reconecta/dispensa a oferta.
+   *
+   * Só a OFERTA mora aqui — reconectar de fato é chamar `joinRoom(code)`
+   * normalmente. A sala já reconhece este cliente pelo `clientId` persistido
+   * (ver `multiplayerService`), então o caminho de REJOIN de sempre resolve
+   * sozinho, sem nenhuma rota de rede nova.
+   */
+  pendingReconnectCode: string | null;
 }
 
 export interface MultiplayerActions {
@@ -61,6 +74,10 @@ export interface MultiplayerActions {
   leaveRoom: () => Promise<void>;
   /** Limpa a mensagem de erro (ex: quando o jogador começa a digitar de novo). */
   clearError: () => void;
+  /** Aceita a oferta de reconexão: entra de volta em `pendingReconnectCode`. */
+  reconnect: () => Promise<void>;
+  /** Recusa a oferta de reconexão — não pergunta de novo para esta sala. */
+  dismissReconnect: () => void;
 }
 
 export type MultiplayerStore = MultiplayerState & MultiplayerActions;
@@ -73,7 +90,29 @@ const INITIAL_STATE: MultiplayerState = {
   room: null,
   error: null,
   isBusy: false,
+  pendingReconnectCode: null,
 };
+
+/* -------------------------------------------------------------------------- */
+/*                    PERSISTÊNCIA DE SESSÃO (localStorage/disco)              */
+/* -------------------------------------------------------------------------- */
+/* Responsabilidade DESTE store, não do serviço: o `multiplayerService` só
+   fala a língua do Firebase (é onde o `clientId` persistente vive, porque é
+   consumido diretamente pelas transações de lá). "Qual foi a última sala que
+   ESTE dispositivo jogou" é sessão de cliente, não protocolo de rede — mora
+   aqui, ao lado de quem já orquestra entrar/sair.                           */
+
+const SESSION_STORAGE_KEY = '@tic-tac-boom/lastRoom';
+
+/** Melhor esforço: sem disco (modo privado, quota cheia), só perdemos a OFERTA de reconectar. */
+async function persistSession(code: string | null): Promise<void> {
+  try {
+    if (code) await AsyncStorage.setItem(SESSION_STORAGE_KEY, code);
+    else await AsyncStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {
+    // Silencioso de propósito — ver o comentário acima.
+  }
+}
 
 /* -------------------------------------------------------------------------- */
 /*                             LISTENER (fora do store)                        */
@@ -112,6 +151,7 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set, get) => {
         // Sala apagada no servidor: não há mais o que escutar.
         if (snapshot === null) {
           stopListening();
+          void persistSession(null); // nada para oferecer reconectar depois
           set({
             ...INITIAL_STATE,
             error: 'A sala foi encerrada.',
@@ -125,9 +165,13 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set, get) => {
           status: snapshot.status === 'PLAYING' ? 'MATCH_STARTED' : 'IN_LOBBY',
         });
 
-        // O oponente abandonou depois de a partida ter começado.
+        // O oponente abandonou deliberadamente (não é o caminho do W.O. — ver
+        // `syncBridge.netForfeit`, que termina a partida via ação replicada
+        // no log, sem tocar `status` da sala, senão o PRÓPRIO declarante veria
+        // este ramo disparar em cima da tela de vitória que ele acabou de abrir).
         if (snapshot.status === 'FINISHED') {
           stopListening();
+          void persistSession(null);
           set({ ...INITIAL_STATE, error: 'O oponente saiu da sala.' });
         }
       },
@@ -163,8 +207,10 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set, get) => {
         // transição significa que os dois clientes a fazem pelo mesmo motivo.
         status: 'IN_LOBBY',
         isBusy: false,
+        pendingReconnectCode: null, // sessão ativa de novo — a oferta não faz mais sentido
       });
 
+      void persistSession(code);
       startListening(code);
     } catch (error) {
       const message =
@@ -191,6 +237,8 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set, get) => {
       // jogador como "o oponente saiu" e mostraria um erro sem sentido para
       // quem acabou de clicar em sair.
       stopListening();
+      detachPresence(); // saída deliberada — não é queda, o onDisconnect não deve mais vigiar
+      void persistSession(null);
       set({ ...INITIAL_STATE });
 
       if (roomCode) await leaveRoomRequest(roomCode);
@@ -199,8 +247,36 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set, get) => {
     clearError: () => {
       if (get().error !== null) set({ error: null });
     },
+
+    reconnect: async () => {
+      const code = get().pendingReconnectCode;
+      if (!code) return;
+
+      set({ pendingReconnectCode: null });
+      await enterRoom(() => joinRoomRequest(code));
+    },
+
+    dismissReconnect: () => {
+      set({ pendingReconnectCode: null });
+      void persistSession(null); // recusou — não oferece esta sala de novo
+    },
   };
 });
+
+/**
+ * Lê a sessão salva UMA VEZ, ao carregar o módulo, e oferece reconexão se
+ * encontrar algo. `status === 'DISCONNECTED'` no momento em que a leitura
+ * resolve é o que impede uma corrida boba: se o jogador já tiver criado ou
+ * entrado numa sala nova enquanto o disco ainda respondia, a oferta chegaria
+ * atrasada e sobrescreveria uma sessão que já está em andamento.
+ */
+void AsyncStorage.getItem(SESSION_STORAGE_KEY)
+  .then((code) => {
+    if (code && useMultiplayerStore.getState().status === 'DISCONNECTED') {
+      useMultiplayerStore.setState({ pendingReconnectCode: code });
+    }
+  })
+  .catch(() => {});
 
 /* -------------------------------------------------------------------------- */
 /*                                  SELETORES                                  */
@@ -220,6 +296,24 @@ export const selectHasOpponent = (s: MultiplayerStore): boolean => {
   if (!players) return false;
   return players.player1 !== null && players.player2 !== null;
 };
+
+/**
+ * Status de conexão do OPONENTE — nunca o próprio. `null` fora de uma sala
+ * online ou antes do primeiro snapshot chegar (não confundir com
+ * `'DISCONNECTED'`: aqui `null` é "não sei ainda", lá é "sei que caiu").
+ *
+ * Consumido por `syncBridge.isOpponentConnected()` (versão imperativa) e
+ * pelos hooks reativos em `useLocalTurn.ts` — a mesma derivação de "qual
+ * assento é o do outro" num lugar só, nunca duplicada entre os dois estilos
+ * de leitura.
+ */
+export const selectOpponentConnectionStatus = (s: MultiplayerStore): PlayerConnectionStatus | null => {
+  if (s.playerId === null || s.room === null) return null;
+  const opponentSlot: PlayerSlot = s.playerId === 'player1' ? 'player2' : 'player1';
+  return s.room.players[opponentSlot]?.status ?? null;
+};
+
+export const selectPendingReconnectCode = (s: MultiplayerStore) => s.pendingReconnectCode;
 
 /** Id anônimo deste cliente. Reexportado para a UI não importar o serviço. */
 export { getClientId };

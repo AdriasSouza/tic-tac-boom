@@ -108,42 +108,44 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
         : `armadilha :: ${who} armou uma armadilha na mesa`;
 
     case 'TRAP_SHIELD':
-      return `proteção :: o saque contra ${who} foi anulado`;
-    case 'TRAP_COUNTER':
-      return `anti-magia :: a ação contra ${who} foi anulada`;
-    case 'TRAP_MIND_SHIELD':
-      return `mente blindada :: a espionagem contra ${who} foi anulada`;
+      return `proteção :: o efeito contra ${who} foi anulado`;
     case 'TRAP_BOMB':
       return `mina :: o centro detonou — 2 de dano e um turno extra para ${who}`;
 
     case 'CARD_BREAK_PIECE':
       return `demolir :: ${who} destruiu a peça em ${cellLabel(entry.value)}`;
     case 'CARD_EXTRA_TURN':
-      return `rebobinar :: ${who} armou um turno extra`;
+      return `pular :: ${who} vai jogar de novo — o oponente perde a vez`;
     case 'CARD_HEAL':
-      return `curar :: ${who} recuperou 1 hp`;
+      return `cura :: ${who} recuperou 1 hp`;
     case 'CARD_DAMAGE':
       return `ataque :: ${who} causou 1 de dano direto`;
     case 'CARD_DRAW':
-      return `estudar :: ${who} comprou ${entry.value} cartas`;
+      return `procrastinar :: ${who} comprou ${entry.value} cartas`;
     case 'CARD_RAID_STOLE':
       return `saque :: ${who} roubou ${cardName(entry.value)} ${whose === 'sua' ? 'de você' : whose}`;
-    case 'CARD_RAID_DESTROYED':
-      return `saque :: ${who} destruiu ${cardName(entry.value)} ${whose === 'sua' ? 'de você' : whose}`;
+    case 'CARD_RAID_FAILED':
+      return `saque :: a tentativa de ${who} contra ${whose === 'sua' ? 'você' : whose} falhou`;
     case 'CARD_CLEANSE':
-      return `purificar :: ${who} liberou a casa interditada`;
-    case 'CARD_SWAP':
-      return `troca :: ${who} trocou de mão com o oponente`;
-    case 'CARD_REVEAL_DOOMED':
-      return `vidente :: a peça condenada em ${cellLabel(entry.value)} foi revelada`;
+      return `purificar :: ${who} liberou a casa ${cellLabel(entry.value)}`;
+    case 'CARD_TRADE':
+      return `trocar :: ${who} trocou ${cardName(entry.value)} por uma carta do oponente`;
+    case 'CARD_MARK_DOOMED':
+      return `vidente :: ${who} marcou a peça em ${cellLabel(entry.value)} para destruição`;
+    case 'CARD_DOOM_TRIGGERED':
+      return `vidente :: a peça marcada em ${cellLabel(entry.value)} foi destruída no início do turno de ${who}`;
     case 'CARD_LOCK_CELL':
       return `travar :: ${who} lacrou a casa ${cellLabel(entry.value)}`;
     case 'CARD_SPY_PEEK':
-      return `espionagem :: ${who} olhou a carta ${cardName(entry.value).toLowerCase()}`;
-    case 'CARD_SPY_HAND':
-      return `espionagem :: ${who} espiou uma mão de ${entry.value} carta(s)`;
+      return `espiada :: ${who} olhou a carta ${cardName(entry.value).toLowerCase()}`;
+    case 'CARD_SPY_DISCARD':
+      return `espionagem :: ${who} descobriu e descartou ${cardName(entry.value)} ${whose === 'sua' ? 'de você' : whose}`;
     case 'CARD_INTEL_HAND':
       return `visão absoluta :: ${who} leu uma mão inteira de ${entry.value} carta(s)`;
+    case 'CARD_CHAOS_ROULETTE':
+      return `tic tac boom :: ${who} girou a roleta do caos`;
+    case 'CARD_ALTAR_OPENED':
+      return `altar :: ${who} está escolhendo uma oferenda`;
   }
 }
 
@@ -171,18 +173,20 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
       return CHAOS_RULE_SHOUT[entry.value as ChaosRule] ?? 'CAOS';
     case 'CARD_RAID_STOLE':
       return `${who} ROUBOU: ${cardName(entry.value)}`;
-    case 'CARD_RAID_DESTROYED':
-      return `${who} DESTRUIU: ${cardName(entry.value)}`;
-    case 'CARD_SWAP':
-      return `${who} TROCOU AS MÃOS`;
+    case 'CARD_TRADE':
+      return `${who} TROCOU: ${cardName(entry.value)}`;
     case 'CARD_CLEANSE':
-      return 'CASA LIBERADA';
-    case 'CARD_REVEAL_DOOMED':
-      return 'PEÇA CONDENADA REVELADA';
+      return `CASA ${cellLabel(entry.value)} LIBERADA`;
+    case 'CARD_MARK_DOOMED':
+      return `PEÇA MARCADA EM ${cellLabel(entry.value)}`;
+    case 'CARD_DOOM_TRIGGERED':
+      return `PEÇA CONDENADA DESTRUÍDA EM ${cellLabel(entry.value)}`;
     case 'CARD_LOCK_CELL':
       return `CASA ${cellLabel(entry.value)} LACRADA`;
     case 'CARD_SPY_PEEK':
-      return `${who} ESPIONOU: ${cardName(entry.value)}`;
+      return `${who} ESPIOU: ${cardName(entry.value)}`;
+    case 'CARD_SPY_DISCARD':
+      return `${who} DESCARTOU: ${cardName(entry.value)}`;
     case 'CARD_INTEL_HAND':
       return `${who} LEU A MÃO INTEIRA`;
     default:
@@ -301,6 +305,18 @@ export function formatAcknowledgement(
       };
 
     case 'HAND_REVEALED': {
+      // `INFO`: a ESPIONAGEM já decidiu sozinha (RNG) qual carta descobriu e
+      // descartou — não sobrou escolha nenhuma para o jogador fazer, então o
+      // modal só mostra o resultado, sem grade de cartas viradas para baixo.
+      if (ack.kind === 'INFO') {
+        return {
+          subtitle: 'ESPIONAGEM',
+          title: card?.name ?? 'CARTA DESCOBERTA',
+          description: card?.description ?? 'Você descobriu e descartou uma carta do oponente.',
+          tone: 'INTEL',
+        };
+      }
+
       // O dono da mão é o `target`; "SUA MÃO" acontece quando é você que foi
       // espionado — e é justamente aí que o pronome invertido doía mais.
       const title =

@@ -16,4 +16,8 @@ export const RARITY_COLOR: Record<CardRarity, string> = {
   RARE: '#38bdf8',
   EPIC: '#a855f7',
   LEGENDARY: '#facc15',
+  // Fora da escala de card game convencional de propósito: `BOOM` não é "mais
+  // rara que lendária", é uma categoria à parte (caos, não poder) — precisa
+  // de uma cor que não sugira "o topo da escala normal".
+  BOOM: '#f97316',
 };

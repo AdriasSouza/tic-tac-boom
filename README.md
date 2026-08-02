@@ -359,10 +359,11 @@ tic-tac-boom/
 │   │
 │   ├── components/game/
 │   │   ├── ChaosTerminal.tsx         # WebView CRT + log de combate
-│   │   ├── HUD.tsx                   # HP em blocos + indicador de turno
+│   │   ├── HUD.tsx                   # Linha 1: HP + mãos + turno
+│   │   ├── MiniHand.tsx              # Miniatura de mão (face / verso)
 │   │   ├── Board.tsx                 # Grid 3x3, aritmética inteira
 │   │   ├── Cell.tsx                  # Célula: peça, pulso, mira, haptics
-│   │   ├── TrapZone.tsx              # Armadilhas viradas para baixo
+│   │   ├── TrapZone.tsx              # Coluna lateral de armadilhas
 │   │   ├── CardHand.tsx              # Leque + geometria + modo mira
 │   │   └── CardItem.tsx              # Carta arrastável (gesto na UI thread)
 │   │
@@ -431,6 +432,48 @@ vez de recursar — dois gatilhos que se disparam mutuamente viram sequência fi
 como barras chapadas de 2–3px (nunca `elevation`/`shadowRadius`, que borram a aresta), peças
 desenhadas com `View` (`borderRadius: 0`).
 
+**Só o `<Board />` decide a geometria do tabuleiro.** Nenhum ancestral da área de jogo aplica
+`aspectRatio`, `maxWidth` ou `maxHeight` — eles entregam espaço bruto (`flex:1` +
+`alignSelf:'stretch'`); o board mede as duas dimensões via `onLayout` e resolve o quadrado
+sozinho. Essa classe de bug — um ancestral decidindo geometria do board por baixo do pano —
+já apareceu de três formas diferentes: um `maxWidth`/`maxHeight` externo cravado em 420dp
+(capava o board em QUALQUER tela, desktop incluso); depois um `aspectRatio` num container
+`row`, que pré-quadrava a caixa antes do board medir e chegou a reportar metade da largura
+real da linha; e, antes das duas, a própria `<TrapZone />` empilhada como irmã de flex do
+board no eixo vertical, competindo por altura diretamente (ver próximo item). Nas três, o
+sintoma era o mesmo: o board não estava de fato livre para decidir o próprio tamanho, mesmo
+sem nenhuma prop dizendo isso explicitamente.
+
+**Zonas de armadilha são sempre sidebars, nunca irmãs de flex do tabuleiro no eixo vertical.**
+Em retrato — a orientação mais comum — a altura é o recurso escasso; empilhar as armadilhas
+acima/abaixo do board competia exatamente por esse recurso. Como sidebars de largura fixa
+(por `LayoutMode`), elas competem só pela largura, que sobra até em celular. Onde sobra
+largura de verdade, um segundo mecanismo (`insetPerSide`, calculado em `[mode].tsx`) aproxima
+as sidebars do tabuleiro — mas só quando `boardSize` já está acima do piso jogável (ver
+"Limitações conhecidas"); abaixo dele, apertar a largura de um layout que já falhou na
+altura não ajuda em nada, só desloca a quebra para outro eixo.
+
+**O tamanho do board fica imune a safe area quando a largura é o eixo limitante.** Em telas
+onde `min(availableW, availableH)` já é `availableW`, os insets de topo/rodapé (que só afetam
+altura) podem crescer sem mudar `boardSize` nem um pixel — o navegador (inset zero) e o device
+real medem o mesmo board. Isso deixa de valer só quando a ALTURA vira o eixo limitante.
+Comprovado empiricamente, não só por conta: em 390×844 a estimativa de `availableH` errou por
+75dp (333 estimado vs. 408 medido no device real) e `boardSize` saiu idêntico dos dois lados
+(270) — a largura já governava, então o erro na altura simplesmente não tinha como chegar
+ao resultado.
+
+**Medições, antes e depois da A1/A2/A2.1** (retrato/paisagem, `boardSize`/`cellSize`):
+
+| Dispositivo | Antes | Depois |
+|---|---|---|
+| 320×568 | não renderizava (`outer≤0`) | 200 / 57 |
+| 390×844 | 154 / 42 | 270 / 80 |
+| 1440×900 | 420 / 130 (teto fixo, qualquer tela) | 466 / 146 |
+
+926×428 fica de fora desta tabela de propósito — nunca teve um "antes" medido de verdade
+para comparar, só estimativas ao longo do desenvolvimento. O número atual (136 / 32) está
+documentado como limitação conhecida, abaixo.
+
 ---
 
 ## Estado atual
@@ -483,6 +526,12 @@ desenhadas com `View` (`borderRadius: 0`).
 - **A fonte no terminal é independente do resto do app.** `expo-font` não alcança o documento do
   WebView/iframe; usar a Press Start 2P lá dentro exige embutir o `.ttf` como base64 num
   `@font-face` dentro do próprio HTML.
+- **Celular deitado bem baixo (ex: 926×428) fica abaixo do piso jogável — de propósito, não por
+  bug.** `boardSize=136`/`cellSize≈32`, abaixo do piso de 180 que o próprio `<Board />` denuncia
+  via `console.warn`. O hug de sidebar (ver "Decisões de arquitetura") está DESLIGADO ali de
+  propósito: apertar a largura de um layout que já falhou na altura não ajuda em nada, só desloca
+  a quebra para outro eixo. A alavanca real para resolver este caso é a altura do HUD (~55dp) e
+  da mão (~104dp) nesse dispositivo — não as armadilhas, que já são o mínimo possível.
 
 ---
 

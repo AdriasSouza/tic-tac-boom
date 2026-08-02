@@ -14,14 +14,14 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
-import { isLocalTurn, netPlaceMark, netPlayCard } from '@/services/syncBridge';
+import { isLocalTurn, isOpponentConnected, netPlaceMark, netPlayCard } from '@/services/syncBridge';
 import {
   canPlaceAt,
   isPendingTarget,
   selectCell,
   selectIsBlocked,
   selectIsCardLocked,
-  selectIsRevealedDoomed,
+  selectIsMarkedDoomed,
   selectIsTargeting,
   selectIsValidTarget,
   selectIsVanishing,
@@ -79,8 +79,8 @@ function CellComponent({ index, size }: CellProps) {
   const isWinning = useGameStore(useMemo(() => selectIsWinningCell(index), [index]));
   const isTargeting = useGameStore(selectIsTargeting);
   const isValidTarget = useGameStore(useMemo(() => selectIsValidTarget(index), [index]));
-  /** Peça marcada pelo VIDENTE — a que vai sumir na próxima jogada do dono. */
-  const isRevealedDoomed = useGameStore(useMemo(() => selectIsRevealedDoomed(index), [index]));
+  /** Peça marcada pelo VIDENTE para ser destruída no início do turno do dono. */
+  const isMarkedDoomed = useGameStore(useMemo(() => selectIsMarkedDoomed(index), [index]));
   // Define qual peça é "minha" para efeito de cor — ver `colorFor`.
   const { localCombatant } = useMatchPerspective();
 
@@ -135,7 +135,7 @@ function CellComponent({ index, size }: CellProps) {
      combatente da vez), então sem uma camada própria a revelação simplesmente
      não apareceria — que era a queixa de a carta não fazer nada visível.     */
   useEffect(() => {
-    if (isRevealedDoomed) {
+    if (isMarkedDoomed) {
       doomGlow.value = withRepeat(
         withTiming(1, { duration: DOOM_PULSE_DURATION, easing: Easing.inOut(Easing.quad) }),
         -1,
@@ -147,7 +147,7 @@ function CellComponent({ index, size }: CellProps) {
     }
 
     return () => cancelAnimation(doomGlow);
-  }, [isRevealedDoomed, doomGlow]);
+  }, [isMarkedDoomed, doomGlow]);
 
   /* --- Entrada da peça ----------------------------------------------------
      Depende de `turnPlaced`, não da existência da peça: assim uma peça que
@@ -216,6 +216,18 @@ function CellComponent({ index, size }: CellProps) {
       return;
     }
 
+    /* --- Trava de presença --------------------------------------------------
+       Mesmo raciocínio, eixo diferente: mesmo NA sua vez, jogar com o
+       oponente desconectado é escrever numa partida que ele não está mais
+       recebendo. O `<OpponentDisconnectedModal />` cobre a tela por cima,
+       mas — mesmo padrão de `pendingAcknowledgement` — a guarda existe aqui
+       também, e não só no modal, porque um `Modal` cobrindo a tela é a
+       primeira linha de defesa, não a única confiável em toda plataforma. */
+    if (!isOpponentConnected()) {
+      rejectFeedback();
+      return;
+    }
+
     /* --- Modo mira intercepta tudo ---------------------------------------
        Com pendingAction ativo o toque resolve a carta, nunca posiciona peça. */
     if (state.pendingAction) {
@@ -269,7 +281,7 @@ function CellComponent({ index, size }: CellProps) {
         index,
         piece?.mark ?? null,
         isBlocked,
-        isVanishing || isRevealedDoomed,
+        isVanishing || isMarkedDoomed,
         isValidTarget,
       )}
       style={{ width: size, height: size }}
@@ -326,7 +338,7 @@ function CellComponent({ index, size }: CellProps) {
         {/* VIDENTE: moldura pulsante marcando a peça condenada do oponente.
             Desenhada por último para vencer o overlay de mira, que é o único
             que pode coexistir com ela. */}
-        {isRevealedDoomed && (
+        {isMarkedDoomed && (
           <Animated.View style={[styles.doomOverlay, doomOverlayStyle]} pointerEvents="none" />
         )}
 

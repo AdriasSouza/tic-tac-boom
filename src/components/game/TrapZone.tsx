@@ -2,10 +2,11 @@ import { memo, useMemo } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, { FadeInDown, ZoomOut } from 'react-native-reanimated';
 
+import { useLayoutMode } from '@/hooks/useLayoutMode';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
-import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import { TRAP_LIMIT, selectTraps, useGameStore, type Combatant } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
+import { TRAP_ZONE_BOUNDS } from '@/theme/layout';
 
 /* -------------------------------------------------------------------------- */
 /*                                    PROPS                                    */
@@ -15,18 +16,6 @@ export interface TrapZoneProps {
   /** De quem são as armadilhas exibidas. */
   owner?: Combatant;
   style?: StyleProp<ViewStyle>;
-  /**
-   * `'row'` (padrão) — legenda ao lado dos slots, empilhados na horizontal.
-   * Layout mobile: a zona ocupa a largura toda, entre o tabuleiro e a mão.
-   *
-   * `'column'` — legenda em cima, slots empilhados na vertical. Usado só no
-   * layout largo (`useResponsiveLayout().isWide`), onde a zona vira uma
-   * coluna lateral estreita ao lado do tabuleiro em vez de uma faixa
-   * horizontal — a legenda completa ("ARMADILHAS DA CPU") não cabe numa
-   * coluna de ~70dp, por isso `orientation="column"` também troca para um
-   * rótulo curto.
-   */
-  orientation?: 'row' | 'column';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -34,78 +23,76 @@ export interface TrapZoneProps {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Zona de armadilhas — fica entre o tabuleiro e a mão.
+ * Zona de armadilhas — sempre uma coluna estreita na lateral do tabuleiro,
+ * em QUALQUER tela.
+ *
+ * Já foi uma faixa horizontal de largura total (empilhada acima/abaixo do
+ * board em retrato) e um sidebar só em paisagem. As duas coisas causavam o
+ * mesmo problema pelo mesmo motivo: sempre que a zona dividia o eixo
+ * VERTICAL com o board (empilhada na mesma coluna flex), ela roubava altura
+ * dele — e altura é justamente o recurso escasso em retrato, a orientação
+ * mais comum do jogo. Fixar a zona como sidebar SEMPRE tira esse
+ * empilhamento do jogo inteiro: ela só compete por LARGURA, que sobra até em
+ * celular — e nunca mais é irmã de flex do board na mesma coluna.
  *
  * Mostra os `TRAP_LIMIT` espaços, com as cartas armadas viradas para baixo.
  * Slots vazios continuam desenhados: comunicam quantas armadilhas ainda cabem
  * sem precisar de texto.
  *
- * O rótulo diz de QUEM é a fileira ("SUAS ARMADILHAS" / "ARMADILHAS DA CPU").
- * As duas zonas são visualmente idênticas — mesmos versos, mesmos slots — e um
- * "ARMADILHAS" genérico em cima das duas deixava o jogador sem saber se a
- * carta virada era ameaça ou defesa dele. A cor do rótulo reforça a distinção
- * para quem lê pelo canto do olho.
+ * O rótulo diz de QUEM é a fileira — só "VOCÊ"/"CPU"/"RIVAL", nunca a frase
+ * longa ("SUAS ARMADILHAS" etc.) que este componente já teve: numa coluna de
+ * 40dp (o modo `compact`) a frase quebra linha ou vaza, mesmo truncada. A cor
+ * do rótulo reforça a distinção para quem lê pelo canto do olho.
  *
- * O anúncio de detonação (nome da carta + haptic) morou aqui antes; agora vive
- * no `<AcknowledgementModal />`, que mostra a carta ampliada no centro da tela
+ * O rótulo fica SEMPRE em cima do bloco de slots, os dois centralizados entre
+ * si — colocá-los lado a lado (como antes) tornava o CONJUNTO assimétrico em
+ * relação ao próprio centro, porque o texto tem uma largura que os slots não
+ * têm; o bloco de slots, que precisa alinhar com o meio do tabuleiro,
+ * terminava deslocado pela largura do texto ao lado.
+ *
+ * O anúncio de detonação (nome da carta + haptic) mora no
+ * `<AcknowledgementModal />`, que mostra a carta ampliada no centro da tela
  * ANTES do efeito mecânico aplicar — mais visível, e sem duplicar aviso.
  *
  * Só assina as armadilhas do dono, então uma detonando não re-renderiza
  * tabuleiro nem mão.
  */
-export function TrapZone({ owner = 'PLAYER', style, orientation = 'row' }: TrapZoneProps) {
+export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
   const traps = useGameStore(useMemo(() => selectTraps(owner), [owner]));
   const emptySlots = Math.max(0, TRAP_LIMIT - traps.length);
-  const isColumn = orientation === 'column';
 
   /* O rótulo depende de a fileira ser MINHA ou DELE — não de o dono ser
      `PLAYER`. Numa sala online quem entrou controla o `MACHINE`, e rotular
-     pelo combatente absoluto diria "ARMADILHAS DA CPU" em cima das próprias
-     armadilhas do convidado. */
+     pelo combatente absoluto diria "CPU" em cima das próprias armadilhas do
+     convidado. */
   const { localCombatant, isOnline } = useMatchPerspective();
   const isLocal = owner === localCombatant;
+  const caption = isLocal ? 'VOCÊ' : isOnline ? 'RIVAL' : 'CPU';
 
-  const caption = isLocal
-    ? 'SUAS ARMADILHAS'
-    : isOnline
-      ? 'ARMADILHAS DO OPONENTE'
-      : 'ARMADILHAS DA CPU';
-
-  // Numa coluna lateral estreita (~70dp) o rótulo completo não cabe.
-  const captionShort = isLocal ? 'VOCÊ' : isOnline ? 'RIVAL' : 'CPU';
-
-  // Duas zonas empilhadas somam altura de sobra num celular baixo — elas
-  // encolhem junto com o resto para o tabuleiro e a mão não perderem espaço.
-  const { trapSlotWidth, trapSlotHeight } = useResponsiveLayout();
-  const slotSize = { width: trapSlotWidth, height: trapSlotHeight };
+  const { mode } = useLayoutMode();
+  const { sidebarWidth, slotSize, hitSlop } = TRAP_ZONE_BOUNDS[mode];
+  const slotStyle = { width: slotSize, height: slotSize };
+  const slotHitSlop = hitSlop > 0 ? hitSlop : undefined;
 
   return (
-    <View style={[styles.root, isColumn ? styles.rootColumn : styles.rootRow, style]}>
-      <View style={[styles.content, isColumn && styles.contentColumn]}>
-        <Text
-          style={[styles.caption, isLocal && styles.captionPlayer, isColumn && styles.captionColumn]}
-          // Trava em 1 linha: sem isto, em telas estreitas "ARMADILHAS DA
-          // CPU" quebrava para uma segunda linha, e como a legenda e os slots
-          // dividem a mesma fileira (`content`, flexDirection:'row'), a
-          // quebra fazia a zona INTEIRA crescer de altura — roubando espaço
-          // do orçamento apertado da coluna e empurrando o resto (inclusive o
-          // tabuleiro) para cima/baixo de forma imprevisível. Truncar aqui
-          // (nunca a legenda dita a altura) é o que garante que a zona de
-          // armadilhas tenha SEMPRE a mesma altura fixa dos slots.
-          numberOfLines={1}
-        >
-          {isColumn ? captionShort : caption}
-        </Text>
+    <View style={[styles.root, { width: sidebarWidth }, style]}>
+      {/* Sempre acima do bloco de slots, e sempre centralizado em relação a
+          ele — nunca ao lado. Ver o porquê no comentário do componente. */}
+      <Text
+        style={[styles.caption, isLocal && styles.captionPlayer]}
+        numberOfLines={1}
+      >
+        {caption}
+      </Text>
 
-        <View style={[styles.slots, isColumn && styles.slotsColumn]}>
-          {traps.map(({ uid }) => (
-            <TrapBack key={uid} size={slotSize} />
-          ))}
+      <View style={styles.slots}>
+        {traps.map(({ uid }) => (
+          <TrapBack key={uid} size={slotStyle} hitSlop={slotHitSlop} />
+        ))}
 
-          {Array.from({ length: emptySlots }, (_, i) => (
-            <View key={`empty-${i}`} style={[styles.emptySlot, slotSize]} />
-          ))}
-        </View>
+        {Array.from({ length: emptySlots }, (_, i) => (
+          <View key={`empty-${i}`} style={[styles.emptySlot, slotStyle]} hitSlop={slotHitSlop} />
+        ))}
       </View>
     </View>
   );
@@ -124,12 +111,19 @@ export default TrapZone;
  * `exiting={ZoomOut}` marca o consumo — a carta some da mesa ao ser revelada
  * (o `<AcknowledgementModal />` assume a partir daí).
  */
-const TrapBack = memo(function TrapBack({ size }: { size: { width: number; height: number } }) {
+const TrapBack = memo(function TrapBack({
+  size,
+  hitSlop,
+}: {
+  size: { width: number; height: number };
+  hitSlop?: number;
+}) {
   return (
     <Animated.View
       entering={FadeInDown.springify().damping(14).mass(0.6)}
       exiting={ZoomOut.duration(240)}
       style={[styles.back, size]}
+      hitSlop={hitSlop}
     >
       {/* Bisel chapado, mesma linguagem do resto da UI. */}
       <View style={styles.backBevel} pointerEvents="none" />
@@ -151,74 +145,51 @@ const TrapBack = memo(function TrapBack({ size }: { size: { width: number; heigh
 /* -------------------------------------------------------------------------- */
 
 const styles = StyleSheet.create({
+  /**
+   * `alignItems:'center'` é o que centraliza a legenda EM RELAÇÃO ao bloco de
+   * slots logo abaixo — os dois são filhos diretos desta coluna, então o
+   * próprio Flexbox garante a simetria sem nenhuma conta manual de largura.
+   *
+   * `alignSelf:'stretch'` (herdado do pai, que dá `alignItems:'stretch'` na
+   * fileira de combate) entrega a ALTURA cheia da linha a esta coluna;
+   * `justifyContent:'center'` centraliza os slots (bem mais curtos que essa
+   * altura) no meio dela — é o que garante a zona ficar na altura do olhar,
+   * alinhada com o meio do tabuleiro, em vez de flutuar encostada no topo.
+   *
+   * `flexShrink:0`: quem cede espaço quando a tela aperta é sempre o
+   * tabuleiro (que sabe se redimensionar sozinho), nunca a zona — um slot
+   * espremido deixa de ser legível como slot. A largura vem inline
+   * (`sidebarWidth`, por `LayoutMode`), então não há o que encolher aqui de
+   * qualquer forma.
+   */
   root: {
     alignItems: 'center',
-  },
-  // Mobile: faixa horizontal de largura total, entre o tabuleiro e a mão.
-  rootRow: {
-    width: '100%',
-    paddingHorizontal: 16,
-    marginVertical: 4,
-    // Explícito (mesmo já sendo o padrão do RN para View): a zona de
-    // armadilhas é altura FIXA, nunca deve ser ela a ceder espaço quando o
-    // orçamento vertical da coluna aperta — quem cede é sempre o `boardArea`
-    // flexível em `[mode].tsx`.
-    flexShrink: 0,
-  },
-  // Desktop largo: coluna estreita ao lado do tabuleiro. `alignSelf:'stretch'`
-  // faz a zona ocupar a altura toda da fileira central (mesma altura do
-  // tabuleiro), e `justifyContent:'center'` centraliza o conteúdo nela.
-  rootColumn: {
-    alignSelf: 'stretch',
     justifyContent: 'center',
-    paddingHorizontal: 4,
-  },
-  content: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  contentColumn: {
-    flexDirection: 'column',
-    gap: 8,
+    gap: 6,
+    flexShrink: 0,
   },
   caption: {
     color: colors.textDim,
     fontSize: 7,
     letterSpacing: 1.5,
     fontWeight: '700',
-    // Encolhe (e o `numberOfLines={1}` acima trunca com "…") ANTES de
-    // deixar a fileira estourar — o vizinho `slots` tem `flexShrink:0`
-    // logo abaixo, então entre os dois é sempre a LEGENDA que cede.
-    flexShrink: 1,
+    textAlign: 'center',
   },
   captionPlayer: {
     color: colors.markX, // mesma cor da peça do jogador — "isto é seu"
   },
-  captionColumn: {
-    textAlign: 'center',
-  },
   slots: {
-    flexDirection: 'row',
-    gap: 6,
-    // Os slots são a informação principal da zona (quantas armadilhas há e
-    // se estão armadas) — nunca podem ser espremidos para abrir espaço para
-    // o texto da legenda.
-    flexShrink: 0,
-  },
-  slotsColumn: {
     flexDirection: 'column',
     gap: 6,
   },
   emptySlot: {
-    // width/height chegam inline, de `useResponsiveLayout`.
+    // width/height chegam inline, de `TRAP_ZONE_BOUNDS`.
     borderWidth: 2,
     borderStyle: 'dashed',
     // Branco translúcido em vez do marrom escuro da moldura: contra o fundo
-    // escuro do painel (e, no layout largo, contra a moldura do tabuleiro
-    // ao lado), a cor antiga (`boardFrameShadow`, quase preta) a 50% de
-    // opacidade era praticamente invisível — o jogador não conseguia ver
-    // quantos espaços de armadilha ainda tinha livres.
+    // escuro do painel (e a moldura do tabuleiro ao lado), a cor antiga
+    // (`boardFrameShadow`, quase preta) a 50% de opacidade era praticamente
+    // invisível — o jogador não conseguia ver quantos espaços ainda tinha.
     borderColor: 'rgba(255, 255, 255, 0.25)',
   },
   back: {
