@@ -27,7 +27,6 @@ import {
   selectCell,
   selectIsBlocked,
   selectIsCardLocked,
-  selectIsMarkedDoomed,
   selectIsTargeting,
   selectIsValidTarget,
   selectIsVanishing,
@@ -53,10 +52,6 @@ const X_BAR_RATIO = 0.18;
 
 /** Duração de meio ciclo do pisca-pisca de alvo válido. */
 const TARGET_PULSE_DURATION = 420;
-
-/** Meio ciclo do pulso da peça revelada pelo VIDENTE. Mais lento, de propósito:
- *  é informação persistente, não um convite a agir agora. */
-const DOOM_PULSE_DURATION = 700;
 
 /* -------------------------------------------------------------------------- */
 /*                                    PROPS                                    */
@@ -85,8 +80,6 @@ function CellComponent({ index, size }: CellProps) {
   const isWinning = useGameStore(useMemo(() => selectIsWinningCell(index), [index]));
   const isTargeting = useGameStore(selectIsTargeting);
   const isValidTarget = useGameStore(useMemo(() => selectIsValidTarget(index), [index]));
-  /** Peça marcada pelo VIDENTE para ser destruída no início do turno do dono. */
-  const isMarkedDoomed = useGameStore(useMemo(() => selectIsMarkedDoomed(index), [index]));
   // Define qual peça é "minha" para efeito de cor — ver `colorFor`.
   const { localCombatant } = useMatchPerspective();
 
@@ -96,7 +89,6 @@ function CellComponent({ index, size }: CellProps) {
   const pop = useSharedValue(piece ? 1 : 0); // animação de entrada da peça
   const shake = useSharedValue(0); // tremida de jogada inválida
   const targetGlow = useSharedValue(0); // 0..1 — pisca-pisca de alvo válido
-  const doomGlow = useSharedValue(0); // 0..1 — borda do VIDENTE
 
   /* --- Pulso contínuo da peça condenada ----------------------------------- */
   useEffect(() => {
@@ -135,26 +127,6 @@ function CellComponent({ index, size }: CellProps) {
     return () => cancelAnimation(targetGlow);
   }, [isValidTarget, targetGlow]);
 
-  /* --- Marca do VIDENTE ----------------------------------------------------
-     Pulso mais lento e independente do de "vai sumir": a peça condenada do
-     OPONENTE não pulsa por conta própria (aquele destaque é só para o
-     combatente da vez), então sem uma camada própria a revelação simplesmente
-     não apareceria — que era a queixa de a carta não fazer nada visível.     */
-  useEffect(() => {
-    if (isMarkedDoomed) {
-      doomGlow.value = withRepeat(
-        withTiming(1, { duration: DOOM_PULSE_DURATION, easing: Easing.inOut(Easing.quad) }),
-        -1,
-        true,
-      );
-    } else {
-      cancelAnimation(doomGlow);
-      doomGlow.value = withTiming(0, { duration: 160 });
-    }
-
-    return () => cancelAnimation(doomGlow);
-  }, [isMarkedDoomed, doomGlow]);
-
   /* --- Entrada da peça ----------------------------------------------------
      Depende de `turnPlaced`, não da existência da peça: assim uma peça que
      some e outra que nasce na mesma célula reanimam corretamente.            */
@@ -187,12 +159,6 @@ function CellComponent({ index, size }: CellProps) {
   const targetOverlayStyle = useAnimatedStyle(() => ({
     opacity: interpolate(targetGlow.value, [0, 1], [0.25, 0.9]),
     borderWidth: interpolate(targetGlow.value, [0, 1], [2, 3]),
-  }));
-
-  /** Borda pulsante do VIDENTE. Também é camada própria, pelo mesmo motivo. */
-  const doomOverlayStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(doomGlow.value, [0, 1], [0.35, 1]),
-    borderWidth: interpolate(doomGlow.value, [0, 1], [2, 4]),
   }));
 
   /* --- Interação ----------------------------------------------------------- */
@@ -283,13 +249,7 @@ function CellComponent({ index, size }: CellProps) {
       onPressOut={handlePressOut}
       // A célula sempre aceita toque: jogada inválida precisa do haptic de erro.
       accessibilityRole="button"
-      accessibilityLabel={buildA11yLabel(
-        index,
-        piece?.mark ?? null,
-        isBlocked,
-        isVanishing || isMarkedDoomed,
-        isValidTarget,
-      )}
+      accessibilityLabel={buildA11yLabel(index, piece?.mark ?? null, isBlocked, isVanishing, isValidTarget)}
       style={{ width: size, height: size }}
     >
       <Animated.View
@@ -339,13 +299,6 @@ function CellComponent({ index, size }: CellProps) {
             style={[styles.targetOverlay, targetOverlayStyle]}
             pointerEvents="none"
           />
-        )}
-
-        {/* VIDENTE: moldura pulsante marcando a peça condenada do oponente.
-            Desenhada por último para vencer o overlay de mira, que é o único
-            que pode coexistir com ela. */}
-        {isMarkedDoomed && (
-          <Animated.View style={[styles.doomOverlay, doomOverlayStyle]} pointerEvents="none" />
         )}
 
         {/* Alvo inválido durante a mira: escurece para dirigir o olhar. */}
@@ -519,10 +472,6 @@ const styles = StyleSheet.create({
   targetOverlay: {
     ...StyleSheet.absoluteFill,
     borderColor: colors.winGlow,
-  },
-  doomOverlay: {
-    ...StyleSheet.absoluteFill,
-    borderColor: colors.danger,
   },
   targetDimmed: {
     ...StyleSheet.absoluteFill,

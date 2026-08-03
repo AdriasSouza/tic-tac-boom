@@ -111,6 +111,10 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
       return `proteção :: o efeito contra ${who} foi anulado`;
     case 'TRAP_BOMB':
       return `mina :: o centro detonou — 2 de dano e um turno extra para ${who}`;
+    case 'TRAP_ANTI_SPELL':
+      return `antimagia :: ${who} anulou a próxima carta do oponente`;
+    case 'TRAP_RICOCHET':
+      return `ricochete :: ${who} inverteu ou anulou um efeito ${whose === 'sua' ? 'de você' : whose}`;
 
     case 'CARD_BREAK_PIECE':
       return `demolir :: ${who} destruiu a peça em ${cellLabel(entry.value)}`;
@@ -127,13 +131,17 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
     case 'CARD_RAID_FAILED':
       return `saque :: a tentativa de ${who} contra ${whose === 'sua' ? 'você' : whose} falhou`;
     case 'CARD_CLEANSE':
-      return `purificar :: ${who} liberou a casa ${cellLabel(entry.value)}`;
+      return `limpar :: ${who} liberou a casa ${cellLabel(entry.value)}`;
+    case 'CARD_CLEANSE_ALL':
+      return `purificar :: ${who} limpou todos os efeitos persistentes do tabuleiro`;
     case 'CARD_HAND_SWAP':
-      return `permuta caótica :: ${who} trocou ${cardName(entry.value)} por uma carta do oponente`;
+      return `permuta caótica :: ${who} trocou a mão inteira com o oponente`;
+    case 'CARD_HIGHLIGHT_OLDEST':
+      return `vidente :: ${who} destacou a peça mais antiga em ${cellLabel(entry.value)}`;
+    case 'CARD_QUEUE_SHUFFLE':
+      return `anomalia :: ${who} embaralhou a fila do infinito ${whose === 'sua' ? 'de você' : whose}`;
     case 'CARD_MARK_DOOMED':
-      return `vidente :: ${who} marcou a peça em ${cellLabel(entry.value)} para destruição`;
-    case 'CARD_DOOM_TRIGGERED':
-      return `vidente :: a peça marcada em ${cellLabel(entry.value)} foi destruída no início do turno de ${who}`;
+      return `obsolescência :: ${who} marcou a peça em ${cellLabel(entry.value)} como a próxima a sumir`;
     case 'CARD_LOCK_CELL':
       return `travar :: ${who} lacrou a casa ${cellLabel(entry.value)}`;
     case 'CARD_SPY_PEEK':
@@ -174,13 +182,13 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
     case 'CARD_RAID_STOLE':
       return `${who} ROUBOU: ${cardName(entry.value)}`;
     case 'CARD_HAND_SWAP':
-      return `${who} TROCOU: ${cardName(entry.value)}`;
+      return `${who} TROCOU DE MÃO COM O OPONENTE`;
     case 'CARD_CLEANSE':
       return `CASA ${cellLabel(entry.value)} LIBERADA`;
+    case 'CARD_CLEANSE_ALL':
+      return 'TABULEIRO PURIFICADO';
     case 'CARD_MARK_DOOMED':
       return `PEÇA MARCADA EM ${cellLabel(entry.value)}`;
-    case 'CARD_DOOM_TRIGGERED':
-      return `PEÇA CONDENADA DESTRUÍDA EM ${cellLabel(entry.value)}`;
     case 'CARD_LOCK_CELL':
       return `CASA ${cellLabel(entry.value)} LACRADA`;
     case 'CARD_SPY_PEEK':

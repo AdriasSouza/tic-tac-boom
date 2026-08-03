@@ -200,6 +200,18 @@
     - Mão do oponente vazia / mão cheia — não se aplicam.
   - **Nota de migração:** carta NOVA — o `REVEAL_OLDEST` atual já não faz mais isto (marca e
     destrói de verdade — ver OBSOLESCÊNCIA, nas Épicas, sua sucessora direta).
+  - **Decisão confirmada na Fase 2:** "a peça mais antiga" é lida como
+    `getPieceIndexes(board, oponente)[0]` — a mais antiga que EXISTIR, exigindo só >=1 peça (é
+    exatamente o que o caso de borda acima já diz: "sem NENHUMA peça", não "menos de 3"). Isto é
+    DIFERENTE do conceito de "peça mais velha" que a regra do infinito usa em outro lugar do motor
+    (`getOldestPieceIndex`, que só responde depois de 3 peças) — com 1-2 peças no tabuleiro, VIDENTE
+    destaca a mais antiga mesmo que a regra do infinito ainda não valha para ela.
+    **Motivo de manter >=1, não 3:** com menos de 3 peças a informação já é ÓBVIA de graça olhando
+    o tabuleiro — não tem mistério nenhum qual peça é a mais antiga quando só existe uma ou duas.
+    Jogar VIDENTE nessa hora é uma decisão RUIM do jogador (gastou 2⚡ por uma informação que já
+    tinha de graça), não um estado inválido que a carta precise recusar — e `canPlay` não existe
+    para proteger o jogador de decisões ruins, só de jogadas sem sentido (sem NENHUMA peça, não há
+    o que destacar). Testado em `registry.effects.test.ts` como regra confirmada.
 
   ### ANOMALIA (`QUEUE_SHUFFLE`, novo)
   - **Custo:** 2⚡ · **Categoria (PDF):** Tabuleiro · **Tipo (motor):** `ACTION`
@@ -281,9 +293,11 @@
     célula).
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
   - **Casos de borda:**
-    - **Tabuleiro sem nenhum efeito persistente ativo:** presumo, por consistência com o padrão de
-      `canPlay` das demais cartas de tabuleiro, que fica indisponível para jogar (nada para
-      limpar) — **não confirmado explicitamente pelo PDF.**
+    - **Tabuleiro sem nenhum efeito persistente ativo:** indisponível para jogar (nada para
+      limpar) — **confirmado na Fase 2**, por consistência com o resto do baralho: DEMOLIR fica
+      indisponível sem peça no tabuleiro, LIMPAR fica indisponível sem efeito persistente na célula
+      alvo. Nenhuma carta de tabuleiro é jogável sem um alvo/efeito para agir em cima; PURIFICAR
+      não seria exceção.
     - Mão do oponente vazia / mão cheia — não se aplicam.
   - **Nota de migração:** EFEITO ALTERADO (1 célula → tabuleiro inteiro) e mudança de
     raridade/custo (COMUM/1⚡ → ÉPICA/2⚡).
@@ -355,6 +369,15 @@
   - **Casos de borda:** não se aplicam edge cases de mão/tabuleiro.
   - **Nota de migração:** carta NOVA. Ver TURNO_EXTRA logo abaixo — as duas foram confirmadas como
     mecanismos DIFERENTES, não uma duplicata renomeada.
+  - **Pré-requisito descoberto na Fase 2 — não implementada ainda.** Investigação: o mecanismo
+    ("oponente TEM o turno mas não pode colocar peça") exige que aquele turno consiga TERMINAR sem
+    colocar peça. `endTurn` (`src/store/gameStore.ts`) já existe na store mas hoje não tem NENHUM
+    consumidor — nem botão de UI, nem `useCpuOpponent`/`playCPUTurn`, nem `syncBridge`. Implementar
+    só um `placementBlockedFor` + guarda em `canPlaceAt` sem isso trava o lado bloqueado (humano ou
+    CPU) sem forma de passar a vez — soft-lock. Isto é motor de turno, não interação: vira
+    **Fase 2.5**, tarefa própria (dar consumidor ao `endTurn` primeiro — botão "passar a vez" +
+    caminho em `playCPUTurn` — só depois `placementBlockedFor`), separada da Fase 3
+    (`pendingInteraction`/modais).
 
   ### TURNO EXTRA (`TURNO_EXTRA` — hoje `EXTRA_TURN`)
   - **Custo:** 3⚡ · **Categoria (PDF):** sem categoria própria no PDF (carta preservada por

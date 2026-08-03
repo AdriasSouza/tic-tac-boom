@@ -41,7 +41,11 @@ export type CardId =
   | 'HAND_SWAP'
   | 'FULL_INTEL'
   | 'CHAOS_ROULETTE'
-  | 'ALTAR_OF_SACRIFICE';
+  | 'ALTAR_OF_SACRIFICE'
+  | 'HIGHLIGHT_OLDEST'
+  | 'QUEUE_SHUFFLE'
+  | 'ANTI_SPELL_TRAP'
+  | 'REFLECT_TRAP';
 
 /**
  * - `ACTION`  — resolve imediatamente ao ser jogada.
@@ -317,6 +321,24 @@ export interface CardDefinition {
    * Uma carta `TRAP` sem `triggerCondition` nunca dispara.
    */
   triggerCondition?: (event: GameEvent, state: GameState) => boolean;
+
+  /**
+   * Esta carta LÊ ou RETIRA cartas da mão do oponente? Categoria consultada
+   * pelo `triggerCondition` de PROTEÇÃO — por CATEGORIA, não por lista fixa de
+   * ids, para uma carta nova desta família ser coberta automaticamente (ver
+   * `docs/CARTAS.md`, entrada de PROTEÇÃO: uma lista enumerada "apodrece").
+   */
+  readsOrRemovesFromHand?: boolean;
+
+  /**
+   * Esta carta é um efeito direcionado ao OPONENTE ou aos recursos dele (mão,
+   * HP, peças, fila)? Categoria consultada pelo `triggerCondition` de
+   * RICOCHETE — mesma razão de `readsOrRemovesFromHand`. Não decide SOZINHA
+   * se o efeito é invertido ou só anulado ao disparar — isso é por carta (ver
+   * `RICOCHET_INVERSIONS` em `registry.ts`); esta tag só decide se RICOCHETE
+   * dispara.
+   */
+  targetsOpponentResource?: boolean;
 
   effect: CardEffect;
 }

@@ -130,3 +130,48 @@ describe('TURNO_EXTRA — segunda colocação sem refil de energia', () => {
     expect(afterSecond.playerEnergy).toBe(ENERGY_CAP); // já estava no teto, +1 não passa
   });
 });
+
+describe('ANTIMAGIA — cobre também o ARMAR de outra armadilha, de ponta a ponta', () => {
+  it('anula o armar de SHIELD_TRAP: a armadilha nova nunca chega à mesa, mas a carta é consumida', () => {
+    useGameStore.setState({
+      turn: 'MACHINE',
+      machineEnergy: 3,
+      machineHand: [{ uid: 's', cardId: 'SHIELD_TRAP' }],
+      playerTraps: [{ uid: 'a', cardId: 'ANTI_SPELL_TRAP' }],
+    });
+
+    const played = useGameStore.getState().playMachineCard('s');
+    expect(played).toBe(true);
+
+    const state = useGameStore.getState();
+    // ANTIMAGIA do PLAYER disparou e se consumiu.
+    expect(state.playerTraps).toEqual([]);
+    // SHIELD_TRAP nunca chegou a ficar virada na mesa da MACHINE.
+    expect(state.machineTraps).toEqual([]);
+    // Mas a carta saiu da mão e a energia foi gasta — foi jogada, só anulada.
+    expect(state.machineHand).toEqual([]);
+    expect(state.machineEnergy).toBe(2); // 3 - custo 1 do SHIELD_TRAP
+  });
+});
+
+describe('RICOCHETE — inverte dano de ponta a ponta (resolveCounterTraps processa damage/heal)', () => {
+  it('DIRECT_DAMAGE refletido atinge quem jogou, não quem armou o RICOCHETE', () => {
+    useGameStore.setState({
+      turn: 'MACHINE',
+      machineEnergy: 3,
+      machineHand: [{ uid: 'd', cardId: 'DIRECT_DAMAGE' }],
+      playerTraps: [{ uid: 'r', cardId: 'REFLECT_TRAP' }],
+    });
+
+    const played = useGameStore.getState().playMachineCard('d');
+    expect(played).toBe(true);
+
+    const state = useGameStore.getState();
+    // O dano voltou pra MACHINE (quem jogou DIRECT_DAMAGE), não pro PLAYER.
+    expect(state.machineHp).toBe(4); // 5 - 1
+    expect(state.playerHp).toBe(5); // intocado
+    // RICOCHETE do PLAYER se consumiu; a carta da MACHINE foi gasta sem efeito próprio.
+    expect(state.playerTraps).toEqual([]);
+    expect(state.machineHand).toEqual([]);
+  });
+});

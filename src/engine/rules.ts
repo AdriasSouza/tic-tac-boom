@@ -1,5 +1,5 @@
 import { getChannel } from '@/engine/rng';
-import type { CardDefinition, CardId } from '@/engine/cards/definitions';
+import type { CardDefinition, CardId, CardRarity } from '@/engine/cards/definitions';
 // Type-only, como em `definitions.ts`: `log.ts` importa `Combatant` daqui, e
 // o TypeScript apaga as duas linhas na compilação — não sobra ciclo em runtime.
 import type { LogEntry, Notice } from './log';
@@ -46,6 +46,11 @@ export interface Piece {
 
 /** Célula do tabuleiro: uma peça ou vazia. */
 export type BoardCell = Piece | null;
+
+/** Ver `GameState.forcedVanish`. */
+export type ForcedVanish =
+  | { owner: Combatant; mode: 'RANDOM' }
+  | { owner: Combatant; mode: 'CHOSEN'; index: number; turnPlaced: number };
 
 /** Tabuleiro 3x3 achatado em um array de 9 posições (índices 0..8). */
 export type Board = BoardCell[];
@@ -219,18 +224,21 @@ export interface GameState {
   lockedCellExpiresAtTurn: number | null;
 
   /**
-   * Peça marcada pela carta VIDENTE — destruída no início do PRÓXIMO turno
-   * do dono dela (`owner`).
+   * Override de qual peça soma no PRÓXIMO sumiço do "infinito" para um
+   * combatente — ANOMALIA (`RANDOM`) e OBSOLESCÊNCIA (`CHOSEN`) escrevem aqui,
+   * `getVanishingIndex` consulta. Único por PARTIDA, não por combatente-alvo:
+   * se as duas cartas forem jogadas contra o mesmo oponente antes dele
+   * estourar 3 peças, a mais recente sobrescreve a mais antiga em silêncio —
+   * decisão deliberada (a marcação vencida já "gastou" a carta que a criou,
+   * é o custo de duas cartas mirando o mesmo alvo).
    *
-   * Guarda `owner` e `turnPlaced` além do `index`, e não só o índice, porque
-   * a marca precisa se AUTO-INVALIDAR se a peça sair dali por outro caminho
-   * antes do gatilho (um DEMOLIR, o sumiço natural do "infinito", ou outra
-   * peça simplesmente ocupando a mesma casa depois): o gatilho (ver
-   * `resolveDoomedPiece` no store) só dispara se as três informações ainda
-   * baterem com o que está no tabuleiro — senão a marca expira em silêncio
-   * em vez de destruir uma peça diferente da que foi de fato marcada.
+   * `CHOSEN` guarda `turnPlaced` além do `index`: auto-invalidação se a peça
+   * sair dali por outro caminho (DEMOLIR, sumiço natural) antes do gatilho —
+   * `getVanishingIndex` cai para o comportamento padrão em vez de forçar uma
+   * peça diferente da marcada. Substitui o antigo campo `doomedCell` (VIDENTE
+   * antiga, removido na Fase 2 — OBSOLESCÊNCIA usa este mecanismo agora).
    */
-  doomedCell: { index: number; owner: Combatant; turnPlaced: number } | null;
+  forcedVanish: ForcedVanish | null;
 
   /**
    * Mão do jogador. Os dados da carta (nome, efeito, arte) vêm do
@@ -748,6 +756,16 @@ export function isAutoDrawTurn(turnCount: number): boolean {
   return turnCount > 0 && turnCount % AUTO_DRAW_INTERVAL_TURNS === 0;
 }
 
+/**
+ * Esta raridade é imune a armadilha? Lendária e Boom "não podem ser paradas
+ * por armadilhas" (PDF) — cobertura que `docs/CARTAS.md` já recomendava
+ * centralizar aqui desde a Fase 1, para PROTEÇÃO/ANTIMAGIA/RICOCHETE
+ * consultarem em vez de cada uma reimplementar a mesma exclusão por lista.
+ */
+export function isImmuneToTraps(rarity: CardRarity): boolean {
+  return rarity === 'LEGENDARY' || rarity === 'BOOM';
+}
+
 /* -------------------------------------------------------------------------- */
 /*                        CONSULTAS DEPENDENTES DE RNG                         */
 /* -------------------------------------------------------------------------- */
@@ -758,16 +776,37 @@ export function isAutoDrawTurn(turnCount: number): boolean {
  * Decide qual peça do combatente deve sumir para abrir espaço para a próxima.
  * Retorna `null` quando ele ainda não atingiu o limite.
  *
- * ⚠️ **Impura sob `RANDOM_FADE`** — consome o canal `BOARD`. Use apenas dentro
- * de `placeMark`. Para a UI existe `selectIsVanishing`, que é puro.
+ * `forced` (ANOMALIA/OBSOLESCÊNCIA, ver `GameState.forcedVanish`) só é
+ * consultado quando `forced.owner === owner` e vence sobre a regra caótica:
+ * `RANDOM` sorteia entre as peças dele (canal `BOARD`, mesmo sorteio de
+ * `RANDOM_FADE`); `CHOSEN` devolve o índice marcado, mas só se a peça ali
+ * ainda for exatamente a mesma (`owner`+`turnPlaced` batendo) — se ela já
+ * saiu dali por outro caminho (DEMOLIR, sumiço natural), a marca expirou em
+ * silêncio e o comportamento cai para o padrão abaixo.
+ *
+ * ⚠️ **Impura sob `RANDOM_FADE` ou `forced.mode === 'RANDOM'`** — consome o
+ * canal `BOARD`. Use apenas dentro de `placeMark`. Para a UI existe
+ * `selectIsVanishing`, que é puro.
  */
 export function getVanishingIndex(
   board: Board,
   owner: Combatant,
   rule: ChaosRule = 'NORMAL',
+  forced?: ForcedVanish | null,
 ): number | null {
   const indexes = getPieceIndexes(board, owner);
   if (indexes.length < MAX_PIECES_PER_PLAYER) return null;
+
+  if (forced && forced.owner === owner) {
+    if (forced.mode === 'RANDOM') {
+      return getChannel('BOARD').pick(indexes);
+    }
+    const piece = board[forced.index];
+    if (piece && piece.owner === owner && piece.turnPlaced === forced.turnPlaced) {
+      return forced.index;
+    }
+    // Marca expirada (a peça saiu por outro caminho) — cai pro padrão abaixo.
+  }
 
   if (rule === 'RANDOM_FADE') {
     return getChannel('BOARD').pick(indexes);

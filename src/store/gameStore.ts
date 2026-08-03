@@ -58,86 +58,27 @@ import type { GameEvent } from '@/engine/events';
 /** Intervalo entre o fim da rodada e a limpeza automática do tabuleiro. */
 const ROUND_TRANSITION_DELAY_MS = 1300;
 
-
-/**
- * Desfecho de uma marca do VIDENTE ao chegar "início de turno" para alguém.
- *
- * `EXPIRED` e `NONE` colapsariam no mesmo patch (`{}` ou `{doomedCell:null}`),
- * mas só `TRIGGERED` deve virar log/aviso — daí o tipo à parte em vez de só o
- * patch: quem chama precisa saber se HOUVE destruição para decidir se publica
- * `CARD_DOOM_TRIGGERED`, e isso não dá pra inferir de volta a partir do patch.
- */
-type DoomOutcome =
-  | { kind: 'NONE' }
-  | { kind: 'EXPIRED' }
-  | { kind: 'TRIGGERED'; index: number; owner: Combatant };
-
-/**
- * A marca dispara quando chega a vez do DONO da peça marcada — mas só se a
- * peça em `doomedCell.index` ainda for exatamente a mesma que o VIDENTE
- * apontou (`owner` e `turnPlaced` batendo). Se ela saiu dali por outro
- * caminho (um DEMOLIR, o sumiço natural do "infinito", ou a casa foi
- * reocupada), a marca EXPIRA em silêncio em vez de destruir uma peça
- * diferente da que foi de fato marcada.
- *
- * Recebe `board` explícito (não um `GameState` inteiro) de propósito: os
- * chamadores às vezes já computaram um tabuleiro mais novo que o do último
- * `get()` (a própria jogada que está sendo aplicada) e precisam checar a
- * marca CONTRA ESSE tabuleiro, não contra um snapshot desatualizado.
- */
-function classifyDoom(
-  doomedCell: GameState['doomedCell'],
-  board: GameState['board'],
-  nextTurnHolder: Combatant,
-): DoomOutcome {
-  if (doomedCell === null) return { kind: 'NONE' };
-
-  const piece = board[doomedCell.index];
-  const stillMarkedPiece =
-    piece !== null && piece.owner === doomedCell.owner && piece.turnPlaced === doomedCell.turnPlaced;
-
-  if (!stillMarkedPiece) return { kind: 'EXPIRED' };
-  if (doomedCell.owner !== nextTurnHolder) return { kind: 'NONE' };
-  return { kind: 'TRIGGERED', index: doomedCell.index, owner: doomedCell.owner };
-}
-
-function doomPatch(board: GameState['board'], outcome: DoomOutcome): Partial<GameState> {
-  if (outcome.kind === 'NONE') return {};
-  if (outcome.kind === 'EXPIRED') return { doomedCell: null };
-
-  const nextBoard = [...board];
-  nextBoard[outcome.index] = null;
-  return { board: nextBoard, doomedCell: null, lastVanishedIndex: outcome.index };
-}
-
 /**
  * Tudo que precisa acontecer quando um combatente PASSA a jogar agora: regen
- * de energia (por padrão) + resolução da marca do VIDENTE (se houver).
+ * de energia (por padrão).
  *
  * `regenEnergyStep` é `true` por padrão e só vira `false` na segunda colocação
  * de TURNO_EXTRA (mesmo `owner` continuando a jogar, ver `placeMark`): a carta
  * concede uma colocação extra, não uma energia extra — sem esta exceção, o
  * regen normal (+1 aos dois lados) rodaria de novo entre as duas colocações, e
  * a carta se pagaria sozinha (`CLAUDE.md`, pendência P11 de `docs/CARTAS.md`).
- * A resolução da marca do VIDENTE roda igual nos dois casos — isso não muda.
  *
- * Devolve `{ patch, doom }` em vez de só o patch porque o log da destruição
- * (`announceDoomIfTriggered`) só pode ser publicado DEPOIS do `set` que
- * aplica este patch — nunca de dentro de um updater funcional do Zustand.
+ * Até a Fase 2 também resolvia a marca da antiga VIDENTE (`doomedCell`) — essa
+ * carta virou OBSOLESCÊNCIA e passou a usar `forcedVanish`
+ * (`rules.ts`/`getVanishingIndex`, consultado direto em `placeMark`), então
+ * `beginTurn` voltou a ser só sobre energia.
  */
 function beginTurn(
-  state: Pick<GameState, 'doomedCell' | 'playerEnergy' | 'machineEnergy'>,
-  board: GameState['board'],
-  combatant: Combatant,
+  state: Pick<GameState, 'playerEnergy' | 'machineEnergy'>,
   regenEnergyStep = true,
-): { patch: Partial<GameState>; doom: DoomOutcome } {
-  const doom = classifyDoom(state.doomedCell, board, combatant);
+): { patch: Partial<GameState> } {
   return {
-    patch: {
-      ...(regenEnergyStep ? regenEnergy(state.playerEnergy, state.machineEnergy) : null),
-      ...doomPatch(board, doom),
-    },
-    doom,
+    patch: regenEnergyStep ? regenEnergy(state.playerEnergy, state.machineEnergy) : {},
   };
 }
 
@@ -410,7 +351,7 @@ const createInitialState = (): GameState => ({
   blockedCell: null,
   lockedCell: null,
   lockedCellExpiresAtTurn: null,
-  doomedCell: null,
+  forcedVanish: null,
   playerHand: [],
   nextCardUid: 0,
   pendingAction: null,
@@ -520,21 +461,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
   /* Não fazem parte da API pública da store — não estão no objeto retornado
      nem em `GameActions`. Existem só para `placeMark`/`playCard`/`playMachineCard`
      compartilharem lógica sem duplicá-la entre Player e Máquina.             */
-
-  /**
-   * Publica `CARD_DOOM_TRIGGERED` quando `beginTurn` de fato destruiu uma
-   * peça marcada — nunca para `NONE`/`EXPIRED`, que não são fatos que valham
-   * uma linha no terminal.
-   *
-   * Chamado sempre DEPOIS do `set` que aplicou o patch de `beginTurn` —
-   * publicar de dentro de um updater do Zustand reentraria no `set`.
-   */
-  function announceDoomIfTriggered(doom: DoomOutcome): void {
-    if (doom.kind !== 'TRIGGERED') return;
-    const event = { code: 'CARD_DOOM_TRIGGERED' as const, subject: doom.owner, value: doom.index };
-    get().pushLog(event);
-    get().pushNotice(event);
-  }
 
   /**
    * Agenda a limpeza automática do tabuleiro depois de uma rodada.
@@ -732,6 +658,14 @@ export const useGameStore = create<GameStore>()((set, get) => {
       const remaining = state[trapsKey].filter((t) => t.uid !== trap.uid);
       set({ ...result.patch, [trapsKey]: remaining });
       if (result.log) get().pushLog(result.log);
+      if (result.notice) get().pushNotice(result.notice);
+      // RICOCHETE é a primeira armadilha cujo efeito precisa disto — antes só
+      // cancelava (PROTEÇÃO/ANTIMAGIA nunca causaram dano/cura). Mesmo
+      // tratamento pós-patch de `applyResult`, para o contrato de
+      // `CardEffectResult` valer igual dentro e fora do contra-ataque.
+      if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
+      if (result.heal) get().healTarget(result.heal.target, result.heal.amount);
+      if (result.draw) drawCardsFor(result.draw.target, result.draw.count);
 
       queueAcknowledgement(
         { code: 'TRAP_TRIGGERED', subject: defender, target: actor, cardId: trap.cardId },
@@ -788,6 +722,22 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
       const hand = [...state[handKey]];
       hand.splice(handIndex, 1);
+
+      /* --- Janela de contra-ataque, também no ARMAR -------------------------
+         ANTIMAGIA cobre "o armar de outra armadilha não-lendária/Boom"
+         (`docs/CARTAS.md`) — antes deste ponto só o ramo de AÇÃO passava por
+         `resolveCounterTraps`. A carta é consumida mesmo vetada (foi jogada,
+         só não chega a ficar virada na mesa) — mesmo idioma do veto no ramo
+         de ação, logo abaixo. */
+      if (resolveCounterTraps({ type: 'CARD_ABOUT_TO_RESOLVE', player: caster, cardId })) {
+        set({
+          [handKey]: hand,
+          pendingAction: null,
+          ...energySpend,
+          ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
+        });
+        return true;
+      }
 
       set({
         [handKey]: hand,
@@ -910,18 +860,10 @@ export const useGameStore = create<GameStore>()((set, get) => {
         return;
       }
 
-      // Precisa do tabuleiro como ele vai FICAR (pós `safePatch`), não do
-      // `state.board` do topo da função — mesmo raciocínio do `findWinner`
-      // logo acima. Sem isto, uma marca do VIDENTE checada contra um
-      // tabuleiro desatualizado poderia devolver um patch de `board` que
-      // reverteria a própria mudança que esta carta acabou de fazer.
-      const boardAfterCard = safePatch.board ?? state.board;
       // `{ ...state, ...energySpend }`: o regen precisa da energia PÓS-custo
       // do caster (`energySpend` já a calculou acima), não do snapshot de
       // `state` capturado antes da carta gastar energia nenhuma.
-      const nextTurnInfo = result.consumesTurn
-        ? beginTurn({ ...state, ...energySpend }, boardAfterCard, opponentOf(caster))
-        : null;
+      const nextTurnInfo = result.consumesTurn ? beginTurn({ ...state, ...energySpend }) : null;
 
       set({
         ...patch,
@@ -931,7 +873,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
           ? { turn: opponentOf(caster), turnCount: get().turnCount + 1, ...nextTurnInfo.patch }
           : null),
       });
-      if (nextTurnInfo) announceDoomIfTriggered(nextTurnInfo.doom);
 
       if (result.log) get().pushLog(result.log);
       if (result.notice) get().pushNotice(result.notice);
@@ -1003,10 +944,17 @@ export const useGameStore = create<GameStore>()((set, get) => {
     const nextTurnCount = state.turnCount + 1;
 
     // --- 1. Abre espaço removendo a peça condenada -------------------------
-    const vanishingIndex = getVanishingIndex(board, owner, state.activeRule);
+    // `state.forcedVanish` (ANOMALIA/OBSOLESCÊNCIA) só é consultado se for
+    // deste `owner` — `getVanishingIndex` já faz essa checagem internamente.
+    const vanishingIndex = getVanishingIndex(board, owner, state.activeRule, state.forcedVanish);
     if (vanishingIndex !== null) {
       board[vanishingIndex] = null;
     }
+    // Consumida uma vez: só limpa se a marca era DESTE owner e de fato foi
+    // usada agora — se ele ainda não tinha 3 peças, a marca continua viva
+    // esperando o overflow acontecer num turno futuro.
+    const nextForcedVanish =
+      state.forcedVanish?.owner === owner && vanishingIndex !== null ? null : state.forcedVanish;
 
     // --- 2. Posiciona a nova peça ------------------------------------------
     board[index] = {
@@ -1023,6 +971,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
         board,
         turnCount: nextTurnCount,
         lastVanishedIndex: vanishingIndex,
+        forcedVanish: nextForcedVanish,
         status: 'ROUND_OVER',
         roundWinner: result.winner,
         winningLine: result.line,
@@ -1048,13 +997,12 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // A flag é consumida aqui: vale por uma jogada só.
     const keepsTurn = state.extraTurnPending === owner;
     // Continuação (turno extra) ou alternância normal — nos dois casos é uma
-    // jogada NOVA começando, e `beginTurn` resolve a marca do VIDENTE do mesmo
-    // jeito nos dois casos. A ENERGIA já não é igual: `keepsTurn` é a segunda
+    // jogada NOVA começando. A ENERGIA já não é igual: `keepsTurn` é a segunda
     // colocação da MESMA jogada de TURNO_EXTRA, então pula o regen (P11 de
     // `docs/CARTAS.md` — a carta concede uma colocação extra, não energia
     // extra; regenerar aqui faria ela se pagar sozinha).
     const nextTurnHolder = keepsTurn ? owner : opponentOf(owner);
-    const nextTurnInfo = beginTurn(state, board, nextTurnHolder, !keepsTurn);
+    const nextTurnInfo = beginTurn(state, !keepsTurn);
 
     // Empate por tabuleiro cheio é impossível aqui: no máximo 3 + 3 = 6 peças
     // ocupam o grid de 9 células. A rodada só termina por vitória.
@@ -1062,11 +1010,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
       board,
       turnCount: nextTurnCount,
       lastVanishedIndex: vanishingIndex,
+      forcedVanish: nextForcedVanish,
       turn: nextTurnHolder,
       ...nextTurnInfo.patch,
       extraTurnPending: keepsTurn ? null : state.extraTurnPending,
     });
-    announceDoomIfTriggered(nextTurnInfo.doom);
 
     /* Toda jogada de tabuleiro entra no log, de QUALQUER combatente.
        Antes só a CPU registrava a própria jogada (no hook da IA, já formatada
@@ -1238,10 +1186,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
         // arbitrária da rodada seguinte.
         lockedCell: null,
         lockedCellExpiresAtTurn: null,
-        // Tabuleiro novo e vazio: qualquer marca do VIDENTE já não aponta
-        // para peça nenhuma. Zerado direto (sem passar por `beginTurn`) —
-        // numa rodada nova o desfecho é sempre "expirou", nunca "disparou".
-        doomedCell: null,
+        // Tabuleiro novo e vazio: uma marca de ANOMALIA/OBSOLESCÊNCIA
+        // (`forcedVanish`) apontando pra uma peça ou fila da rodada anterior
+        // não significa mais nada — as peças de lá nem existem no tabuleiro
+        // novo. Mesmo cuidado que o antigo `doomedCell` já tomava aqui.
+        forcedVanish: null,
       };
     });
   },
@@ -1251,10 +1200,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
     if (state.status !== 'PLAYING') return;
 
     const nextTurn = opponentOf(state.turn);
-    const { patch, doom } = beginTurn(state, state.board, nextTurn);
+    const { patch } = beginTurn(state);
 
     set({ turn: nextTurn, turnCount: state.turnCount + 1, ...patch });
-    announceDoomIfTriggered(doom);
   },
 
   triggerTerminalGlitch: () => {
@@ -1688,23 +1636,6 @@ export const selectIsBlocked = (index: number) => (s: GameStore): boolean =>
  */
 export const selectIsCardLocked = (index: number) => (s: GameStore): boolean =>
   isCellLocked(s, index);
-
-/**
- * A peça em `index` é a que o VIDENTE marcou como condenada?
- *
- * Repete a MESMA checagem de "ainda é a peça de verdade" que `classifyDoom`
- * faz no motor (dono e `turnPlaced` batendo) — e não só o índice. `doomedCell`
- * só é limpo do estado no próximo início de turno (ver `beginTurn`), então sem
- * esta segunda checagem um DEMOLIR na peça marcada deixaria o brilho pulsando
- * numa casa vazia até lá.
- */
-export const selectIsMarkedDoomed = (index: number) => (s: GameStore): boolean => {
-  const doom = s.doomedCell;
-  if (doom === null || doom.index !== index) return false;
-
-  const piece = s.board[index];
-  return piece !== null && piece.owner === doom.owner && piece.turnPlaced === doom.turnPlaced;
-};
 
 /** A célula faz parte da linha vencedora da rodada? */
 export const selectIsWinningCell = (index: number) => (s: GameStore): boolean =>

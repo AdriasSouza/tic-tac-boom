@@ -61,3 +61,37 @@ turno global? contagem de jogadas?) e se ele reaproveita
 merece um campo de estado próprio (mais provável, dado que o resto deste
 documento já mostra os riscos de reaproveitar um array sem limpeza para uma
 mecânica com prazo).
+
+## `resolveCounterTraps` virou um segundo caminho de resolução (Fase 2)
+
+**Contexto:** até a Fase 1, `resolveCounterTraps` (`gameStore.ts`) só aplicava
+`patch` + `log` de uma armadilha que cancelou uma carta — um desvio estreito
+dentro de `resolveCardPlay`. A Fase 2 (ANTIMAGIA cobrindo o armar de outra
+armadilha, RICOCHETE invertendo dano) precisou que ela também: (a) processasse
+`damage`/`heal`/`draw` do resultado, igual `applyResult` já fazia pra cartas
+normais; (b) fosse chamada de um SEGUNDO ponto em `resolveCardPlay` (o ramo de
+ARMAR de `TRAP`, não só o ramo de ação).
+
+**Por que isso importa:** `resolveCounterTraps` agora resolve uma fração cada
+vez maior do que `resolveCardPlay`/`applyResult` já resolvem — mas são dois
+caminhos de código INDEPENDENTES, não um só parametrizado. Nada garante que
+os dois concordem em casos de borda que `applyResult` já trata com cuidado e
+`resolveCounterTraps` não checa hoje: `HAND_LIMIT` (se uma inversão futura de
+RICOCHETE precisar comprar carta, `drawCardsFor` já para sozinho no limite,
+mas ninguém avisa a UI como `applyResult` normalmente avisaria), HP no teto
+(`healTarget`/`takeDamage` já fazem seu próprio clamp, isso é seguro), e
+principalmente **fim de rodada**: se uma inversão de RICOCHETE algum dia
+mexesse no `board` (não mexe hoje — `RICOCHET_INVERSIONS` só cobre dano e
+roubo de carta), `resolveCounterTraps` NÃO re-checa `findWinner` como
+`applyResult` faz explicitamente — uma vitória produzida dentro de uma
+armadilha reativa passaria batido.
+
+**Ação para a Fase 3:** essa fase já mexe no fluxo de resolução de carta (pelo
+contrato `pendingInteraction`). Ao mexer, avaliar se `resolveCounterTraps`
+deveria virar uma chamada a `applyResult`/uma função compartilhada
+parametrizada por "quem é o caster daqui pra frente", em vez de duplicar a
+lista de efeitos pós-patch à mão — ou se a duplicação atual é deliberada
+(armadilha reativa é conceitualmente mais restrita que carta normal, e talvez
+devesse continuar sendo). Não é bug hoje (`RICOCHET_INVERSIONS` não produz
+nenhum caso que a lacuna acima afetaria), é risco de DIVERGÊNCIA silenciosa
+se um efeito futuro de armadilha crescer sem essa checagem.

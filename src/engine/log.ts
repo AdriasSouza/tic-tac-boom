@@ -43,10 +43,14 @@ export type LogCode =
    * lados, cada um vendo o que tem direito de ver.
    */
   | 'TRAP_ARMED'
-  /** Armadilha de `subject` anulou um SAQUE ou uma ESPIONAGEM. */
+  /** Armadilha de `subject` anulou uma carta que leu/retirou da mão dele. */
   | 'TRAP_SHIELD'
   /** A MINA de `subject` detonou no centro. */
   | 'TRAP_BOMB'
+  /** ANTIMAGIA de `subject` anulou a próxima carta do oponente. */
+  | 'TRAP_ANTI_SPELL'
+  /** RICOCHETE de `subject` inverteu ou anulou um efeito de `target`. */
+  | 'TRAP_RICOCHET'
 
   /* --- Cartas ------------------------------------------------------------- */
   /** `subject` destruiu uma peça. `value` = índice. */
@@ -65,12 +69,20 @@ export type LogCode =
   | 'CARD_RAID_FAILED'
   /** `subject` liberou uma célula interditada. `value` = índice. */
   | 'CARD_CLEANSE'
-  /** `subject` trocou uma carta com `target`. `value` = `CardId` que `subject` cedeu. */
+  /** `subject` limpou TODAS as células interditadas do tabuleiro. Sem `value`. */
+  | 'CARD_CLEANSE_ALL'
+  /** `subject` trocou a mão inteira com `target`. Sem `value` — não há "a carta cedida", é a mão toda. */
   | 'CARD_HAND_SWAP'
-  /** `subject` marcou uma peça de `target` para ser destruída no início do turno dele. `value` = índice. */
+  /** `subject` destacou a peça mais antiga de `target`. `value` = índice. */
+  | 'CARD_HIGHLIGHT_OLDEST'
+  /** `subject` embaralhou a fila do "infinito" de `target`. Sem `value`. */
+  | 'CARD_QUEUE_SHUFFLE'
+  /**
+   * `subject` marcou uma peça de `target` como a próxima a sumir da fila do
+   * "infinito" dele (OBSOLESCÊNCIA — `forcedVanish`, não mais destruição
+   * imediata). `value` = índice.
+   */
   | 'CARD_MARK_DOOMED'
-  /** A peça marcada pelo VIDENTE foi destruída ao começar o turno de `subject` (o dono dela). `value` = índice. */
-  | 'CARD_DOOM_TRIGGERED'
   /** `subject` lacrou uma célula. `value` = índice. */
   | 'CARD_LOCK_CELL'
   /** `subject` espiou uma carta aleatória de `target`. `value` = `CardId`. */
