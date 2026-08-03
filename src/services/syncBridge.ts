@@ -208,24 +208,23 @@ function broadcast(build: (by: PlayerSlot) => MultiplayerAction): void {
  * Posiciona uma peça e replica.
  *
  * Aplica LOCALMENTE primeiro e publica depois. Isso é seguro **porque o jogo
- * é estritamente por turnos e a trava de turno da UI garante que só um
- * cliente pode agir legalmente por vez** — não há duas ações concorrentes
- * cuja ordem relativa pudesse divergir entre os aparelhos. Num jogo com ações
+ * é estritamente por turnos** — não há duas ações concorrentes cuja ordem
+ * relativa pudesse divergir entre os aparelhos. Num jogo com ações
  * simultâneas, este desenho estaria errado e seria preciso aplicar só o que
  * volta ordenado do servidor, ao custo de uma ida e volta de latência por
  * jogada.
+ *
+ * A garantia de "só um lado age por vez" não é mais só a UI (`isLocalTurn`,
+ * que nem existe fora do online) — `placeMark` agora exige o combatente e
+ * `canPlaceAt` recusa se não bater com `state.turn`. `getLocalCombatant()`
+ * aqui é só "quem este cliente É"; a validação de verdade é a do motor.
  */
-export function netPlaceMark(index: number): void {
-  const before = useGameStore.getState().turnCount;
-  useGameStore.getState().placeMark(index);
-
-  // `placeMark` é um no-op silencioso em jogada inválida. Comparar `turnCount`
-  // é como sabemos se ela de fato aconteceu — publicar uma jogada que a
-  // própria engine recusou colocaria o oponente num estado que este cliente
-  // nunca teve.
-  if (useGameStore.getState().turnCount === before) return;
+export function netPlaceMark(index: number): boolean {
+  const played = useGameStore.getState().placeMark(getLocalCombatant(), index);
+  if (!played) return false;
 
   broadcast((by) => ({ type: 'PLACE_MARK', by, at: Date.now(), index }));
+  return true;
 }
 
 /**
@@ -312,14 +311,13 @@ function applyRemoteAction(action: StoredAction): void {
 
   switch (action.type) {
     case 'PLACE_MARK': {
-      const before = game.turnCount;
-      game.placeMark(action.index);
+      const played = game.placeMark(combatant, action.index);
 
       // A engine recusou uma jogada que o outro cliente aceitou ⇒ os dois
       // estados divergiram. Não há recuperação automática possível aqui (o
       // histórico local já é outro), então o que resta é gritar alto: um
       // desync silencioso é o bug mais caro de diagnosticar depois.
-      if (useGameStore.getState().turnCount === before) {
+      if (!played) {
         console.error(
           '[syncBridge] DESSINCRONIA: a jogada remota em',
           action.index,

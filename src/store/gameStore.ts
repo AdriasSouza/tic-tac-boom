@@ -209,19 +209,29 @@ export type {
 
 export interface GameActions {
   /**
-   * Registra uma jogada na célula `index` para o combatente da vez.
+   * Registra uma jogada na célula `index` para `combatant`.
+   *
+   * `combatant` é OBRIGATÓRIO e precisa bater com `state.turn` — quem chama
+   * declara quem está tentando jogar, e a guarda (`canPlaceAt`) recusa se não
+   * for a vez dele. Sem isto, qualquer chamador (toque durante a vez do
+   * oponente, uma ação de rede fora de ordem) colocaria peça como se fosse o
+   * dono da vez — não existia checagem nenhuma disso antes desta função além
+   * de a UI se recusar a chamar, o que não é uma garantia do motor.
    *
    * Fluxo:
-   * 1. valida (partida em andamento, célula livre, célula não bloqueada);
+   * 1. valida (é a vez de `combatant`, partida em andamento, célula livre,
+   *    célula não bloqueada);
    * 2. se o jogador já tem 3 peças, remove a mais antiga (ou uma aleatória
    *    sob RANDOM_FADE) — a remoção acontece ANTES de posicionar a nova;
    * 3. posiciona a peça carimbando o `turnCount` atual;
    * 4. checa vitória: se houver, aplica dano e encerra a rodada;
    * 5. caso contrário, incrementa o turno e passa a vez.
    *
-   * Jogadas inválidas são ignoradas silenciosamente (no-op).
+   * Devolve `true` se a jogada aconteceu, `false` se foi recusada (mesmo
+   * contrato de `playCard`/`playMachineCard`) — jogadas inválidas não mudam
+   * NADA no estado.
    */
-  placeMark: (index: number) => void;
+  placeMark: (combatant: Combatant, index: number) => boolean;
 
   /** Reduz o HP do alvo. Faz clamp em 0 e encerra a partida se zerar. */
   takeDamage: (target: Combatant, amount: number) => void;
@@ -979,13 +989,16 @@ export const useGameStore = create<GameStore>()((set, get) => {
   return {
   ...createInitialState(),
 
-  placeMark: (index) => {
+  placeMark: (combatant, index) => {
     const state = get();
 
-    // --- Guardas (compartilhadas com a UI via canPlaceAt) ------------------
-    if (!canPlaceAt(state, index)) return;
+    // --- Guardas (compartilhadas com a UI via canPlaceAt) -------------------
+    // `combatant` precisa BATER com `state.turn` — sem isto, qualquer chamador
+    // (toque durante a vez da CPU, uma ação de rede fora de ordem) colocaria
+    // peça como se fosse o dono da vez, não quem de fato chamou.
+    if (!canPlaceAt(state, index, combatant)) return false;
 
-    const owner = state.turn;
+    const owner = combatant;
     const board = [...state.board];
     const nextTurnCount = state.turnCount + 1;
 
@@ -1028,7 +1041,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // avanço dependia de um `useEffect` na tela de jogo observando
       // `status === 'ROUND_OVER'`, e essa tela foi simplificada sem ele.
       if (get().status !== 'MATCH_OVER') scheduleRoundTransition();
-      return;
+      return true;
     }
 
     // --- 4. Turno extra (carta TURNO_EXTRA/TURNO EXTRA) ---------------------
@@ -1076,6 +1089,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
     // --- 6. Relógio global: cartas automáticas + expiração de regra --------
     tickGlobalClock(nextTurnCount);
+    return true;
   },
 
   takeDamage: (target, amount) => {

@@ -14,7 +14,13 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
-import { isLocalTurn, isOpponentConnected, netPlaceMark, netPlayCard } from '@/services/syncBridge';
+import {
+  getLocalCombatant,
+  isLocalTurn,
+  isOpponentConnected,
+  netPlaceMark,
+  netPlayCard,
+} from '@/services/syncBridge';
 import {
   canPlaceAt,
   isPendingTarget,
@@ -245,7 +251,7 @@ function CellComponent({ index, size }: CellProps) {
     }
 
     /* --- Fluxo normal ----------------------------------------------------- */
-    if (!canPlaceAt(state, index)) {
+    if (!canPlaceAt(state, index, getLocalCombatant())) {
       rejectFeedback();
       return;
     }

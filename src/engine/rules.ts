@@ -645,13 +645,22 @@ export function findWinner(
 }
 
 /**
- * A jogada é legal?
+ * `combatant` pode colocar peça em `index` agora?
  *
  * Fonte única das guardas de `placeMark`. A UI chama a mesma função para
  * decidir entre haptic de sucesso e de erro — se a regra mudar, muda aqui e
  * os dois lados acompanham.
+ *
+ * `combatant` é obrigatório (não inferido de `state.turn`) de propósito: é
+ * exatamente essa checagem — "quem está pedindo a jogada É o dono da vez?" —
+ * que faltava aqui antes. `resolveCardPlay` sempre validou isto para cartas
+ * (`state.turn !== caster`); `placeMark` só validava a CÉLULA, nunca o ATOR,
+ * e a única coisa segurando um toque fora de hora era a UI (`isLocalTurn`,
+ * que é sempre `true` fora do online) — um toque rápido durante a "vez" da
+ * CPU passava por aqui e colocava peça como se fosse ela.
  */
-export function canPlaceAt(state: GameState, index: number): boolean {
+export function canPlaceAt(state: GameState, index: number, combatant: Combatant): boolean {
+  if (state.turn !== combatant) return false;
   if (state.status !== 'PLAYING') return false;
   if (state.isPaused) return false;
   // Uma pausa de confirmação em exibição segura o jogo antes do efeito

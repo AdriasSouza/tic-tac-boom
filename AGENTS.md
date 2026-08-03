@@ -11,3 +11,12 @@ quadrar de novo por cima — o segundo cálculo nunca é o bug, é sintoma de um
 devia estar decidindo forma nenhuma. O ancestral entrega espaço bruto (`flex:1` +
 `alignSelf:'stretch'`); o `<Board />` mede as duas dimensões via `onLayout` e resolve o quadrado
 sozinho.
+
+# Invariantes de domínio
+
+Regra de domínio se garante no motor, não na camada acima. Se uma regra do jogo (de quem é a vez,
+quem pode agir, o que é alvo válido) só é respeitada porque a UI não oferece o caminho, ela não
+está implementada — está sendo evitada. Três ocorrências até aqui: um ancestral pré-quadrando a
+geometria que só o `<Board />` deve decidir; um `aspectRatio` fazendo o mesmo em outra orientação;
+e `placeMark` sem checagem de dono do turno, protegido apenas por um `isLocalTurn()` que é `true`
+permanente fora do modo online. A guarda vive onde a regra vive.

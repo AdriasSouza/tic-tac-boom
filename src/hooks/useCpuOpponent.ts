@@ -80,7 +80,7 @@ export function useCpuOpponent({
     void playCPUTurn(
       useGameStore.getState(),
       {
-        placeMark: (index) => useGameStore.getState().placeMark(index),
+        placeMark: (index) => useGameStore.getState().placeMark('MACHINE', index),
         playCard: (uid, targetIndex) => useGameStore.getState().playMachineCard(uid, targetIndex),
       },
       {
