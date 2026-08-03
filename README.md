@@ -51,23 +51,32 @@ jogo andar. O terminal mostra a contagem regressiva (`Nt`) ao lado do nome da re
 ### Cartas
 Mão de até 5 cartas, mesa de até 3 armadilhas. Cada lado começa a partida com 2 cartas e recebe
 mais 1 a cada 3 jogadas globais completas (Player e CPU juntos). Cartas são arrastadas para a
-metade superior da tela para serem jogadas.
+metade superior da tela para serem jogadas. Tabela regenerada a partir de
+`src/engine/cards/registry.ts` (19 cartas — ver "Estado atual" para o total); a especificação
+completa das ~30 cartas planejadas para a Parte B, incluindo o que muda em cada uma destas, está
+em [`docs/CARTAS.md`](docs/CARTAS.md).
 
-| Carta | Tipo | Efeito |
-|---|---|---|
-| **DEMOLIR** (`BREAK_PIECE`) | `ACTION` | Modo mira: destrói uma peça do tabuleiro, inclusive as suas |
-| **REBOBINAR** (`EXTRA_TURN`) | `ACTION` | Sua próxima jogada não passa a vez |
-| **CURAR** (`HEAL_SELF`) | `ACTION` | Recupera 1 HP |
-| **ATAQUE** (`DIRECT_DAMAGE`) | `ACTION` | Causa 1 de dano direto ao oponente |
-| **ESTUDAR** (`DRAW_CARD`) | `ACTION` | Compra 1 carta adicional |
-| **SAQUE** (`HAND_RAID`) | `ACTION` | 50% de chance de roubar uma carta aleatória do oponente; senão, destrói |
-| **PURIFICAR** (`CLEANSE`) | `ACTION` | Remove uma interdição de célula, restaurando a regra normal |
-| **TROCA** (`HAND_SWAP`) | `ACTION` | Troca sua mão inteira pela do oponente |
-| **VIDENTE** (`REVEAL_OLDEST`) | `ACTION` | Revela qual peça do oponente vai sumir na próxima jogada dele |
-| **TRAVAR** (`LOCK_CELL`) | `ACTION` | Modo mira: bloqueia uma célula vazia por 1 turno global |
-| **MINA** (`BOMB_TRAP`) | `TRAP` | Vira na mesa. Detona se o oponente ocupar o centro: 2 de dano e ele perde a vez |
-| **PROTEÇÃO** (`SHIELD_TRAP`) | `TRAP` | Vira na mesa. Impede que uma carta sua seja roubada pelo SAQUE do oponente |
-| **ANTI-MAGIA** (`COUNTER_TRAP`) | `TRAP` | Vira na mesa. Anula a próxima carta de ação jogada pelo oponente |
+| Carta | Raridade | Custo | Tipo | Efeito |
+|---|---|---|---|---|
+| **LIMPAR** (`CLEAR_BLOCK`) | Comum | 1⚡ | `ACTION` | Modo mira: libera a célula interditada pelo caos |
+| **PURIFICAR** (`CLEANSE`) | Comum | 1⚡ | `ACTION` | Modo mira: libera uma célula de qualquer efeito persistente — bloqueio do caos ou lacre da TRAVAR |
+| **TRAVAR** (`LOCK_CELL`) | Comum | 1⚡ | `ACTION` | Modo mira: lacra uma célula vazia por 2 turnos globais |
+| **DEMOLIR** (`BREAK_PIECE`) | Comum | 1⚡ | `ACTION` | Modo mira: destrói uma peça do tabuleiro, inclusive as suas |
+| **ESPIADA** (`PEEK_RANDOM`) | Rara | 1⚡ | `ACTION` | Revela uma carta aleatória da mão do oponente |
+| **PROTEÇÃO** (`SHIELD_TRAP`) | Rara | 1⚡ | `TRAP` | Vira na mesa. Anula o SAQUE ou a ESPIONAGEM do oponente contra você, destruindo a armadilha |
+| **PROCRASTINAR** (`DRAW_CARD`) | Rara | 2⚡ | `ACTION` | Compra 2 cartas novas |
+| **SAQUE** (`HAND_RAID`) | Rara | 2⚡ | `ACTION` | 50% de chance de roubar uma carta aleatória do oponente; se falhar, nada acontece |
+| **TROCAR** (`CARD_TRADE`) | Rara | 2⚡ | `ACTION` | Troca uma carta aleatória da sua mão por uma carta aleatória da mão do oponente |
+| **VIDENTE** (`REVEAL_OLDEST`) | Rara | 2⚡ | `ACTION` | Modo mira: marca uma peça do oponente — destruída no início do próximo turno dele |
+| **PROCRASTINAR II** (`DRAW_CARD_BIG`) | Épica | 2⚡ | `ACTION` | Compra 3 cartas novas |
+| **ESPIONAGEM** (`SPY_CARD`) | Épica | 2⚡ | `ACTION` | Revela e descarta uma carta aleatória da mão do oponente |
+| **ATAQUE** (`DIRECT_DAMAGE`) | Épica | 3⚡ | `ACTION` | Causa 1 de dano direto ao oponente |
+| **CURA** (`HEAL_SELF`) | Épica | 3⚡ | `ACTION` | Recupera 1 HP (limite de 5) |
+| **PULAR** (`EXTRA_TURN`) | Épica | 3⚡ | `ACTION` | O oponente perde a fase de colocar peça no próximo turno dele |
+| **VISÃO ABSOLUTA** (`FULL_INTEL`) | Lendária | 3⚡ | `ACTION` | Mostra quantas cartas o oponente tem na mão (revelação completa por carta ainda não implementada) |
+| **MINA** (`BOMB_TRAP`) | Lendária | 3⚡ | `TRAP` | Vira na mesa. Detona se o oponente ocupar o centro: 2 de dano e ele perde a vez |
+| **TIC TAC BOOM!** (`CHAOS_ROULETTE`) | Boom! | 0⚡ | `ACTION` | Dispara um surto de caos imediato — a mesma roleta do relógio global |
+| **ALTAR DE SACRIFÍCIO** (`ALTAR_OF_SACRIFICE`) | Boom! | 0⚡ | `ACTION` | Abre modal para sacrificar 2 cartas (fusão de raridade ainda incompleta) |
 
 ---
 
@@ -245,7 +254,7 @@ useGameStore.getState().applyChaosRule('BLOCKED_CELL');
 ```
 
 ### Cartas de ação
-1. Arraste **REBOBINAR** para a metade superior da tela.
+1. Arraste **PULAR** para a metade superior da tela.
 2. ✅ A carta sai com `FadeOutUp`, o leque se reorganiza.
 3. Jogue uma peça.
 4. ✅ O turno **não** passa — você joga de novo.
@@ -515,8 +524,10 @@ documentado como limitação conhecida, abaixo.
 - Distribuição automática de cartas: 2 na mão inicial de cada lado, +1/+1 a cada 3 jogadas globais
 - RNG determinístico por seed, com canais independentes e snapshot/restore
 - HUD com animação de dano (flash + shake + haptics)
-- **13 cartas**: 10 de ação, 1 armadilha ofensiva (MINA) e 2 armadilhas de defesa (PROTEÇÃO,
-  ANTI-MAGIA) que vetam a carta do oponente antes do efeito resolver
+- **19 cartas**: 17 de ação, 1 armadilha ofensiva (MINA) e 1 armadilha defensiva (PROTEÇÃO) que
+  veta a carta do oponente antes do efeito resolver — tabela completa em "### Cartas", acima.
+  Especificação das ~30 cartas planejadas para a Parte B (com o que muda em cada uma) em
+  [`docs/CARTAS.md`](docs/CARTAS.md)
 - Mão arrastável em leque, com layout animations
 - **Rastreamento de posição na mão do oponente** (`<HandTracker />`) — identidade por
   `instanceId` (`uid`), nunca por índice de array; revelação (ESPIADA) persiste enquanto a
