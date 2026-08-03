@@ -114,22 +114,22 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
 
     case 'CARD_BREAK_PIECE':
       return `demolir :: ${who} destruiu a peça em ${cellLabel(entry.value)}`;
-    case 'CARD_EXTRA_TURN':
-      return `pular :: ${who} vai jogar de novo — o oponente perde a vez`;
+    case 'CARD_TURNO_EXTRA':
+      return `turno extra :: ${who} vai jogar de novo — o oponente perde a vez`;
     case 'CARD_HEAL':
       return `cura :: ${who} recuperou 1 hp`;
     case 'CARD_DAMAGE':
       return `ataque :: ${who} causou 1 de dano direto`;
     case 'CARD_DRAW':
-      return `procrastinar :: ${who} comprou ${entry.value} cartas`;
+      return `estudar :: ${who} comprou ${entry.value} cartas`;
     case 'CARD_RAID_STOLE':
       return `saque :: ${who} roubou ${cardName(entry.value)} ${whose === 'sua' ? 'de você' : whose}`;
     case 'CARD_RAID_FAILED':
       return `saque :: a tentativa de ${who} contra ${whose === 'sua' ? 'você' : whose} falhou`;
     case 'CARD_CLEANSE':
       return `purificar :: ${who} liberou a casa ${cellLabel(entry.value)}`;
-    case 'CARD_TRADE':
-      return `trocar :: ${who} trocou ${cardName(entry.value)} por uma carta do oponente`;
+    case 'CARD_HAND_SWAP':
+      return `permuta caótica :: ${who} trocou ${cardName(entry.value)} por uma carta do oponente`;
     case 'CARD_MARK_DOOMED':
       return `vidente :: ${who} marcou a peça em ${cellLabel(entry.value)} para destruição`;
     case 'CARD_DOOM_TRIGGERED':
@@ -173,7 +173,7 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
       return CHAOS_RULE_SHOUT[entry.value as ChaosRule] ?? 'CAOS';
     case 'CARD_RAID_STOLE':
       return `${who} ROUBOU: ${cardName(entry.value)}`;
-    case 'CARD_TRADE':
+    case 'CARD_HAND_SWAP':
       return `${who} TROCOU: ${cardName(entry.value)}`;
     case 'CARD_CLEANSE':
       return `CASA ${cellLabel(entry.value)} LIBERADA`;

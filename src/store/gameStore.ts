@@ -8,6 +8,7 @@ import {
   CHAOS_RULE_DURATION_TURNS,
   CHAOS_SURGE_INTERVAL_ROUNDS,
   CHAOS_SURGE_INTERVAL_TURNS,
+  ENERGY_CAP,
   HAND_LIMIT,
   INITIAL_HP,
   LOG_LIMIT,
@@ -36,6 +37,7 @@ import {
   isValidTargetForCard,
   opponentOf,
   pickFreeCell,
+  regenEnergy,
   trapsKeyFor,
   type AcknowledgementCode,
   type AcknowledgementKind,
@@ -56,19 +58,6 @@ import type { GameEvent } from '@/engine/events';
 /** Intervalo entre o fim da rodada e a limpeza automática do tabuleiro. */
 const ROUND_TRANSITION_DELAY_MS = 1300;
 
-/**
- * Patch que crava a energia de `combatant` em `STARTING_ENERGY`.
- *
- * Chamado em TODO lugar que decide "agora é a vez dele" — `placeMark`
- * (alternância normal e turno extra), `startNextRound`, `endTurn` e o
- * `consumesTurn` de `resolveCardPlay`. Função pura, sem `set`/`get`: cada
- * chamador espalha o resultado dentro do PRÓPRIO `set`, então a recarga
- * chega atomicamente junto com a troca de `turn`, nunca como um segundo
- * `set` separado que deixaria uma janela com `turn` novo e energia velha.
- */
-function refillEnergy(combatant: Combatant): Partial<GameState> {
-  return { [energyKeyFor(combatant)]: STARTING_ENERGY };
-}
 
 /**
  * Desfecho de uma marca do VIDENTE ao chegar "início de turno" para alguém.
@@ -122,20 +111,34 @@ function doomPatch(board: GameState['board'], outcome: DoomOutcome): Partial<Gam
 }
 
 /**
- * Tudo que precisa acontecer quando um combatente PASSA a jogar agora:
- * recarga de energia (sempre) + resolução da marca do VIDENTE (se houver).
+ * Tudo que precisa acontecer quando um combatente PASSA a jogar agora: regen
+ * de energia (por padrão) + resolução da marca do VIDENTE (se houver).
+ *
+ * `regenEnergyStep` é `true` por padrão e só vira `false` na segunda colocação
+ * de TURNO_EXTRA (mesmo `owner` continuando a jogar, ver `placeMark`): a carta
+ * concede uma colocação extra, não uma energia extra — sem esta exceção, o
+ * regen normal (+1 aos dois lados) rodaria de novo entre as duas colocações, e
+ * a carta se pagaria sozinha (`CLAUDE.md`, pendência P11 de `docs/CARTAS.md`).
+ * A resolução da marca do VIDENTE roda igual nos dois casos — isso não muda.
  *
  * Devolve `{ patch, doom }` em vez de só o patch porque o log da destruição
  * (`announceDoomIfTriggered`) só pode ser publicado DEPOIS do `set` que
  * aplica este patch — nunca de dentro de um updater funcional do Zustand.
  */
 function beginTurn(
-  doomedCell: GameState['doomedCell'],
+  state: Pick<GameState, 'doomedCell' | 'playerEnergy' | 'machineEnergy'>,
   board: GameState['board'],
   combatant: Combatant,
+  regenEnergyStep = true,
 ): { patch: Partial<GameState>; doom: DoomOutcome } {
-  const doom = classifyDoom(doomedCell, board, combatant);
-  return { patch: { ...refillEnergy(combatant), ...doomPatch(board, doom) }, doom };
+  const doom = classifyDoom(state.doomedCell, board, combatant);
+  return {
+    patch: {
+      ...(regenEnergyStep ? regenEnergy(state.playerEnergy, state.machineEnergy) : null),
+      ...doomPatch(board, doom),
+    },
+    doom,
+  };
 }
 
 /* Os textos das regras caóticas viviam aqui e migraram para
@@ -155,6 +158,7 @@ export {
   CHAOS_RULE_DURATION_TURNS,
   CHAOS_SURGE_INTERVAL_ROUNDS,
   CHAOS_SURGE_INTERVAL_TURNS,
+  ENERGY_CAP,
   HAND_LIMIT,
   INITIAL_HP,
   LOG_LIMIT,
@@ -902,8 +906,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // tabuleiro desatualizado poderia devolver um patch de `board` que
       // reverteria a própria mudança que esta carta acabou de fazer.
       const boardAfterCard = safePatch.board ?? state.board;
+      // `{ ...state, ...energySpend }`: o regen precisa da energia PÓS-custo
+      // do caster (`energySpend` já a calculou acima), não do snapshot de
+      // `state` capturado antes da carta gastar energia nenhuma.
       const nextTurnInfo = result.consumesTurn
-        ? beginTurn(state.doomedCell, boardAfterCard, opponentOf(caster))
+        ? beginTurn({ ...state, ...energySpend }, boardAfterCard, opponentOf(caster))
         : null;
 
       set({
@@ -1024,15 +1031,17 @@ export const useGameStore = create<GameStore>()((set, get) => {
       return;
     }
 
-    // --- 4. Turno extra (carta EXTRA_TURN/PULAR) ---------------------------
+    // --- 4. Turno extra (carta TURNO_EXTRA/TURNO EXTRA) ---------------------
     // A flag é consumida aqui: vale por uma jogada só.
     const keepsTurn = state.extraTurnPending === owner;
     // Continuação (turno extra) ou alternância normal — nos dois casos é uma
-    // jogada NOVA começando, e `beginTurn` não distingue as duas: mesmo
-    // permanecendo com o mesmo dono, é "início de turno" para fins de ⚡ e da
-    // marca do VIDENTE.
+    // jogada NOVA começando, e `beginTurn` resolve a marca do VIDENTE do mesmo
+    // jeito nos dois casos. A ENERGIA já não é igual: `keepsTurn` é a segunda
+    // colocação da MESMA jogada de TURNO_EXTRA, então pula o regen (P11 de
+    // `docs/CARTAS.md` — a carta concede uma colocação extra, não energia
+    // extra; regenerar aqui faria ela se pagar sozinha).
     const nextTurnHolder = keepsTurn ? owner : opponentOf(owner);
-    const nextTurnInfo = beginTurn(state.doomedCell, board, nextTurnHolder);
+    const nextTurnInfo = beginTurn(state, board, nextTurnHolder, !keepsTurn);
 
     // Empate por tabuleiro cheio é impossível aqui: no máximo 3 + 3 = 6 peças
     // ocupam o grid de 9 células. A rodada só termina por vitória.
@@ -1192,7 +1201,10 @@ export const useGameStore = create<GameStore>()((set, get) => {
         // o tabuleiro é limpo a cada rodada, nenhuma peça "antiga" sobrevive
         // para a ordenação de `turnPlaced` se confundir entre rodadas.
         turn: nextTurn,
-        ...refillEnergy(nextTurn),
+        // Regen simétrico, igual a qualquer outro fim de turno — decisão
+        // explícita desta entrega (ver "Energia" em docs/CARTAS.md): quem
+        // perde a rodada NÃO volta a 3⚡ cravado, carrega o que sobrou +1/teto.
+        ...regenEnergy(state.playerEnergy, state.machineEnergy),
         status: 'PLAYING',
         roundWinner: null,
         winningLine: null,
@@ -1225,7 +1237,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     if (state.status !== 'PLAYING') return;
 
     const nextTurn = opponentOf(state.turn);
-    const { patch, doom } = beginTurn(state.doomedCell, state.board, nextTurn);
+    const { patch, doom } = beginTurn(state, state.board, nextTurn);
 
     set({ turn: nextTurn, turnCount: state.turnCount + 1, ...patch });
     announceDoomIfTriggered(doom);

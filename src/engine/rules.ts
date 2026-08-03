@@ -190,11 +190,12 @@ export interface GameState {
   /**
    * Energia (⚡) disponível AGORA para cada combatente.
    *
-   * Não cumulativa: cravada em `STARTING_ENERGY` a cada início de turno (ver
-   * `refillEnergy` no store), nunca somada ao que sobrou do turno anterior.
-   * O valor do combatente que NÃO está na vez é irrelevante para qualquer
-   * regra — `resolveCardPlay` só lê a energia de quem já passou pela guarda
-   * `turn === caster` — e existe só para o campo nunca ficar `undefined`.
+   * Cumulativa, com teto: ao final de QUALQUER turno os dois lados ganham +1,
+   * até `ENERGY_CAP` (ver `regenEnergy`, chamado pelo store) — energia não
+   * gasta persiste entre turnos, nunca é cravada de volta a um valor fixo.
+   * Isso vale inclusive para o combatente que NÃO está na vez: ele também
+   * acumula enquanto espera, é por isso que o regen precisa dos DOIS valores
+   * a cada chamada, não só do valor de quem vai jogar agora.
    */
   playerEnergy: number;
   machineEnergy: number;
@@ -437,6 +438,17 @@ export const INITIAL_HP = 5;
  */
 export const STARTING_ENERGY = 3;
 
+/**
+ * Teto do regen de energia a cada fim de turno (ver `regenEnergy`). Hoje igual
+ * a `STARTING_ENERGY`, mas é uma constante PRÓPRIA de propósito:
+ * `STARTING_ENERGY` responde "quanta energia no início da PARTIDA" (valor
+ * inicial, cravado uma vez), `ENERGY_CAP` responde "até onde o regen pode
+ * subir" (teto aplicado a cada turno, para sempre). São perguntas diferentes
+ * que hoje têm a mesma resposta — se um dia divergirem (ex.: a partida abrir
+ * com menos energia que o teto normal), o acoplamento não pode ser silencioso.
+ */
+export const ENERGY_CAP = 3;
+
 /** Dano padrão aplicado ao perdedor de uma rodada. Cartas podem alterar. */
 export const ROUND_DAMAGE = 1;
 
@@ -566,6 +578,24 @@ export function energyKeyFor(combatant: Combatant): 'playerEnergy' | 'machineEne
 /** Energia atual de um combatente. */
 export function energyOf(state: GameState, combatant: Combatant): number {
   return state[energyKeyFor(combatant)];
+}
+
+/**
+ * Regen de energia ao final de QUALQUER turno: os dois lados ganham +1, até
+ * `ENERGY_CAP` — energia não gasta persiste (`CLAUDE.md`, 1). Pura e simétrica
+ * de propósito: quem chama nunca precisa saber QUEM está prestes a jogar, só
+ * o par de valores atuais — é o que torna trivial pular esta chamada quando
+ * um efeito (TURNO_EXTRA) concede uma ação extra sem regen (ver `beginTurn`
+ * no store).
+ */
+export function regenEnergy(
+  playerEnergy: number,
+  machineEnergy: number,
+): Pick<GameState, 'playerEnergy' | 'machineEnergy'> {
+  return {
+    playerEnergy: Math.min(ENERGY_CAP, playerEnergy + 1),
+    machineEnergy: Math.min(ENERGY_CAP, machineEnergy + 1),
+  };
 }
 
 /** Mão atual de um combatente. */

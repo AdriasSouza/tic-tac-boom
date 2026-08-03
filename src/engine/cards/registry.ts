@@ -79,9 +79,9 @@ const CLEANSE: CardDefinition = {
   type: 'ACTION',
   description: 'Libera uma célula de qualquer efeito persistente — o bloqueio do caos ou o lacre da TRAVAR.',
   targeting: 'CELL',
-  rarity: 'COMMON',
+  rarity: 'EPIC',
   weight: 2,
-  cost: 1,
+  cost: 2,
 
   requiresTarget: true,
   isValidTarget: ({ state, index }) =>
@@ -234,8 +234,8 @@ const PEEK_RANDOM: CardDefinition = {
 /* -------------------------------------------------------------------------- */
 
 const DRAW_CARD: CardDefinition = {
-  id: 'DRAW_CARD',
-  name: 'PROCRASTINAR',
+  id: 'STUDY',
+  name: 'ESTUDAR',
   type: 'ACTION',
   description: 'Compra 2 cartas novas.',
   targeting: 'NONE',
@@ -326,14 +326,14 @@ const HAND_RAID: CardDefinition = {
  * futura, se vocês quiserem a escolha manual.
  */
 const CARD_TRADE: CardDefinition = {
-  id: 'CARD_TRADE',
-  name: 'TROCAR',
+  id: 'HAND_SWAP',
+  name: 'PERMUTA CAÓTICA',
   type: 'ACTION',
   description: 'Troca uma carta aleatória da sua mão por uma carta aleatória da mão do oponente.',
   targeting: 'NONE',
-  rarity: 'RARE',
+  rarity: 'LEGENDARY',
   weight: 2,
-  cost: 2,
+  cost: 3,
 
   // Precisa de mais alguma carta além da própria TROCAR na mão — senão não
   // haveria o que oferecer em troca.
@@ -355,8 +355,8 @@ const CARD_TRADE: CardDefinition = {
         [handKeyFor(caster)]: [...casterHandWithoutSelf.filter((c) => c.uid !== given.uid), received],
         [handKeyFor(target)]: [...opponentHand.filter((c) => c.uid !== received.uid), given],
       },
-      log: { code: 'CARD_TRADE', subject: caster, target, value: given.cardId },
-      notice: { code: 'CARD_TRADE', subject: caster, target, value: given.cardId },
+      log: { code: 'CARD_HAND_SWAP', subject: caster, target, value: given.cardId },
+      notice: { code: 'CARD_HAND_SWAP', subject: caster, target, value: given.cardId },
     };
   },
 };
@@ -369,14 +369,14 @@ const CARD_TRADE: CardDefinition = {
  * ativo, não mais um aviso do que já ia acontecer.
  */
 const MARK_DOOMED: CardDefinition = {
-  id: 'REVEAL_OLDEST',
-  name: 'VIDENTE',
+  id: 'OBSOLESCENCE',
+  name: 'OBSOLESCÊNCIA',
   type: 'ACTION',
   description: 'Marca uma peça do oponente. No início do próximo turno dele, ela é destruída.',
   targeting: 'OCCUPIED_CELL',
-  rarity: 'RARE',
+  rarity: 'EPIC',
   weight: 3,
-  cost: 2,
+  cost: 3,
 
   requiresTarget: true,
   isValidTarget: ({ state, caster, index }) => state.board[index]?.owner === opponentOf(caster),
@@ -419,14 +419,14 @@ const MARK_DOOMED: CardDefinition = {
  * ACKNOWLEDGE/FORFEIT) só para isto — fora do escopo desta etapa de cartas.
  */
 const SPY_CARD: CardDefinition = {
-  id: 'SPY_CARD',
-  name: 'ESPIONAGEM',
+  id: 'SABOTAGE',
+  name: 'SABOTAGEM',
   type: 'ACTION',
   description: 'Revela e descarta uma carta aleatória da mão do oponente.',
   targeting: 'NONE',
   rarity: 'EPIC',
   weight: 3,
-  cost: 2,
+  cost: 3,
 
   canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
@@ -466,8 +466,8 @@ const SPY_CARD: CardDefinition = {
 };
 
 const DRAW_CARD_BIG: CardDefinition = {
-  id: 'DRAW_CARD_BIG',
-  name: 'PROCRASTINAR II',
+  id: 'STUDY_II',
+  name: 'ESTUDAR II',
   type: 'ACTION',
   description: 'Compra 3 cartas novas.',
   targeting: 'NONE',
@@ -528,8 +528,8 @@ const HEAL_SELF: CardDefinition = {
  * caster`, lido por `placeMark`), só narrado de lados opostos.
  */
 const EXTRA_TURN: CardDefinition = {
-  id: 'EXTRA_TURN',
-  name: 'PULAR',
+  id: 'TURNO_EXTRA',
+  name: 'TURNO EXTRA',
   type: 'ACTION',
   description: 'O oponente perde a fase de colocar peça no próximo turno dele.',
   targeting: 'NONE',
@@ -542,7 +542,7 @@ const EXTRA_TURN: CardDefinition = {
 
   effect: ({ caster }) => ({
     patch: { extraTurnPending: caster },
-    log: { code: 'CARD_EXTRA_TURN', subject: caster },
+    log: { code: 'CARD_TURNO_EXTRA', subject: caster },
   }),
 };
 
@@ -637,21 +637,23 @@ const BOMB_TRAP: CardDefinition = {
 
 /**
  * Sucessora da antiga PROTEÇÃO (mesmo id): antes só anulava SAQUE; agora
- * também anula ESPIONAGEM, já que as duas mexem na mão do jogador. Rebaixada
- * de Épica/custo 2 para Rara/custo 1 — era cara demais para o que faz.
+ * também anula SABOTAGEM (a `SPY_CARD` de antes, renomeada nesta rodada — ver
+ * `docs/MIGRACAO_CARTAS.md`), já que as duas mexem na mão do jogador.
+ * Rebaixada de Épica/custo 2 para Rara/custo 1 — era cara demais para o que
+ * faz.
  */
 const SHIELD_TRAP: CardDefinition = {
   id: 'SHIELD_TRAP',
   name: 'PROTEÇÃO',
   type: 'TRAP',
-  description: 'Virada na mesa. Anula o SAQUE ou a ESPIONAGEM do oponente contra você, destruindo a armadilha.',
+  description: 'Virada na mesa. Anula o SAQUE ou a SABOTAGEM do oponente contra você, destruindo a armadilha.',
   targeting: 'NONE',
   rarity: 'RARE',
   weight: 2,
   cost: 1,
 
   triggerCondition: (event) =>
-    event.type === 'CARD_ABOUT_TO_RESOLVE' && (event.cardId === 'HAND_RAID' || event.cardId === 'SPY_CARD'),
+    event.type === 'CARD_ABOUT_TO_RESOLVE' && (event.cardId === 'HAND_RAID' || event.cardId === 'SABOTAGE'),
 
   effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_SHIELD', subject: caster } }),
 };
@@ -724,15 +726,15 @@ export const CARD_REGISTRY: Record<CardId, CardDefinition> = {
   BREAK_PIECE,
   PEEK_RANDOM,
   SHIELD_TRAP,
-  DRAW_CARD,
+  STUDY: DRAW_CARD,
   HAND_RAID,
-  CARD_TRADE,
-  REVEAL_OLDEST: MARK_DOOMED,
-  SPY_CARD,
-  DRAW_CARD_BIG,
+  HAND_SWAP: CARD_TRADE,
+  OBSOLESCENCE: MARK_DOOMED,
+  SABOTAGE: SPY_CARD,
+  STUDY_II: DRAW_CARD_BIG,
   DIRECT_DAMAGE,
   HEAL_SELF,
-  EXTRA_TURN,
+  TURNO_EXTRA: EXTRA_TURN,
   BOMB_TRAP,
   FULL_INTEL,
   CHAOS_ROULETTE,

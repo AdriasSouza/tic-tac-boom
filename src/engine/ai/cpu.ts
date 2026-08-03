@@ -208,8 +208,8 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (target !== null) return { uid: cleanse.uid, cardId: cleanse.cardId, targetIndex: target };
   }
 
-  // 4. PULAR (turno extra) é sempre bom e nunca tem alvo — sem desvantagem.
-  const extra = find('EXTRA_TURN');
+  // 4. TURNO EXTRA é sempre bom e nunca tem alvo — sem desvantagem.
+  const extra = find('TURNO_EXTRA');
   if (extra && state.extraTurnPending !== CPU) return { uid: extra.uid, cardId: extra.cardId };
 
   // 5. Arma a primeira armadilha disponível, se sobrar espaço na mesa.
@@ -233,7 +233,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   if (raid && state[handKeyFor(HUMAN)].length > 0 && rng.chance(0.5)) {
     return { uid: raid.uid, cardId: raid.cardId };
   }
-  const spyCard = find('SPY_CARD');
+  const spyCard = find('SABOTAGE');
   if (spyCard && state[handKeyFor(HUMAN)].length > 0 && rng.chance(0.5)) {
     return { uid: spyCard.uid, cardId: spyCard.cardId };
   }
@@ -252,7 +252,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   // ANTIGA do humano seria desperdício, ela já sumiria sozinha em breve pelo
   // "infinito"; a mais NOVA é o alvo que rende de verdade, porque não sairia
   // do tabuleiro por conta própria tão cedo.
-  const reveal = find('REVEAL_OLDEST');
+  const reveal = find('OBSOLESCENCE');
   if (reveal) {
     const humanPieces = getPieceIndexes(state.board, HUMAN); // mais antiga → mais nova
     const newest = humanPieces.at(-1) ?? null;
@@ -265,9 +265,9 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   // 11. Compra por último: preenche a mão quando nada mais se aplica.
   // PROCRASTINAR II primeiro — mesma ideia, mais cartas — quando a energia
   // alcançar; `find` já garante que só é escolhida se couber no turno.
-  const drawBig = find('DRAW_CARD_BIG');
+  const drawBig = find('STUDY_II');
   if (drawBig && hand.length < HAND_LIMIT) return { uid: drawBig.uid, cardId: drawBig.cardId };
-  const draw = find('DRAW_CARD');
+  const draw = find('STUDY');
   if (draw && hand.length < HAND_LIMIT) return { uid: draw.uid, cardId: draw.cardId };
 
   // 12. Puramente informativas — a CPU já decide com o estado inteiro à
@@ -283,7 +283,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   // 13. TROCAR é alto risco (pode devolver uma carta melhor ao oponente) —
   // só ocasionalmente, nunca como prioridade. Mesma cautela da antiga TROCA
   // (mão inteira), agora só entre uma carta de cada lado.
-  const trade = find('CARD_TRADE');
+  const trade = find('HAND_SWAP');
   if (trade && rng.chance(0.15)) return { uid: trade.uid, cardId: trade.cardId };
 
   // 14. TIC TAC BOOM! é de graça (custo 0) e o resultado é imprevisível para

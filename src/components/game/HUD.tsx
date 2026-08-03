@@ -18,7 +18,9 @@ import HandTracker from './HandTracker';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import {
+  ENERGY_CAP,
   INITIAL_HP,
+  selectEnergy,
   selectMachineHp,
   selectPlayerHp,
   selectStatus,
@@ -298,6 +300,16 @@ const HpTracker = memo(function HpTracker({
 
   const blocks = useMemo(() => Array.from({ length: INITIAL_HP }, (_, i) => i), []);
 
+  const energy = useGameStore(useMemo(() => selectEnergy(target), [target]));
+  const energyPips = useMemo(() => Array.from({ length: ENERGY_CAP }, (_, i) => i), []);
+  // Menor que o bloco de HP DE PROPÓSITO: a altura desta fileira (`styles.blocks`)
+  // é ditada pelo maior filho, e o bloco de HP já é esse filho — um pip que
+  // nunca é maior garante, por construção, que acrescentar energia aqui não
+  // muda a altura do HUD (ver AGENTS.md: só o `<Board />` decide geometria de
+  // jogo, e ele mede o espaço que sobra DEPOIS do HUD — qualquer dp a mais na
+  // altura do HUD sairia direto do tabuleiro).
+  const energyPipSize = Math.round(blockSize * 0.75);
+
   return (
     <Animated.View
       style={[styles.tracker, align === 'right' && styles.trackerRight, containerStyle]}
@@ -332,6 +344,12 @@ const HpTracker = memo(function HpTracker({
             damage={damage}
             size={blockSize}
           />
+        ))}
+        {/* Espaçador só pra separar visualmente HP de energia, sem precisar de
+            um rótulo novo (que custaria altura). */}
+        <View style={{ width: Math.max(4, Math.round(blockSize * 0.4)) }} />
+        {energyPips.map((i) => (
+          <EnergyPip key={i} filled={i < energy} size={energyPipSize} />
         ))}
       </View>
     </Animated.View>
@@ -390,6 +408,38 @@ const HpBlock = memo(function HpBlock({ filled, breaking, accent, damage, size }
         style={[{ width: Math.round(size * 0.66), height: Math.round(size * 0.66) }, animatedStyle]}
         pointerEvents="none"
       />
+    </View>
+  );
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                ENERGY PIP                                   */
+/* -------------------------------------------------------------------------- */
+
+interface EnergyPipProps {
+  filled: boolean;
+  /** Lado do pip em dp — sempre <= `blockSize` (ver `energyPipSize` em `HpTracker`). */
+  size: number;
+}
+
+/**
+ * Ficha de energia — mesmo desenho do `<HpBlock />` (slot + miolo), sem a
+ * animação de dano/quebra: energia não tem evento de "perder" digno de flash,
+ * só sobe e desce em silêncio a cada turno.
+ */
+const EnergyPip = memo(function EnergyPip({ filled, size }: EnergyPipProps) {
+  return (
+    <View style={[styles.blockSlot, { width: size, height: size }]}>
+      <View style={[styles.blockEmpty, { borderColor: colors.winGlow }]} pointerEvents="none" />
+      {filled && (
+        <View
+          style={[
+            styles.energyPipFill,
+            { width: Math.round(size * 0.66), height: Math.round(size * 0.66) },
+          ]}
+          pointerEvents="none"
+        />
+      )}
     </View>
   );
 });
@@ -602,6 +652,9 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFill,
     borderWidth: 2,
     opacity: 0.28,
+  },
+  energyPipFill: {
+    backgroundColor: colors.winGlow,
   },
 
   /* Badge central */

@@ -52,7 +52,7 @@ export type LogCode =
   /** `subject` destruiu uma peça. `value` = índice. */
   | 'CARD_BREAK_PIECE'
   /** `subject` fez o oponente perder a próxima jogada dele. */
-  | 'CARD_EXTRA_TURN'
+  | 'CARD_TURNO_EXTRA'
   /** `subject` recuperou 1 HP. */
   | 'CARD_HEAL'
   /** `subject` causou dano direto em `target`. */
@@ -66,7 +66,7 @@ export type LogCode =
   /** `subject` liberou uma célula interditada. `value` = índice. */
   | 'CARD_CLEANSE'
   /** `subject` trocou uma carta com `target`. `value` = `CardId` que `subject` cedeu. */
-  | 'CARD_TRADE'
+  | 'CARD_HAND_SWAP'
   /** `subject` marcou uma peça de `target` para ser destruída no início do turno dele. `value` = índice. */
   | 'CARD_MARK_DOOMED'
   /** A peça marcada pelo VIDENTE foi destruída ao começar o turno de `subject` (o dono dela). `value` = índice. */

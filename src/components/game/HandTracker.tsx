@@ -91,7 +91,7 @@ interface DisplayCard {
  * jogador não é informação secreta; aqui a posição É a informação).
  *
  * Uma carta nova (compra) sempre entra no fim da lista local — mesmo extremo
- * fixo que `drawCardsFor`/`CARD_TRADE` já usam para inserir no array da mão
+ * fixo que `drawCardsFor`/`HAND_SWAP` já usam para inserir no array da mão
  * no store (nunca no meio) — e aparece com um crescimento de largura
  * simétrico ao da saída.
  */
