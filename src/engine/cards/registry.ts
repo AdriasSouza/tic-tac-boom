@@ -7,6 +7,7 @@ import {
   hpOf,
   occupiedIndexes,
   opponentOf,
+  revealedKeyFor,
 } from '@/engine/rules';
 import { RARITY_DRAW_WEIGHT } from './definitions';
 import type { Rng } from '@/engine/rng';
@@ -200,18 +201,31 @@ const PEEK_RANDOM: CardDefinition = {
   // modal — é sempre um peek automático, então funciona igual para os dois
   // lados desde o início. Não existe "atalho da IA" para simplificar aqui.
   effect: ({ state, caster, rng }) => {
-    const opponentHand = state[handKeyFor(opponentOf(caster))];
+    const target = opponentOf(caster);
+    const opponentHand = state[handKeyFor(target)];
     if (opponentHand.length === 0) return null;
 
-    const spied = rng.pick(opponentHand).cardId;
+    const spied = rng.pick(opponentHand);
     const event = {
       code: 'CARD_SPY_PEEK',
       subject: caster,
-      target: opponentOf(caster),
-      value: spied,
+      target,
+      value: spied.cardId,
     } as const;
 
-    return { log: event, notice: event };
+    const revealedKey = revealedKeyFor(target);
+    const alreadyRevealed = state[revealedKey];
+
+    return {
+      // Sem novidade se o uid já estava marcado — evita recriar o array (e
+      // um re-render à toa de quem assina `selectRevealedUids`) numa espiada
+      // repetida na mesma carta.
+      patch: alreadyRevealed.includes(spied.uid)
+        ? {}
+        : { [revealedKey]: [...alreadyRevealed, spied.uid] },
+      log: event,
+      notice: event,
+    };
   },
 };
 

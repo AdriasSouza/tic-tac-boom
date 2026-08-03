@@ -35,12 +35,30 @@ export interface ResponsiveGameLayout {
   /** Lado de um bloco de HP na barra de status. */
   hpBlockSize: number;
   /**
-   * Tamanho de uma carta em MINIATURA — as fichas que representam as mãos dos
-   * dois lados dentro da barra de status (ver `<MiniHand />`). Não são cartas
-   * jogáveis: existem só para dizer "ele tem 4 cartas na mão".
+   * Tamanho de uma carta em MINIATURA — os slots que representam as mãos dos
+   * dois lados dentro da barra de status (ver `<HandTracker />`). Não são
+   * cartas jogáveis: existem só para dizer "ele tem 4 cartas na mão" e, no
+   * lado do oponente, quais posições já foram espiadas.
    */
   miniCardWidth: number;
   miniCardHeight: number;
+  /**
+   * Altura fixa da fileira do `<HandTracker />` (a linha do rótulo VOCÊ/CPU
+   * em `<HUD />`, ver `HpTracker`).
+   *
+   * Fórmula DELIBERADAMENTE independente de `miniCardHeight`, e não "altura
+   * automática pelo conteúdo": altura emergente foi a causa raiz de três
+   * bugs de geometria na Parte A (ver `AGENTS.md`) — um ancestral que deixa o
+   * próprio tamanho ser ditado pelo filho cria uma competição silenciosa por
+   * espaço vertical, e uma mudança futura em `miniCardHeight` (o único
+   * consumidor de `miniCardWidth`/`miniCardHeight` além deste, depois da
+   * remoção do `<MiniHand />`) passaria a roubar altura do board sem
+   * nenhum sinal. Calibrada à mão contra o range atual de `miniCardHeight`
+   * (14–29dp conforme orientação/escala) com folga de +3 a +6dp nos quatro
+   * cantos — se `miniCardHeight` crescer além disso no futuro, o sintoma é
+   * um slot cortado, visível na hora, não um board encolhendo em silêncio.
+   */
+  handTrackerRowHeight: number;
   /**
    * `true` quando a tela é mais alta que larga.
    *
@@ -145,6 +163,9 @@ export function useResponsiveLayout(): ResponsiveGameLayout {
     // a fileira de fichas sobreponha o próprio HP.
     miniCardWidth: Math.round(11 * scale * (isPortrait ? 1.3 : 1.85)),
     miniCardHeight: Math.round(15 * scale * (isPortrait ? 1.3 : 1.85)),
+    // Constantes (24/33) escolhidas à mão contra o range atual de
+    // `miniCardHeight` — ver o comentário do campo na interface acima.
+    handTrackerRowHeight: Math.round((isPortrait ? 24 : 33) * scale),
     isPortrait,
   };
 }

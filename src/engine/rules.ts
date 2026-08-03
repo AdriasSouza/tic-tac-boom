@@ -258,6 +258,17 @@ export interface GameState {
   machineTraps: HandCard[];
 
   /**
+   * `uid`s da mão de cada combatente cuja identidade o OPONENTE já conhece
+   * (ex.: espiada pela ESPIADA). Não há limpeza quando a carta sai da mão —
+   * quem lê isto (`HandTracker`) só consulta um `uid` revelado enquanto ele
+   * ainda está na mão viva, então uma entrada "orfã" aqui é inerte, nunca
+   * lida de novo. Sem expiração por tempo: a revelação dura enquanto a carta
+   * durar na mão (ver `revealedKeyFor`).
+   */
+  playerRevealedUids: string[];
+  machineRevealedUids: string[];
+
+  /**
    * Pausa de confirmação manual em exibição. Não-nula entre o gatilho
    * (armadilha revelada, carta de espionagem) e o jogador clicar "Entendi".
    *
@@ -528,6 +539,18 @@ export function handKeyFor(combatant: Combatant): 'playerHand' | 'machineHand' {
 /** Mesma ideia de `handKeyFor`, para a zona de armadilhas. */
 export function trapsKeyFor(combatant: Combatant): 'playerTraps' | 'machineTraps' {
   return combatant === 'PLAYER' ? 'playerTraps' : 'machineTraps';
+}
+
+/**
+ * Mesma ideia de `handKeyFor`, para os `uid`s revelados da mão de um
+ * combatente — isto é, cartas daquele combatente cuja identidade quem as
+ * espiou já conhece (ver `HandTracker`). Só o OPONENTE de um combatente pode
+ * espiar a mão dele, então este mesmo array serve aos dois lados sem precisar
+ * de uma segunda tabela: do ponto de vista de quem espiou, é "o que eu sei da
+ * mão dele"; do ponto de vista do dono da mão, é "o que ele já sabe de mim".
+ */
+export function revealedKeyFor(combatant: Combatant): 'playerRevealedUids' | 'machineRevealedUids' {
+  return combatant === 'PLAYER' ? 'playerRevealedUids' : 'machineRevealedUids';
 }
 
 /** HP atual de um combatente. */

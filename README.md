@@ -460,15 +460,43 @@ real medem o mesmo board. Isso deixa de valer só quando a ALTURA vira o eixo li
 Comprovado empiricamente, não só por conta: em 390×844 a estimativa de `availableH` errou por
 75dp (333 estimado vs. 408 medido no device real) e `boardSize` saiu idêntico dos dois lados
 (270) — a largura já governava, então o erro na altura simplesmente não tinha como chegar
-ao resultado.
+ao resultado. Confirmado de novo na A3: mover o `<HandTracker />` para fora da coluna do HUD em
+retrato liberou `availableH` de 408 para 442 (34dp), e `boardSize` continuou 270/80 — a mesma
+imunidade, agora com uma segunda medição real de antes/depois no mesmo dispositivo.
 
-**Medições, antes e depois da A1/A2/A2.1** (retrato/paisagem, `boardSize`/`cellSize`):
+**O eixo limitante troca por volta de ~434dp de largura de área de jogo.** Medido numa largura
+onde `availableW` (434) e `availableH` (442) já estão quase empatados, a largura ainda um fio
+abaixo. Abaixo desse cruzamento a largura governa (e o board é imune a mudanças de altura do
+HUD, item acima); acima dele, é a altura que governa (e o board volta a reagir a
+HUD/terminal/mão crescendo ou encolhendo). Não é um número redondo escolhido de propósito — é
+onde essas duas dimensões, nesta tela, aconteceram de se cruzar.
+
+**Alturas de fileira dentro do HUD são explícitas, nunca emergentes.** O mesmo motivo do item
+acima (ancestral não decide geometria) se aplica DENTRO do HUD: `handTrackerRowHeight` (a
+fileira do rótulo VOCÊ/CPU + `<HandTracker />`) é uma fórmula própria, independente de
+`miniCardWidth`/`miniCardHeight` — não "o que o conteúdo pedir". Se o slot crescer além do que
+essa fórmula previu no futuro, o sintoma é um slot cortado, visível na hora; sem isso, o board
+perderia altura em silêncio a cada ajuste de tamanho de carta — a mesma raiz que já causou três
+bugs distintos no board (item acima), desta vez prevenida ANTES de virar um quarto.
+
+**Medições, antes e depois da A1/A2/A2.1/A3** (retrato/paisagem, `boardSize`/`cellSize`):
 
 | Dispositivo | Antes | Depois |
 |---|---|---|
 | 320×568 | não renderizava (`outer≤0`) | 200 / 57 |
 | 390×844 | 154 / 42 | 270 / 80 |
-| 1440×900 | 420 / 130 (teto fixo, qualquer tela) | 466 / 146 |
+| 1440×900 | 420 / 130 (teto fixo, qualquer tela) | 476 / 149 |
+
+O número de 1440×900 subiu de 466/146 (fim da A2.1) para 476/149 na A3: mover o
+`<HandTracker />` para a `sideRow` em paisagem (em vez de empilhar como a antiga
+`<MiniHand />`) devolveu altura ao HUD, e como 1440×900 é limitado pela ALTURA, essa folga
+vira board maior — troca boa, não regressão (o board não estava errado antes, só tinha
+menos espaço disponível).
+
+Em 390×844, `boardSize`/`cellSize` não mudam entre A2.1 e A3 (largura continua o eixo
+limitante ali), mas `availableH` medido subiu de 408 para 442 pela mesma liberação de
+altura do HUD — outra confirmação da imunidade a mudanças de altura quando a largura
+governa (ver "Decisões de arquitetura").
 
 926×428 fica de fora desta tabela de propósito — nunca teve um "antes" medido de verdade
 para comparar, só estimativas ao longo do desenvolvimento. O número atual (136 / 32) está
@@ -490,6 +518,13 @@ documentado como limitação conhecida, abaixo.
 - **13 cartas**: 10 de ação, 1 armadilha ofensiva (MINA) e 2 armadilhas de defesa (PROTEÇÃO,
   ANTI-MAGIA) que vetam a carta do oponente antes do efeito resolver
 - Mão arrastável em leque, com layout animations
+- **Rastreamento de posição na mão do oponente** (`<HandTracker />`) — identidade por
+  `instanceId` (`uid`), nunca por índice de array; revelação (ESPIADA) persiste enquanto a
+  carta durar na mão, sem prazo; inserção de carta nova sempre pelo mesmo extremo fixo (fim
+  da mão), nunca no meio, é o que torna a posição rastreável entre turnos; o próprio lado do
+  jogador destaca quando o oponente já viu uma das suas cartas; posicionamento muda por
+  orientação (embutido na linha do rótulo VOCÊ/CPU em retrato, ao lado do HP em paisagem) sem
+  custo de altura extra em nenhum dos dois — ver "Decisões de arquitetura"
 - Sistema de mira com destaque de alvos válidos e cancelamento
 - Event Bus para armadilhas reativas (MINA), reentrante por fila; veto síncrono para as
   armadilhas de defesa (não podem esperar a fila, têm que agir antes do patch)
@@ -508,6 +543,12 @@ documentado como limitação conhecida, abaixo.
 - **Áudio** — nenhum som ou trilha
 - **Testes automatizados** — a engine é pura e testável, mas nenhum teste foi escrito
 - **Persistência** — nada é salvo entre sessões
+- **VISÃO ABSOLUTA (`FULL_INTEL`) com prazo.** O texto da carta ("vire quantas cartas quiser")
+  ainda não tem seleção por carta — hoje só loga a contagem da mão. É uma mecânica diferente do
+  rastreamento por posição do `<HandTracker />`: revela a mão inteira e tem prazo explícito (o
+  PDF de design indica expiração no fim do turno), enquanto a revelação por `uid` do
+  `<HandTracker />` não expira sozinha — dura enquanto a carta durar na mão. Implementar exige um
+  temporizador próprio, deliberadamente fora do modelo de dados da Parte A3.
 
 ### 🐛 Limitações conhecidas
 - **Armadilha com mira não é suportada.** O desvio das `TRAP` acontece antes da checagem de

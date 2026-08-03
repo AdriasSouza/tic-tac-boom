@@ -14,7 +14,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 
-import MiniHand from './MiniHand';
+import HandTracker from './HandTracker';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import {
@@ -110,7 +110,7 @@ export function HUD({
   // ela divide uma única fileira entre HP, miniatura de mão e turno dos dois
   // lados, e com as medidas fixas de antes essa soma estourava a largura de um
   // celular pequeno.
-  const { hpBlockSize, isPortrait } = useResponsiveLayout();
+  const { hpBlockSize, handTrackerRowHeight, isPortrait } = useResponsiveLayout();
 
   /* O lado esquerdo (vermelho) é sempre QUEM ESTÁ SEGURANDO O APARELHO, e o
      direito (azul) sempre o adversário — mesmo numa sala online, onde o
@@ -141,10 +141,18 @@ export function HUD({
               isActive={isLive && turn === localCombatant}
               hapticsEnabled={hapticsEnabled}
               blockSize={hpBlockSize}
+              // Retrato: tracker embutido no `trackerHeader` (ganho líquido de
+              // altura, ver useResponsiveLayout.ts). Paisagem: NÃO embutido —
+              // a `sideRow` já reservava exatamente este espaço pro antigo
+              // `<MiniHand />`, então ele ocupa o mesmo lugar aqui embaixo,
+              // sem custo de altura extra nenhum.
+              inlineHandTracker={isPortrait}
+              handTrackerRowHeight={handTrackerRowHeight}
+              // São as MINHAS cartas — o leque lá embaixo já as mostra por
+              // extenso, então o tracker não vaza identidade nova nenhuma.
+              handRevealed
             />
-            {/* `revealed`: são as MINHAS cartas — o leque lá embaixo já as
-                mostra por extenso, então a miniatura não vaza nada. */}
-            <MiniHand owner={localCombatant} revealed align="left" />
+            {!isPortrait && <HandTracker owner={localCombatant} revealed />}
           </View>
 
           <TurnBadge
@@ -166,9 +174,15 @@ export function HUD({
               isActive={isLive && turn === remoteCombatant}
               hapticsEnabled={hapticsEnabled}
               blockSize={hpBlockSize}
+              inlineHandTracker={isPortrait}
+              handTrackerRowHeight={handTrackerRowHeight}
+              // Sem `handRevealed`: versos idênticos, só a carta que a
+              // ESPIADA já revelou mostra face (ver `<HandTracker />`).
             />
-            {/* Sem `revealed`: versos idênticos. Só a contagem é pública. */}
-            <MiniHand owner={remoteCombatant} align="right" />
+            {/* `row-reverse` no pai põe o HP na borda externa — este elemento
+                fica pra dentro, mesma posição que o antigo `<MiniHand />`
+                ocupava. */}
+            {!isPortrait && <HandTracker owner={remoteCombatant} />}
           </View>
         </View>
       </View>
@@ -191,6 +205,20 @@ interface HpTrackerProps {
   hapticsEnabled: boolean;
   /** Lado de cada bloco em dp, já resolvido para esta tela. */
   blockSize: number;
+  /** Repassado direto ao `<HandTracker />` deste lado — ver o prop lá. */
+  handRevealed?: boolean;
+  /**
+   * `true` só em retrato: embute o `<HandTracker />` DENTRO do
+   * `trackerHeader` (ganho líquido de altura ali — a antiga `<MiniHand />`
+   * empilhava abaixo, em coluna). Em paisagem fica `false`: o `<HandTracker />`
+   * é renderizado como IRMÃO deste componente, no lugar exato que a
+   * `<MiniHand />` ocupava na `sideRow` — ali os dois nunca se somavam
+   * (a fileira já tinha a altura do maior dos dois), então embutir aqui só
+   * forçaria este cabeçalho a crescer sem nada em troca. Ver `HUD()`.
+   */
+  inlineHandTracker: boolean;
+  /** Altura EXPLÍCITA do `trackerHeader` — só aplicada quando `inlineHandTracker`. */
+  handTrackerRowHeight: number;
 }
 
 const HpTracker = memo(function HpTracker({
@@ -201,6 +229,9 @@ const HpTracker = memo(function HpTracker({
   isActive,
   hapticsEnabled,
   blockSize,
+  handRevealed = false,
+  inlineHandTracker,
+  handTrackerRowHeight,
 }: HpTrackerProps) {
   const hp = useGameStore(target === 'PLAYER' ? selectPlayerHp : selectMachineHp);
 
@@ -271,12 +302,24 @@ const HpTracker = memo(function HpTracker({
     <Animated.View
       style={[styles.tracker, align === 'right' && styles.trackerRight, containerStyle]}
     >
-      <View style={[styles.trackerHeader, align === 'right' && styles.rowReverse]}>
+      <View
+        style={[
+          styles.trackerHeader,
+          inlineHandTracker && { height: handTrackerRowHeight },
+          align === 'right' && styles.rowReverse,
+        ]}
+      >
         {/* Marcador de turno: barra sólida que só existe no lado ativo. */}
         <TurnMarker isActive={isActive} color={accent} />
         <Animated.Text style={[styles.trackerLabel, labelStyle]} numberOfLines={1}>
           {label}
         </Animated.Text>
+        {/* `row-reverse` no `trackerHeader` (lado direito) já espelha a ORDEM
+            destes filhos — o tracker cai automaticamente do lado de dentro
+            (perto do tabuleiro) nos dois lados, sem lógica extra aqui.
+            Só em retrato: em paisagem o `<HandTracker />` mora fora daqui
+            (ver `inlineHandTracker` e `HUD()`). */}
+        {inlineHandTracker && <HandTracker owner={target} revealed={handRevealed} />}
       </View>
 
       <View style={[styles.blocks, align === 'right' && styles.rowReverse]}>

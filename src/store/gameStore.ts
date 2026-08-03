@@ -402,6 +402,8 @@ const createInitialState = (): GameState => ({
   pendingAction: null,
   playerTraps: [],
   machineTraps: [],
+  playerRevealedUids: [],
+  machineRevealedUids: [],
   pendingAcknowledgement: null,
   nextAcknowledgementId: 0,
   machineHand: [],
@@ -1537,6 +1539,15 @@ export const selectRuleTurnsLeft = (s: GameStore) =>
 /** Armadilhas de um combatente. Referência estável enquanto nada muda. */
 export const selectTraps = (owner: Combatant) => (s: GameStore) =>
   owner === 'PLAYER' ? s.playerTraps : s.machineTraps;
+
+/**
+ * `uid`s da mão de `owner` já revelados a quem a espiou. Ver o comentário de
+ * `playerRevealedUids` em `rules.ts` — o mesmo array serve tanto para "o que
+ * eu sei da mão dele" (lado do oponente) quanto para "o que ele já sabe de
+ * mim" (lado do próprio dono), lido pelo `<HandTracker />` dos dois lados.
+ */
+export const selectRevealedUids = (owner: Combatant) => (s: GameStore) =>
+  owner === 'PLAYER' ? s.playerRevealedUids : s.machineRevealedUids;
 
 /** Tabuleiro em modo mira? Booleano — barato de assinar em qualquer lugar. */
 export const selectIsTargeting = (s: GameStore) => s.pendingAction !== null;
