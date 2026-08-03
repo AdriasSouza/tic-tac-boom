@@ -430,6 +430,33 @@ function CardItemComponent({
               não sobra área para um rótulo escrito. */}
           <View style={[styles.rarityBar, { backgroundColor: rarityColor }]} pointerEvents="none" />
 
+          {/* Custo em ⚡, canto superior direito. Absoluto, mesma razão da
+              faixa de raridade: ocupa ZERO espaço de layout, então não pode
+              alterar `cardHeight` (e por consequência `handAreaHeight`, que
+              alimenta o orçamento do Board — ver AGENTS.md). Sempre visível,
+              inclusive custo 0 (Boom): esconder o badge nesse caso faria "sem
+              número" significar duas coisas (Boom de graça vs. erro de dado),
+              e com energia acumulável o jogador precisa do número pra decidir
+              ENTRE cartas, não só saber se a atual cabe. */}
+          <View
+            style={[
+              styles.costBadge,
+              {
+                width: Math.round(18 * s),
+                height: Math.round(18 * s),
+                borderRadius: Math.round(9 * s),
+              },
+            ]}
+            pointerEvents="none"
+          >
+            <Text
+              style={[styles.costBadgeText, { fontSize: Math.max(6, Math.round(8 * s)) }]}
+              numberOfLines={1}
+            >
+              {card.cost}⚡
+            </Text>
+          </View>
+
           <Text style={[styles.type, { color: accent, fontSize: Math.max(6, Math.round(7 * s)) }]} numberOfLines={1}>
             {requiresTarget ? '◎ ' : ''}
             {card.type}
@@ -526,6 +553,20 @@ const styles = StyleSheet.create({
     bottom: 3,
     left: 0,
     width: 3,
+  },
+  costBadge: {
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    backgroundColor: colors.bgDeep,
+    borderWidth: 1,
+    borderColor: colors.winGlow,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  costBadgeText: {
+    color: colors.winGlow,
+    fontWeight: '800',
   },
   type: {
     letterSpacing: 2,
