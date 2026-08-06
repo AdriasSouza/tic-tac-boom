@@ -1,7 +1,7 @@
 import { pushAction } from '@/services/multiplayerService';
 import { useGameStore } from '@/store/gameStore';
 import { selectOpponentConnectionStatus, useMultiplayerStore } from '@/store/multiplayerStore';
-import type { Combatant } from '@/engine/rules';
+import type { Combatant, InteractionSelection } from '@/engine/rules';
 import type { MultiplayerAction, PlayerSlot, StoredAction } from '@/types/multiplayer';
 
 /**
@@ -259,6 +259,50 @@ export function netPlayCard(uid: string, targetIndex?: number): boolean {
 }
 
 /**
+ * Passa a vez sem colocar peça e replica.
+ *
+ * Mesmo padrão de `netPlaceMark`/`netPlayCard`: aplica localmente primeiro
+ * (`endTurn` já valida turno/status/pausa/confirmação/mira pendente), publica
+ * só se aceito.
+ */
+export function netEndTurn(): boolean {
+  const played = useGameStore.getState().endTurn(getLocalCombatant());
+  if (!played) return false;
+
+  broadcast((by) => ({ type: 'END_TURN', by, at: Date.now() }));
+  return true;
+}
+
+/**
+ * Resolve o passo atual da interação pendente e replica.
+ *
+ * Mesmo padrão de `netPlaceMark`/`netPlayCard`/`netEndTurn`: aplica local
+ * primeiro (`resolveInteraction` já valida turno/status/confirmação/se a
+ * escolha bate com o passo atual), publica só se aceito. Cobre os 5 `kind`s
+ * de `PendingInteraction` com uma função só — `selection` já carrega o
+ * próprio `kind`.
+ */
+export function netResolveInteraction(selection: InteractionSelection): boolean {
+  const resolved = useGameStore.getState().resolveInteraction(getLocalCombatant(), selection);
+  if (!resolved) return false;
+
+  broadcast((by) => ({ type: 'RESOLVE_INTERACTION', by, at: Date.now(), selection }));
+  return true;
+}
+
+/**
+ * Cancela a interação pendente e replica — devolve carta e energia nos dois
+ * clientes (a lógica de reembolso roda em cada aparelho, não é transmitida).
+ */
+export function netCancelInteraction(): boolean {
+  const cancelled = useGameStore.getState().cancelInteraction(getLocalCombatant());
+  if (!cancelled) return false;
+
+  broadcast((by) => ({ type: 'CANCEL_INTERACTION', by, at: Date.now() }));
+  return true;
+}
+
+/**
  * Confirma a pausa e replica.
  *
  * Só publica quem tem autoridade (ver `canLocalAcknowledge`). O outro cliente
@@ -342,6 +386,43 @@ function applyRemoteAction(action: StoredAction): void {
           '[syncBridge] DESSINCRONIA: a carta remota',
           action.uid,
           'foi recusada localmente.',
+        );
+      }
+      break;
+    }
+
+    case 'END_TURN': {
+      const passed = game.endTurn(combatant);
+      if (!passed) {
+        console.error(
+          '[syncBridge] DESSINCRONIA: o "passar a vez" remoto de',
+          combatant,
+          'foi recusado localmente. Turno local:',
+          useGameStore.getState().turn,
+        );
+      }
+      break;
+    }
+
+    case 'RESOLVE_INTERACTION': {
+      const resolved = game.resolveInteraction(combatant, action.selection);
+      if (!resolved) {
+        console.error(
+          '[syncBridge] DESSINCRONIA: a resolução remota de interação de',
+          combatant,
+          'foi recusada localmente.',
+        );
+      }
+      break;
+    }
+
+    case 'CANCEL_INTERACTION': {
+      const cancelled = game.cancelInteraction(combatant);
+      if (!cancelled) {
+        console.error(
+          '[syncBridge] DESSINCRONIA: o cancelamento remoto de interação de',
+          combatant,
+          'foi recusado localmente.',
         );
       }
       break;

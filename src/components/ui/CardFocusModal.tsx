@@ -74,13 +74,24 @@ function CardFocusModalComponent({ cardId, canConfirm, onCancel, onConfirm }: Ca
 
             <Text style={styles.name}>{card.name}</Text>
 
-            {/* A raridade só é legível aqui: na carta da mão ela é uma barra
-                colorida de 3dp, sem espaço para o nome escrito. Esta é a tela
-                onde o jogador para para ler, então é onde a legenda cabe. */}
-            <View style={[styles.rarityTag, { borderColor: rarityColor }]}>
-              <Text style={[styles.rarityText, { color: rarityColor }]}>
-                {RARITY_LABEL[card.rarity]}
-              </Text>
+            {/* Raridade e custo lêem juntos como metadados da carta — os dois
+                só são legíveis por extenso aqui: na mão (`<CardItem />`) a
+                raridade é uma barra colorida de 3dp e o custo, quando cabe,
+                vira uma tag igual a esta, sem texto de raridade nenhum. Esta
+                é a tela onde o jogador PARA pra decidir, então é onde os dois
+                rótulos cabem por extenso. Mesmo idioma visual: retângulo
+                chapado, sem `borderRadius` (README: pixel art sem borrão). */}
+            <View style={styles.metaRow}>
+              <View style={[styles.rarityTag, { borderColor: rarityColor }]}>
+                <Text style={[styles.rarityText, { color: rarityColor }]}>
+                  {RARITY_LABEL[card.rarity]}
+                </Text>
+              </View>
+              <View style={[styles.rarityTag, { borderColor: colors.winGlow }]}>
+                <Text style={[styles.rarityText, { color: colors.winGlow }]}>
+                  {card.cost}⚡
+                </Text>
+              </View>
             </View>
 
             <Text style={styles.description}>{card.description}</Text>
@@ -154,8 +165,12 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     textAlign: 'center',
   },
-  rarityTag: {
+  metaRow: {
     marginTop: 8,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  rarityTag: {
     borderWidth: 2,
     paddingHorizontal: 8,
     paddingVertical: 2,

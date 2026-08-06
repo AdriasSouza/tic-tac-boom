@@ -3,6 +3,7 @@ import * as Haptics from 'expo-haptics';
 import { memo, useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import EndTurnButton from './EndTurnButton';
 import { colors } from '@/theme/colors';
 
 export interface GameHeaderProps {
@@ -33,17 +34,25 @@ function GameHeaderComponent({ onPause }: GameHeaderProps) {
         TIC TAC <Text style={styles.logoBoom}>BOOM</Text>
       </Text>
 
-      <Pressable
-        onPress={handlePause}
-        style={({ pressed }) => [styles.pauseButton, pressed && styles.pauseButtonPressed]}
-        accessibilityRole="button"
-        accessibilityLabel="Pausar partida"
-        // A área de toque real é maior que a caixa visual — mantém o alvo
-        // fácil de acertar mesmo com o botão desenhado pequeno e discreto.
-        hitSlop={10}
-      >
-        <Ionicons name="pause" size={14} color={colors.text} />
-      </Pressable>
+      {/* Grupo da direita: passar a vez + pause, lado a lado. Mesmo tamanho
+          (`width:22 height:20`) nos dois — um segundo botão do MESMO tamanho
+          não muda a altura da linha, que é o que consome o orçamento do
+          `<Board />` (AGENTS.md). */}
+      <View style={styles.actions}>
+        <EndTurnButton />
+
+        <Pressable
+          onPress={handlePause}
+          style={({ pressed }) => [styles.pauseButton, pressed && styles.pauseButtonPressed]}
+          accessibilityRole="button"
+          accessibilityLabel="Pausar partida"
+          // A área de toque real é maior que a caixa visual — mantém o alvo
+          // fácil de acertar mesmo com o botão desenhado pequeno e discreto.
+          hitSlop={10}
+        >
+          <Ionicons name="pause" size={14} color={colors.text} />
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -68,6 +77,11 @@ const styles = StyleSheet.create({
   },
   logoBoom: {
     color: colors.markX,
+  },
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   pauseButton: {
     width: 22,

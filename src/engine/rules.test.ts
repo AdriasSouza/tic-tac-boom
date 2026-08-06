@@ -2,13 +2,16 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ENERGY_CAP,
+  canPlaceAt,
   createEmptyBoard,
   getVanishingIndex,
+  isHighlightedOldestValid,
   isImmuneToTraps,
   regenEnergy,
   type Board,
   type Piece,
 } from '@/engine/rules';
+import { createTestState } from '@/engine/testHelpers';
 
 function withPieces(owner: Piece['owner'], indexes: number[]): Board {
   const board = createEmptyBoard();
@@ -82,5 +85,59 @@ describe('getVanishingIndex — forced (ANOMALIA/OBSOLESCÊNCIA)', () => {
     const board = withPieces('MACHINE', [0, 1, 2]);
     const forced = { owner: 'PLAYER' as const, mode: 'RANDOM' as const };
     expect(getVanishingIndex(board, 'MACHINE', 'NORMAL', forced)).toBe(0);
+  });
+});
+
+describe('canPlaceAt — bloqueio de colocação da REBOBINAR', () => {
+  it('recusa colocação só para o combatente com a própria flag ativa', () => {
+    const state = createTestState({ turn: 'MACHINE', machinePlacementBlocked: true });
+    expect(canPlaceAt(state, 0, 'MACHINE')).toBe(false);
+  });
+
+  it('não afeta o outro lado — a flag é por combatente, não compartilhada', () => {
+    const state = createTestState({ turn: 'MACHINE', machinePlacementBlocked: true });
+    // PLAYER não está bloqueado (e nem é a vez dele, mas isso é outra guarda —
+    // aqui o que se prova é que `playerPlacementBlocked` continua `false`).
+    expect(state.playerPlacementBlocked).toBe(false);
+
+    const playerTurn = createTestState({ turn: 'PLAYER', machinePlacementBlocked: true });
+    expect(canPlaceAt(playerTurn, 0, 'PLAYER')).toBe(true);
+  });
+
+  it('sem nenhuma flag ativa, colocação segue liberada normalmente', () => {
+    const state = createTestState({ turn: 'PLAYER' });
+    expect(canPlaceAt(state, 0, 'PLAYER')).toBe(true);
+  });
+});
+
+describe('isHighlightedOldestValid — auto-invalidação do destaque de VIDENTE', () => {
+  it('sem destaque nenhum: inválido', () => {
+    expect(isHighlightedOldestValid(createTestState())).toBe(false);
+  });
+
+  it('a peça continua lá, mesmo owner e turnPlaced: válido', () => {
+    const board = withPieces('MACHINE', [2]); // turnPlaced 0
+    const state = createTestState({
+      board,
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 2, turnPlaced: 0 },
+    });
+    expect(isHighlightedOldestValid(state)).toBe(true);
+  });
+
+  it('a célula esvaziou (peça destruída/sumiu): inválido', () => {
+    const state = createTestState({
+      board: createEmptyBoard(),
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 2, turnPlaced: 0 },
+    });
+    expect(isHighlightedOldestValid(state)).toBe(false);
+  });
+
+  it('outra peça ocupou o mesmo índice depois (turnPlaced não bate): inválido', () => {
+    const board = withPieces('MACHINE', [2]); // turnPlaced 0, mas a marca esperava outro
+    const state = createTestState({
+      board,
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 2, turnPlaced: 99 },
+    });
+    expect(isHighlightedOldestValid(state)).toBe(false);
   });
 });

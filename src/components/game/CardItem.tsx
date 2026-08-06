@@ -14,9 +14,10 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { getCard } from '@/engine/cards/registry';
+import { useLayoutMode } from '@/hooks/useLayoutMode';
 import { netPlayCard } from '@/services/syncBridge';
 import { RARITY_COLOR } from '@/theme/rarity';
-import { useGameStore, type CardId } from '@/store/gameStore';
+import type { CardId } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 
 /* -------------------------------------------------------------------------- */
@@ -203,22 +204,13 @@ function CardItemComponent({
   }, [launching, translateX, translateY, dragging]);
 
   /**
-   * Carta **com** mira: não resolve nada. Arma `pendingAction` e volta para a
-   * mão em estado selecionado — o tabuleiro assume a escolha do alvo.
+   * Resolve a carta pela facade — sempre, sem ramo por `requiresTarget`
+   * (Fase 3: não existe mais uma ação separada de "armar mira"; `playCard`
+   * decide sozinho se resolve na hora ou abre uma interação, `BOARD_TARGET`
+   * incluso). Energia e mão comitam ao abrir QUALQUER interação agora (não
+   * só ao resolver), então em todos os casos a carta sai do leque — sucesso
+   * anima a saída (`exiting`, sem `springHome`); recusa volta pro leque.
    */
-  const beginTargeting = useCallback(() => {
-    const armed = useGameStore.getState().setPendingAction({ type: 'PLAY_CARD', uid, cardId });
-
-    void Haptics.impactAsync(
-      armed ? Haptics.ImpactFeedbackStyle.Rigid : Haptics.ImpactFeedbackStyle.Soft,
-    );
-    if (!armed) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-
-    springHome();
-    onDragEnd();
-  }, [uid, cardId, springHome, onDragEnd]);
-
-  /** Carta **sem** mira: resolve na hora. */
   const commitPlay = useCallback(() => {
     // Facade da ponte: replica para o oponente no modo online e escolhe entre
     // `playCard`/`playMachineCard` conforme o combatente local. Fora do
@@ -236,12 +228,6 @@ function CardItemComponent({
     springHome();
     onDragEnd();
   }, [uid, springHome, onDragEnd]);
-
-  /** Tocar a carta em mira cancela a seleção. */
-  const cancelTargeting = useCallback(() => {
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
-    useGameStore.getState().clearPendingAction();
-  }, []);
 
   /**
    * Toque numa carta que NÃO está em mira: abre o modo foco. Alternativa ao
@@ -261,8 +247,8 @@ function CardItemComponent({
     () =>
       Gesture.Pan()
         .enabled(canDrag)
-        // Limiar de ativação: sem isto o pan engole o tap e a carta em mira
-        // nunca poderia ser cancelada com um toque.
+        // Limiar de ativação: sem isto o pan engole o tap e um toque parado
+        // nunca abriria o modo foco.
         .activeOffsetX([-PAN_ACTIVATION, PAN_ACTIVATION])
         .activeOffsetY([-PAN_ACTIVATION, PAN_ACTIVATION])
         .onStart(() => {
@@ -286,15 +272,9 @@ function CardItemComponent({
             return;
           }
 
-          if (requiresTarget) {
-            // Volta para a mão; quem resolve agora é o tabuleiro.
-            translateX.value = withSpring(0, RETURN_SPRING);
-            translateY.value = withSpring(0, RETURN_SPRING);
-            runOnJS(beginTargeting)();
-            return;
-          }
-
-          // Congela onde soltou e resolve. Em caso de sucesso a carta some com
+          // Congela onde soltou e resolve pela facade — sem ramo por
+          // `requiresTarget` (Fase 3: o store decide sozinho se resolve na
+          // hora ou abre uma interação). Em caso de sucesso a carta some com
           // `exiting` a partir desta posição; em caso de recusa, `springHome`.
           launching.value = 1;
           runOnJS(commitPlay)();
@@ -304,32 +284,20 @@ function CardItemComponent({
             dragging.value = withTiming(0, { duration: 150 });
           }
         }),
-    [
-      canDrag,
-      requiresTarget,
-      playZoneBottom,
-      handlePickUp,
-      handleReject,
-      beginTargeting,
-      commitPlay,
-      dragging,
-      translateX,
-      translateY,
-      launching,
-    ],
+    [canDrag, playZoneBottom, handlePickUp, handleReject, commitPlay, dragging, translateX, translateY, launching],
   );
 
-  // Sempre habilitado (diferente de antes, quando só existia para cancelar a
-  // mira): agora um toque simples SEMPRE faz algo — cancela, se a carta já
-  // está selecionada; senão abre o foco. Nunca mais um "clique morto".
+  // Toque simples sempre abre o modo foco — não existe mais um estado
+  // "carta em mira" pra tocar de novo e cancelar (Fase 3: abrir QUALQUER
+  // interação já tira a carta do leque, então não há como um segundo toque
+  // chegar nela; cancelar é sempre pela faixa de instrução ou pelo modal).
   const tapGesture = useMemo(
     () =>
       Gesture.Tap().onEnd((_event, success) => {
         if (!success) return;
-        if (isSelected) runOnJS(cancelTargeting)();
-        else runOnJS(handleFocusTap)();
+        runOnJS(handleFocusTap)();
       }),
-    [isSelected, cancelTargeting, handleFocusTap],
+    [handleFocusTap],
   );
 
   // Race: o primeiro a ativar vence. Com o limiar do pan, um toque parado vira
@@ -370,6 +338,7 @@ function CardItemComponent({
 
   const accent = card.type === 'ACTION' ? colors.markX : colors.markO;
   const rarityColor = RARITY_COLOR[card.rarity];
+  const { mode: layoutMode } = useLayoutMode();
 
   /* --- Métrica interna -----------------------------------------------------
      Tudo escala junto com a carta a partir da MESMA razão. Calcular cada
@@ -430,37 +399,55 @@ function CardItemComponent({
               não sobra área para um rótulo escrito. */}
           <View style={[styles.rarityBar, { backgroundColor: rarityColor }]} pointerEvents="none" />
 
-          {/* Custo em ⚡, canto superior direito. Absoluto, mesma razão da
-              faixa de raridade: ocupa ZERO espaço de layout, então não pode
-              alterar `cardHeight` (e por consequência `handAreaHeight`, que
-              alimenta o orçamento do Board — ver AGENTS.md). Sempre visível,
-              inclusive custo 0 (Boom): esconder o badge nesse caso faria "sem
-              número" significar duas coisas (Boom de graça vs. erro de dado),
-              e com energia acumulável o jogador precisa do número pra decidir
-              ENTRE cartas, não só saber se a atual cabe. */}
+          {/* Linha de metadados: tipo + custo. EM FLUXO (não mais absoluta) —
+              ocupa a MESMA altura que a linha do tipo já reservava sozinha, em
+              QUALQUER modo, então não altera `cardHeight`/`handAreaHeight`
+              (AGENTS.md). Custo sempre visível, inclusive 0 (Boom): esconder
+              faria "sem número" significar duas coisas (Boom de graça vs. erro
+              de dado), e com energia acumulável o jogador precisa do número
+              pra decidir ENTRE cartas, não só saber se a atual cabe.
+
+              Em `compact` a carta (60-88dp) já não tem folga: o rótulo de tipo
+              sozinho já aparecia espremido e o nome já truncava. Espremer os
+              dois nessa mesma linha piora os dois — então ali a linha mostra
+              SÓ o custo (a informação acionável na hora de decidir: cabe na
+              energia agora?); tipo continua legível por extenso no
+              `<CardFocusModal />`, e raridade já está codificada na barra da
+              borda. Em `regular`/`wide` cabem os dois lado a lado. */}
           <View
             style={[
-              styles.costBadge,
-              {
-                width: Math.round(18 * s),
-                height: Math.round(18 * s),
-                borderRadius: Math.round(9 * s),
-              },
+              styles.metaRow,
+              { justifyContent: layoutMode === 'compact' ? 'flex-end' : 'space-between' },
             ]}
-            pointerEvents="none"
           >
-            <Text
-              style={[styles.costBadgeText, { fontSize: Math.max(6, Math.round(8 * s)) }]}
-              numberOfLines={1}
-            >
-              {card.cost}⚡
-            </Text>
-          </View>
+            {layoutMode !== 'compact' && (
+              <Text
+                style={[styles.type, { color: accent, fontSize: Math.max(6, Math.round(7 * s)) }]}
+                numberOfLines={1}
+              >
+                {requiresTarget ? '◎ ' : ''}
+                {card.type}
+              </Text>
+            )}
 
-          <Text style={[styles.type, { color: accent, fontSize: Math.max(6, Math.round(7 * s)) }]} numberOfLines={1}>
-            {requiresTarget ? '◎ ' : ''}
-            {card.type}
-          </Text>
+            <View
+              style={[
+                styles.costTag,
+                {
+                  borderColor: colors.winGlow,
+                  paddingHorizontal: Math.round(4 * s),
+                  paddingVertical: Math.round(1 * s),
+                },
+              ]}
+            >
+              <Text
+                style={[styles.costTagText, { fontSize: Math.max(6, Math.round(8 * s)) }]}
+                numberOfLines={1}
+              >
+                {card.cost}⚡
+              </Text>
+            </View>
+          </View>
 
           <View style={[styles.artSlot, { borderColor: accent, width: artSize, height: artSize }]}>
             {/* TODO(fase 5): <Image source={cardSprite(card.id)} /> */}
@@ -554,19 +541,23 @@ const styles = StyleSheet.create({
     left: 0,
     width: 3,
   },
-  costBadge: {
-    position: 'absolute',
-    top: 3,
-    right: 3,
-    backgroundColor: colors.bgDeep,
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'stretch',
+  },
+  // Tag retangular chapada, sem borderRadius (README: pixel art sem borrão)
+  // — mesmo idioma visual de rarityTag/type, só a forma do custo mudou (era
+  // um círculo flutuante na Fase 2.6).
+  costTag: {
     borderWidth: 1,
-    borderColor: colors.winGlow,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  costBadgeText: {
+  costTagText: {
     color: colors.winGlow,
     fontWeight: '800',
+    letterSpacing: 1,
   },
   type: {
     letterSpacing: 2,

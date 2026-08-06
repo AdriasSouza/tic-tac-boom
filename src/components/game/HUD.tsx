@@ -23,6 +23,7 @@ import {
   selectEnergy,
   selectMachineHp,
   selectPlayerHp,
+  selectReservedEnergy,
   selectStatus,
   selectTurn,
   useGameStore,
@@ -301,6 +302,11 @@ const HpTracker = memo(function HpTracker({
   const blocks = useMemo(() => Array.from({ length: INITIAL_HP }, (_, i) => i), []);
 
   const energy = useGameStore(useMemo(() => selectEnergy(target), [target]));
+  // Pips logo acima de `energy` que só estão vazios porque uma interação
+  // pendente DESTE combatente já debitou o custo ao abrir (timing unificado,
+  // Fase 3) — voltam a `energy` se ele cancelar. Ganham contorno tracejado em
+  // vez de vazio liso, sinalizando "reservado" em vez de "gasto".
+  const reserved = useGameStore(useMemo(() => selectReservedEnergy(target), [target]));
   const energyPips = useMemo(() => Array.from({ length: ENERGY_CAP }, (_, i) => i), []);
   // Menor que o bloco de HP DE PROPÓSITO: a altura desta fileira (`styles.blocks`)
   // é ditada pelo maior filho, e o bloco de HP já é esse filho — um pip que
@@ -349,7 +355,11 @@ const HpTracker = memo(function HpTracker({
             um rótulo novo (que custaria altura). */}
         <View style={{ width: Math.max(4, Math.round(blockSize * 0.4)) }} />
         {energyPips.map((i) => (
-          <EnergyPip key={i} filled={i < energy} size={energyPipSize} />
+          <EnergyPip
+            key={i}
+            state={i < energy ? 'FILLED' : i < energy + reserved ? 'RESERVED' : 'EMPTY'}
+            size={energyPipSize}
+          />
         ))}
       </View>
     </Animated.View>
@@ -416,8 +426,18 @@ const HpBlock = memo(function HpBlock({ filled, breaking, accent, damage, size }
 /*                                ENERGY PIP                                   */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * - `FILLED`   — energia disponível agora.
+ * - `RESERVED` — vazio só porque uma interação pendente deste combatente já
+ *   debitou o custo ao abrir; volta a `FILLED` se ele cancelar. Visualmente
+ *   idêntico a `EMPTY` exceto pela borda (tracejada) — nunca muda o tamanho
+ *   do slot, então não pode alterar a altura da fileira (`styles.blocks`).
+ * - `EMPTY`    — sem energia, sem reserva.
+ */
+type EnergyPipState = 'FILLED' | 'RESERVED' | 'EMPTY';
+
 interface EnergyPipProps {
-  filled: boolean;
+  state: EnergyPipState;
   /** Lado do pip em dp — sempre <= `blockSize` (ver `energyPipSize` em `HpTracker`). */
   size: number;
 }
@@ -427,11 +447,18 @@ interface EnergyPipProps {
  * animação de dano/quebra: energia não tem evento de "perder" digno de flash,
  * só sobe e desce em silêncio a cada turno.
  */
-const EnergyPip = memo(function EnergyPip({ filled, size }: EnergyPipProps) {
+const EnergyPip = memo(function EnergyPip({ state, size }: EnergyPipProps) {
   return (
     <View style={[styles.blockSlot, { width: size, height: size }]}>
-      <View style={[styles.blockEmpty, { borderColor: colors.winGlow }]} pointerEvents="none" />
-      {filled && (
+      <View
+        style={[
+          styles.blockEmpty,
+          { borderColor: colors.winGlow },
+          state === 'RESERVED' && styles.energyPipReservedBorder,
+        ]}
+        pointerEvents="none"
+      />
+      {state === 'FILLED' && (
         <View
           style={[
             styles.energyPipFill,
@@ -655,6 +682,13 @@ const styles = StyleSheet.create({
   },
   energyPipFill: {
     backgroundColor: colors.winGlow,
+  },
+  // Só troca o traço da borda (tracejado) — herda largura/cor/opacidade de
+  // `blockEmpty`, então não pode mudar o tamanho do pip nem a altura da
+  // fileira (mesma garantia estrutural do `energyPipSize`, ver `HpTracker`).
+  energyPipReservedBorder: {
+    borderStyle: 'dashed',
+    opacity: 0.6,
   },
 
   /* Badge central */

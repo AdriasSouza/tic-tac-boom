@@ -189,7 +189,13 @@
   - **Custo:** 2⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
   - **Efeito exato:** Destaca visualmente, só para o jogador que a jogou, qual é a peça "mais
     velha" do oponente (a próxima que sumiria sozinha pela regra do infinito, ao ele colocar a 4ª
-    peça). Não marca nada no estado do jogo, não destrói nada — é leitura pura.
+    peça). Não altera a fila do "infinito" nem destrói nada — é leitura pura; o destaque em si É
+    estado efêmero (`highlightedOldestFor`, `src/engine/rules.ts`), consultado só pela
+    apresentação, nunca por outra regra do motor. Expira quando o turno de quem jogou termina, ou
+    antes disso se a peça destacada sair do tabuleiro por outro caminho (auto-invalidação por
+    identidade — mesma ideia do `forcedVanish`/OBSOLESCÊNCIA). Implementado na Fase 2.6 (a Fase 2
+    só devolvia `log`/`notice`, sem nada acender no tabuleiro — regressão do glow removido junto
+    de `doomedCell`, corrigida aqui com mecanismo próprio).
   - **Abre modal:** Não (destaque na própria tela do tabuleiro). **Exige alvo no tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Não coberta por
     PROTEÇÃO (não lê/retira mão) nem por RICOCHETE (não é um efeito direcionado a você — é leitura
@@ -357,27 +363,29 @@
     técnico (`SPY_CARD` → `SABOTAGE`), aleatório vira escolha manual, custo sobe de 2⚡ para 3⚡. O
     nome "ESPIONAGEM" passa a ser outra carta, pura informação (ver Raras/Épicas).
 
-  ### REBOBINAR (`REBOBINAR`, novo)
+  ### REBOBINAR (`REBOBINAR`)
   - **Custo:** 3⚡ · **Categoria (PDF):** Punição · **Tipo (motor):** `ACTION`
   - **Efeito exato:** O oponente TEM o turno normalmente — recupera energia, joga cartas, arma
-    armadilhas — mas não pode colocar peça (X/O) no tabuleiro nessa vez. Mecanismo NOVO no motor:
-    distinto de `extraTurnPending` (que pula a alternância de turno inteira). Precisa de um estado
-    próprio (ex: `placementBlockedFor: Combatant | null`), consultado só pela guarda que permite
-    colocar peça — todo o resto do turno do oponente (mão, energia, armadilhas) segue normal.
+    armadilhas — mas não pode colocar peça (X/O) no tabuleiro nessa vez. Mecanismo próprio no motor,
+    distinto de `extraTurnPending` (que pula a alternância de turno inteira): dois campos
+    independentes, `playerPlacementBlocked`/`machinePlacementBlocked` (booleans, um por combatente —
+    **não** um `Combatant | null` único como a primeira leitura desta entrada sugeria; ver
+    `docs/NOTAS_TECNICAS.md`, 5º critério da auditoria de campos transitórios), consultados só pela
+    guarda que permite colocar peça (`canPlaceAt`) — todo o resto do turno do oponente (mão, energia,
+    armadilhas) segue normal. Sem `canPlay`: sempre jogável, inclusive contra um alvo já bloqueado
+    (dois turnos seguidos é jogada tática legítima) e mesmo com o PRÓPRIO caster bloqueado (jogar
+    aqui não desbloqueia quem joga).
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
   - **Casos de borda:** não se aplicam edge cases de mão/tabuleiro.
   - **Nota de migração:** carta NOVA. Ver TURNO_EXTRA logo abaixo — as duas foram confirmadas como
     mecanismos DIFERENTES, não uma duplicata renomeada.
-  - **Pré-requisito descoberto na Fase 2 — não implementada ainda.** Investigação: o mecanismo
-    ("oponente TEM o turno mas não pode colocar peça") exige que aquele turno consiga TERMINAR sem
-    colocar peça. `endTurn` (`src/store/gameStore.ts`) já existe na store mas hoje não tem NENHUM
-    consumidor — nem botão de UI, nem `useCpuOpponent`/`playCPUTurn`, nem `syncBridge`. Implementar
-    só um `placementBlockedFor` + guarda em `canPlaceAt` sem isso trava o lado bloqueado (humano ou
-    CPU) sem forma de passar a vez — soft-lock. Isto é motor de turno, não interação: vira
-    **Fase 2.5**, tarefa própria (dar consumidor ao `endTurn` primeiro — botão "passar a vez" +
-    caminho em `playCPUTurn` — só depois `placementBlockedFor`), separada da Fase 3
-    (`pendingInteraction`/modais).
+  - **Implementada na Fase 2.5.** O pré-requisito identificado na Fase 2 (`endTurn` sem consumidor)
+    foi resolvido ali mesmo: `endTurn` agora exige `combatant` e valida turno/status/pausa/confirmação
+    (mesma guarda de `placeMark`), tem consumidor humano (botão "passar a vez" no `GameHeader`, com
+    confirmação — a ação é irreversível), consumidor de CPU (`playCPUTurn` chama `endTurn` quando
+    `chooseCpuMove` não decide nada, inclusive por estar bloqueada) e consumidor de rede (`netEndTurn`,
+    ação `END_TURN`).
 
   ### TURNO EXTRA (`TURNO_EXTRA` — hoje `EXTRA_TURN`)
   - **Custo:** 3⚡ · **Categoria (PDF):** sem categoria própria no PDF (carta preservada por
@@ -474,6 +482,29 @@
     mostra um `acknowledge` — nunca implementou reveal por carta nem expiração. Precisa de estado
     PRÓPRIO com temporizador (turno em que a revelação cai) — NÃO reaproveitar
     `playerRevealedUids`/`machineRevealedUids` (monotônico, sem limpeza, feito pra ESPIADA).
+  - **Nota para a Fase 3 (contrato `pendingInteraction`):**
+    1. O modal revela TODAS as cartas de uma vez, automaticamente, ao abrir — sem clique de
+       seleção nenhum. É EXIBIÇÃO, não interação: não precisa de um `kind` próprio de
+       `pendingInteraction`, só de um modal de leitura (mostra e espera confirmação, como o
+       `AcknowledgementModal` de hoje já faz). Simplifica o contrato da Fase 3, que não
+       precisa prever um formato de "seleção" para esta carta.
+    2. **A persistência da revelação fica EM ABERTO, para revisitar no rebalanceamento (depois
+       das 29 cartas).** Duas opções:
+       - (a) expira no fim do turno, como a spec já diz acima — mantém o contraste
+         "barata-e-permanente" (ESPIADA) vs. "cara-total-e-fugaz" (esta carta);
+       - (b) persiste como ESPIADA (`playerRevealedUids`/`machineRevealedUids`), e o que
+         passa a diferenciar as duas cartas é a AMPLITUDE (mão inteira vs. 1 carta), não
+         mais a duração.
+       Implementar (a) na Fase 3 — é o que está especificado hoje — mas isolar o mecanismo de
+       expiração (o temporizador em si) o suficiente para trocar por (b) mais tarde sem
+       reescrever a carta: o `effect` decide QUAL carta revelar, o temporizador é um
+       mecanismo separado que decide QUANDO a revelação para de valer, e só esse segundo
+       mecanismo muda entre (a) e (b).
+    3. **Registro explícito:** o comportamento observado hoje — "revela só enquanto o modal
+       está aberto, some depois" — NÃO é um temporizador com bug. É o efeito de revelação
+       nunca ter sido implementado (só o resumo/contagem existe, ver "Nota de migração"
+       acima); o que parece "expiração" é só o modal fechando. A Fase 3 constrói a revelação
+       (e o temporizador de verdade) do zero, não conserta um mecanismo existente.
 
   ### PERMUTA CAÓTICA (`HAND_SWAP` — hoje `CARD_TRADE`)
   - **Custo:** 3⚡ · **Categoria (PDF):** Manipulação · **Tipo (motor):** `ACTION`
@@ -570,6 +601,15 @@
   - **Nota de migração:** EFEITO ALTERADO. Hoje o modal abre e `sacrificeCards` remove as 2 cartas
     escolhidas, mas a invocação da carta fundida em troca AINDA NÃO EXISTE — falta implementar
     a geração (sorteio pelo canal `CARDS`, dentro da raridade calculada) e a entrega ao jogador.
+  - **Migração para `pendingInteraction` (Fase 3 → Fase 6):** a Fase 3 introduziu o `kind`
+    `SACRIFICE_DRAG` na union de `PendingInteraction` (drag-and-drop entre 2 slots, sem modal de
+    confirmação por carta), mas deliberadamente NÃO migrou o Altar para ele — `lastAltarPrompt`/
+    `AltarModal` continuam exatamente como estão, cobertos só no tipo e em teste de mecanismo
+    (fixture sintética, `SACRIFICE_DRAG` nunca aberto por `getCard`/`effect` de verdade ainda). A
+    migração de fato — `ALTAR_OF_SACRIFICE.effect` passando a devolver `{ interaction: { kind:
+    'SACRIFICE_DRAG', ... } }` em vez de popular `lastAltarPrompt` diretamente — acontece na Fase
+    6, junto da invocação da carta fundida (o item acima, "AINDA NÃO EXISTE"): as duas mudanças
+    tocam o mesmo `effect()` e fazem mais sentido como uma entrega só.
 
   ---
 

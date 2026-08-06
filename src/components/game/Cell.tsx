@@ -19,12 +19,13 @@ import {
   isLocalTurn,
   isOpponentConnected,
   netPlaceMark,
-  netPlayCard,
+  netResolveInteraction,
 } from '@/services/syncBridge';
 import {
   canPlaceAt,
   isPendingTarget,
   selectCell,
+  selectHighlightedOldest,
   selectIsBlocked,
   selectIsCardLocked,
   selectIsTargeting,
@@ -52,6 +53,18 @@ const X_BAR_RATIO = 0.18;
 
 /** Duração de meio ciclo do pisca-pisca de alvo válido. */
 const TARGET_PULSE_DURATION = 420;
+
+/**
+ * Duração de meio ciclo do glow de VIDENTE — sensivelmente mais lento que o
+ * de alvo válido (`TARGET_PULSE_DURATION`) de propósito: os dois nunca
+ * coexistem de fato (mira exige uma interação `BOARD_TARGET` pendente, que
+ * impede jogar outra carta nesse instante), mas o ritmo diferente deixa a
+ * leitura inequívoca
+ * mesmo assim — reaproveita a MESMA cor (`colors.winGlow`, já é a cor de
+ * "informação de carta", ver o badge de custo), só com forma e cadência
+ * distintas (borda tracejada, pulso mais lento).
+ */
+const VISION_PULSE_DURATION = 900;
 
 /* -------------------------------------------------------------------------- */
 /*                                    PROPS                                    */
@@ -81,7 +94,23 @@ function CellComponent({ index, size }: CellProps) {
   const isTargeting = useGameStore(selectIsTargeting);
   const isValidTarget = useGameStore(useMemo(() => selectIsValidTarget(index), [index]));
   // Define qual peça é "minha" para efeito de cor — ver `colorFor`.
-  const { localCombatant } = useMatchPerspective();
+  const { localCombatant, isOnline } = useMatchPerspective();
+
+  /**
+   * VIDENTE: "só para quem jogou" só faz sentido gatear por IDENTIDADE fixa
+   * (`localCombatant`) no ONLINE, onde os dois lados são aparelhos
+   * fisicamente separados. Fora do online (`isOnline === false` cobre CPU E
+   * `/game/local` hot-seat) `localCombatant` é sempre `'PLAYER'` — mas em
+   * hot-seat `MACHINE` é um segundo HUMANO no mesmo aparelho, então esconder
+   * por essa identidade fixa esconderia o destaque de quem joga de MACHINE
+   * ali. Como o destaque só existe enquanto é o turno de quem o lançou (ver
+   * limpeza em `placeMark`/`endTurn`), mostrar sempre que estiver aceso é
+   * seguro e correto fora do online — a tela já é compartilhada, esconder
+   * não protegeria nada.
+   */
+  const highlighted = useGameStore(selectHighlightedOldest);
+  const isHighlightedByVidente =
+    highlighted?.index === index && (!isOnline || highlighted.caster === localCombatant);
 
   /* --- Shared values (rodam na UI thread, zero re-render) ----------------- */
   const pulse = useSharedValue(1); // 1 = opaco, 0 = quase apagado
@@ -89,6 +118,7 @@ function CellComponent({ index, size }: CellProps) {
   const pop = useSharedValue(piece ? 1 : 0); // animação de entrada da peça
   const shake = useSharedValue(0); // tremida de jogada inválida
   const targetGlow = useSharedValue(0); // 0..1 — pisca-pisca de alvo válido
+  const visionGlow = useSharedValue(0); // 0..1 — glow do destaque de VIDENTE
 
   /* --- Pulso contínuo da peça condenada ----------------------------------- */
   useEffect(() => {
@@ -127,6 +157,25 @@ function CellComponent({ index, size }: CellProps) {
     return () => cancelAnimation(targetGlow);
   }, [isValidTarget, targetGlow]);
 
+  /** --- Glow do destaque de VIDENTE ----------------------------------------
+   * Variável própria (`visionGlow`), independente do pulso de "vai sumir" e
+   * do glow de mira — cada efeito tem semântica própria e não deve competir
+   * com os outros dois. */
+  useEffect(() => {
+    if (isHighlightedByVidente) {
+      visionGlow.value = withRepeat(
+        withTiming(1, { duration: VISION_PULSE_DURATION, easing: Easing.inOut(Easing.quad) }),
+        -1,
+        true,
+      );
+    } else {
+      cancelAnimation(visionGlow);
+      visionGlow.value = withTiming(0, { duration: 140 });
+    }
+
+    return () => cancelAnimation(visionGlow);
+  }, [isHighlightedByVidente, visionGlow]);
+
   /* --- Entrada da peça ----------------------------------------------------
      Depende de `turnPlaced`, não da existência da peça: assim uma peça que
      some e outra que nasce na mesma célula reanimam corretamente.            */
@@ -159,6 +208,12 @@ function CellComponent({ index, size }: CellProps) {
   const targetOverlayStyle = useAnimatedStyle(() => ({
     opacity: interpolate(targetGlow.value, [0, 1], [0.25, 0.9]),
     borderWidth: interpolate(targetGlow.value, [0, 1], [2, 3]),
+  }));
+
+  /** Overlay do destaque de VIDENTE. Mesma cor do alvo válido, forma diferente
+   * (borda tracejada) — os dois nunca coexistem, mas a leitura fica inequívoca. */
+  const visionOverlayStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(visionGlow.value, [0, 1], [0.35, 0.9]),
   }));
 
   /* --- Interação ----------------------------------------------------------- */
@@ -201,8 +256,9 @@ function CellComponent({ index, size }: CellProps) {
     }
 
     /* --- Modo mira intercepta tudo ---------------------------------------
-       Com pendingAction ativo o toque resolve a carta, nunca posiciona peça. */
-    if (state.pendingAction) {
+       Com uma interação BOARD_TARGET pendente o toque resolve a carta, nunca
+       posiciona peça. */
+    if (state.pendingInteraction?.kind === 'BOARD_TARGET') {
       if (!isPendingTarget(state, index)) {
         rejectFeedback();
         return;
@@ -210,9 +266,9 @@ function CellComponent({ index, size }: CellProps) {
 
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       // Pela facade da ponte, não pelo store direto: é ela que replica a
-      // jogada para o oponente e que escolhe entre `playCard`/`playMachineCard`
-      // conforme o combatente que este cliente controla.
-      if (!netPlayCard(state.pendingAction.uid, index)) rejectFeedback();
+      // resolução para o oponente e resolve pelo combatente que este cliente
+      // controla (`getLocalCombatant()`, dentro de `netResolveInteraction`).
+      if (!netResolveInteraction({ kind: 'BOARD_TARGET', index })) rejectFeedback();
       return;
     }
 
@@ -249,7 +305,14 @@ function CellComponent({ index, size }: CellProps) {
       onPressOut={handlePressOut}
       // A célula sempre aceita toque: jogada inválida precisa do haptic de erro.
       accessibilityRole="button"
-      accessibilityLabel={buildA11yLabel(index, piece?.mark ?? null, isBlocked, isVanishing, isValidTarget)}
+      accessibilityLabel={buildA11yLabel(
+        index,
+        piece?.mark ?? null,
+        isBlocked,
+        isVanishing,
+        isValidTarget,
+        isHighlightedByVidente,
+      )}
       style={{ width: size, height: size }}
     >
       <Animated.View
@@ -304,6 +367,12 @@ function CellComponent({ index, size }: CellProps) {
         {/* Alvo inválido durante a mira: escurece para dirigir o olhar. */}
         {isTargeting && !isValidTarget && (
           <View style={styles.targetDimmed} pointerEvents="none" />
+        )}
+
+        {/* Destaque de VIDENTE: peça mais antiga do oponente, visível só para
+            quem jogou a carta (ver `isHighlightedByVidente`). */}
+        {isHighlightedByVidente && (
+          <Animated.View style={[styles.visionOverlay, visionOverlayStyle]} pointerEvents="none" />
         )}
       </Animated.View>
     </Pressable>
@@ -418,15 +487,17 @@ function buildA11yLabel(
   isBlocked: boolean,
   isVanishing: boolean,
   isValidTarget: boolean,
+  isHighlightedByVidente: boolean,
 ): string {
   const row = Math.floor(index / 3) + 1;
   const col = (index % 3) + 1;
   const base = `Linha ${row}, coluna ${col}`;
   const target = isValidTarget ? ', alvo válido para a carta' : '';
+  const highlight = isHighlightedByVidente ? ', destacada pela VIDENTE' : '';
 
   if (isBlocked) return `${base}, célula bloqueada${target}`;
   if (!mark) return `${base}, vazia${target}`;
-  return `${base}, peça ${mark}${isVanishing ? ', prestes a desaparecer' : ''}${target}`;
+  return `${base}, peça ${mark}${isVanishing ? ', prestes a desaparecer' : ''}${highlight}${target}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -476,5 +547,13 @@ const styles = StyleSheet.create({
   targetDimmed: {
     ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  // Mesma cor do targetOverlay (colors.winGlow), forma diferente — tracejado,
+  // não sólido — para não ler como "célula clicável" (ver VISION_PULSE_DURATION).
+  visionOverlay: {
+    ...StyleSheet.absoluteFill,
+    borderWidth: 3,
+    borderStyle: 'dashed',
+    borderColor: colors.winGlow,
   },
 });

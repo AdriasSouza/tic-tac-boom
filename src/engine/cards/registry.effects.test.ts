@@ -358,13 +358,15 @@ describe('RICOCHETE (REFLECT_TRAP) — carta nova: inverte quando bem definido, 
 /*                                   VIDENTE                                   */
 /* -------------------------------------------------------------------------- */
 
-describe('VIDENTE (HIGHLIGHT_OLDEST) — carta nova: leitura pura, sem estado', () => {
+describe('VIDENTE (HIGHLIGHT_OLDEST) — carta nova: leitura pura, mas o destaque em si é estado efêmero (Fase 2.6)', () => {
   const card = getCard('HIGHLIGHT_OLDEST');
 
   it('VIDENTE: destaca a peça mais antiga com só 1 peça no tabuleiro (confirmado — com menos de 3 peças a informação já é óbvia de graça olhando o tabuleiro; jogar a carta ali é decisão ruim do jogador, não estado inválido, e canPlay não existe para proteger de decisão ruim)', () => {
     const state = createTestState({ board: boardWith({ 2: piece('MACHINE', 0) }) });
     const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
-    expect(result?.patch).toBeUndefined();
+    expect(result?.patch).toEqual({
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 2, turnPlaced: 0 },
+    });
     expect(result?.log).toMatchObject({ code: 'CARD_HIGHLIGHT_OLDEST', subject: 'PLAYER', target: 'MACHINE', value: 2 });
   });
 
@@ -372,6 +374,7 @@ describe('VIDENTE (HIGHLIGHT_OLDEST) — carta nova: leitura pura, sem estado', 
     const state = createTestState({ board: boardWith({ 0: piece('MACHINE', 5), 1: piece('MACHINE', 2) }) });
     const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
     expect(result?.log?.value).toBe(1); // turnPlaced 2 < 5
+    expect(result?.patch?.highlightedOldestFor).toMatchObject({ index: 1, turnPlaced: 2 });
   });
 
   it('canPlay: indisponível com o oponente sem nenhuma peça', () => {
@@ -472,5 +475,42 @@ describe('PERMUTA CAÓTICA (HAND_SWAP) — efeito alterado: 1 carta aleatória �
 
   it('sem canPlay — troca ocorre mesmo com a mão do oponente vazia (decisão já registrada em docs/CARTAS.md)', () => {
     expect(card.canPlay).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                  REBOBINAR                                  */
+/* -------------------------------------------------------------------------- */
+
+describe('REBOBINAR — carta nova (Fase 2.5): bloqueia colocação do oponente, resto do turno normal', () => {
+  const card = getCard('REBOBINAR');
+
+  it('marca a flag de bloqueio do OPONENTE, sem tocar a do próprio caster', () => {
+    const state = createTestState();
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.patch).toEqual({ machinePlacementBlocked: true });
+  });
+
+  it('funciona nos dois sentidos — MACHINE mirando PLAYER bloqueia playerPlacementBlocked', () => {
+    const state = createTestState();
+    const result = card.effect({ state, caster: 'MACHINE', uid: 'x', rng });
+    expect(result?.patch).toEqual({ playerPlacementBlocked: true });
+  });
+
+  it('sem canPlay — sempre jogável, mesmo recarimbando um alvo já bloqueado (dois turnos seguidos é jogada legítima, não desperdício a evitar)', () => {
+    expect(card.canPlay).toBeUndefined();
+
+    const alreadyBlocked = createTestState({ machinePlacementBlocked: true });
+    const result = card.effect({ state: alreadyBlocked, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.patch).toEqual({ machinePlacementBlocked: true });
+  });
+
+  it('sem canPlay — jogável mesmo com o PRÓPRIO caster bloqueado (jogar aqui não desbloqueia quem joga)', () => {
+    const casterBlocked = createTestState({ playerPlacementBlocked: true });
+    const result = card.effect({ state: casterBlocked, caster: 'PLAYER', uid: 'x', rng });
+    // O efeito só toca a flag do OPONENTE — a do próprio caster não está no
+    // patch, então ela continua `true` até o caster terminar o próprio turno.
+    expect(result?.patch).toEqual({ machinePlacementBlocked: true });
+    expect(result?.patch).not.toHaveProperty('playerPlacementBlocked');
   });
 });

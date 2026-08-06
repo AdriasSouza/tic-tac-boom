@@ -16,7 +16,7 @@ import { CardFocusModal } from '@/components/ui/CardFocusModal';
 import { useCanPlayCardsNow, useIsLocalTurn } from '@/hooks/useLocalTurn';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
-import { netPlayCard } from '@/services/syncBridge';
+import { netCancelInteraction, netPlayCard } from '@/services/syncBridge';
 import { selectMultiplayerStatus, useMultiplayerStore } from '@/store/multiplayerStore';
 import { colors } from '@/theme/colors';
 import { getCard } from '@/engine/cards/registry';
@@ -25,7 +25,7 @@ import {
   selectEnergy,
   selectHandOf,
   selectHasPendingAcknowledgement,
-  selectPendingAction,
+  selectPendingInteraction,
   selectStatus,
   useGameStore,
   type CardId,
@@ -90,15 +90,20 @@ export function CardHand({ style }: CardHandProps) {
   const isLocalTurn = useIsLocalTurn();
   const isOnline = useMultiplayerStore(selectMultiplayerStatus) === 'MATCH_STARTED';
   const status = useGameStore(selectStatus);
-  const pendingAction = useGameStore(selectPendingAction);
-  const clearPendingAction = useGameStore((s) => s.clearPendingAction);
+  const pendingInteraction = useGameStore(selectPendingInteraction);
   // Uma armadilha revelada ou carta de espionagem pausando o jogo: nem
   // arrastar, nem abrir o modo foco fazem sentido enquanto isso está na tela.
   const hasPendingAcknowledgement = useGameStore(selectHasPendingAcknowledgement);
   const { width, height } = useWindowDimensions();
   const { cardWidth, cardHeight, fanSpacing, handAreaHeight } = useResponsiveLayout();
 
-  const isTargeting = pendingAction !== null;
+  // Qualquer interação pendente trava mão/tabuleiro pra outra ação (regra do
+  // contrato, Fase 3) — `isTargeting` é o caso ESPECÍFICO de `BOARD_TARGET`,
+  // que é quem tem a própria faixa "◎ ESCOLHA UM ALVO" abaixo; os outros
+  // `kind`s ganham UI própria no `<InteractionModal />`, montado no root da
+  // tela, não aqui.
+  const isInteracting = pendingInteraction !== null;
+  const isTargeting = pendingInteraction?.kind === 'BOARD_TARGET';
 
   /* --- Modo foco -----------------------------------------------------------
      Estado local (não vive na store): é puramente apresentacional, não afeta
@@ -111,13 +116,15 @@ export function CardHand({ style }: CardHandProps) {
 
   const handleFocusCard = useCallback(
     (uid: string) => {
-      // Não abre foco em cima de uma mira já ativa (de outra carta, via
-      // arrasto), nem enquanto uma confirmação manual pausa o jogo — os
-      // dois casos evitariam dois fluxos de resolução disputando a vez.
-      if (isTargeting || hasPendingAcknowledgement) return;
+      // Não abre foco em cima de QUALQUER interação já pendente (mira de
+      // outra carta, escolha de carta oculta, etc — via arrasto ou já
+      // resolvendo em outro modal), nem enquanto uma confirmação manual
+      // pausa o jogo — os dois casos evitariam dois fluxos de resolução
+      // disputando a vez.
+      if (isInteracting || hasPendingAcknowledgement) return;
       setFocusedUid(uid);
     },
-    [isTargeting, hasPendingAcknowledgement],
+    [isInteracting, hasPendingAcknowledgement],
   );
 
   const handleCancelFocus = useCallback(() => {
@@ -127,27 +134,17 @@ export function CardHand({ style }: CardHandProps) {
 
   const handleConfirmFocus = useCallback(() => {
     if (!focusedEntry) return;
-    const { uid, cardId } = focusedEntry;
-    const card = getCard(cardId);
+    const { uid } = focusedEntry;
 
-    if (card.type !== 'TRAP' && card.requiresTarget) {
-      // Carta com alvo: sai do foco e entra em modo mira — o tabuleiro
-      // assume a partir daqui, exatamente como no fluxo de arrastar.
-      const armed = useGameStore.getState().setPendingAction({ type: 'PLAY_CARD', uid, cardId });
-      void Haptics.impactAsync(
-        armed ? Haptics.ImpactFeedbackStyle.Rigid : Haptics.ImpactFeedbackStyle.Soft,
-      );
-      if (!armed) void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-    } else {
-      // Sem alvo (ou TRAP, que sempre arma direto): resolve na hora.
-      // Facade da ponte — ver `netPlayCard`. Replica no online, repassa no local.
-      const played = netPlayCard(uid);
-      void Haptics.notificationAsync(
-        played
-          ? Haptics.NotificationFeedbackType.Success
-          : Haptics.NotificationFeedbackType.Error,
-      );
-    }
+    // Sempre pela mesma facade, sem ramo por tipo de carta — o STORE decide
+    // sozinho se resolve na hora, abre `BOARD_TARGET` (carta com alvo) ou
+    // outro `kind` de interação (Fase 3: não existe mais uma ação separada
+    // de "armar mira", `playCard` cobre tudo). Ver `netPlayCard`. Replica no
+    // online, repassa no local.
+    const played = netPlayCard(uid);
+    void Haptics.notificationAsync(
+      played ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Error,
+    );
 
     setFocusedUid(null);
   }, [focusedEntry]);
@@ -224,8 +221,8 @@ export function CardHand({ style }: CardHandProps) {
 
   const handleCancelTargeting = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
-    clearPendingAction();
-  }, [clearPendingAction]);
+    netCancelInteraction();
+  }, []);
 
   /**
    * Geometria pré-calculada: recomputa quando a mão ou a tela mudam.
@@ -276,7 +273,7 @@ export function CardHand({ style }: CardHandProps) {
       )}
 
       {/* Faixa de instrução — sem ela, o modo mira vira um beco sem saída. */}
-      {isTargeting && (
+      {pendingInteraction?.kind === 'BOARD_TARGET' && (
         <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)}>
           <Pressable
             onPress={handleCancelTargeting}
@@ -285,7 +282,7 @@ export function CardHand({ style }: CardHandProps) {
             accessibilityLabel="Cancelar seleção de alvo"
           >
             <Text style={styles.targetBannerText}>
-              ◎ ESCOLHA UM ALVO · {getCard(pendingAction.cardId).name}
+              ◎ ESCOLHA UM ALVO · {getCard(pendingInteraction.cardId).name}
             </Text>
             <Text style={styles.targetBannerCancel}>TOQUE AQUI PARA CANCELAR</Text>
           </Pressable>
@@ -298,7 +295,8 @@ export function CardHand({ style }: CardHandProps) {
         ) : (
           hand.map(({ uid, cardId }, index) => {
             const { baseX, baseY, baseRotation } = layout[index];
-            const isSelected = pendingAction?.uid === uid;
+            const isSelected =
+              pendingInteraction?.kind === 'BOARD_TARGET' && pendingInteraction.cardUid === uid;
             // Energia insuficiente trava a carta pelo MESMO mecanismo visual
             // de "não é sua vez"/"mira ativa": `canDrag={false}` já esmaece
             // via `cardDisabled` no `<CardItem />` (opacidade reduzida) e
@@ -321,8 +319,9 @@ export function CardHand({ style }: CardHandProps) {
                 baseY={baseY}
                 baseRotation={baseRotation}
                 playZoneBottom={playZoneBottom}
-                // Durante a mira ninguém arrasta: ou resolve, ou cancela.
-                canDrag={canPlayCards && !isTargeting && !hasPendingAcknowledgement && canAfford}
+                // Durante QUALQUER interação pendente ninguém arrasta outra
+                // carta: ou resolve, ou cancela a que já está em curso.
+                canDrag={canPlayCards && !isInteracting && !hasPendingAcknowledgement && canAfford}
                 isSelected={isSelected}
                 isDragging={draggingIndex === index}
                 // Destaque de cursor: independente de `canDrag`. Uma carta que

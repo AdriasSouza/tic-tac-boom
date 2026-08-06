@@ -1,3 +1,5 @@
+import type { InteractionSelection } from '@/engine/rules';
+
 /**
  * Contrato de dados trocado com o Realtime Database.
  *
@@ -106,6 +108,16 @@ export interface RoomRecord {
  * Os campos espelham as assinaturas que já existem no store:
  * - `PLACE_MARK`  ➜ `placeMark(index)`
  * - `PLAY_CARD`   ➜ `playCard(uid, targetIndex)`
+ * - `END_TURN`     ➜ `endTurn(combatant)` — `by` é quem passou a vez (REBOBINAR ou o
+ *                    botão "passar a vez"), sem payload extra.
+ * - `RESOLVE_INTERACTION` ➜ `resolveInteraction(combatant, selection)` — cobre os 5
+ *                    `kind`s de `PendingInteraction` com uma ação só; `selection`
+ *                    já carrega o próprio `kind` (ver `InteractionSelection`,
+ *                    `src/engine/rules.ts`).
+ * - `CANCEL_INTERACTION` ➜ `cancelInteraction(combatant)` — sem payload; o
+ *                    reembolso (carta + energia) é recalculado em CADA
+ *                    aparelho a partir do `pendingInteraction` local, nunca
+ *                    transmitido.
  * - `ACKNOWLEDGE` ➜ `acknowledgePending()`
  * - `FORFEIT`     ➜ `forfeitMatch(winner)` — `by` é quem DECLAROU (o vencedor
  *                    conectado), não quem desistiu. Um input como qualquer
@@ -132,6 +144,9 @@ export type MultiplayerAction =
        */
       targetIndex: number | null;
     }
+  | MultiplayerActionBase & { type: 'END_TURN' }
+  | MultiplayerActionBase & { type: 'RESOLVE_INTERACTION'; selection: InteractionSelection }
+  | MultiplayerActionBase & { type: 'CANCEL_INTERACTION' }
   | MultiplayerActionBase & { type: 'ACKNOWLEDGE' }
   | MultiplayerActionBase & { type: 'FORFEIT' }
   | MultiplayerActionBase & { type: 'SACRIFICE_CARDS'; uids: [string, string] };

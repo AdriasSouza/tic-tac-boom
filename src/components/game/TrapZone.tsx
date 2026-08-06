@@ -4,9 +4,18 @@ import Animated, { FadeInDown, ZoomOut } from 'react-native-reanimated';
 
 import { useLayoutMode } from '@/hooks/useLayoutMode';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
-import { TRAP_LIMIT, selectTraps, useGameStore, type Combatant } from '@/store/gameStore';
+import { getCard } from '@/engine/cards/registry';
+import type { CardId } from '@/engine/cards/definitions';
+import {
+  TRAP_LIMIT,
+  selectTraps,
+  selectTurn,
+  useGameStore,
+  type Combatant,
+} from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 import { TRAP_ZONE_BOUNDS } from '@/theme/layout';
+import { RARITY_COLOR } from '@/theme/rarity';
 
 /* -------------------------------------------------------------------------- */
 /*                                    PROPS                                    */
@@ -65,9 +74,22 @@ export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
      `PLAYER`. Numa sala online quem entrou controla o `MACHINE`, e rotular
      pelo combatente absoluto diria "CPU" em cima das próprias armadilhas do
      convidado. */
-  const { localCombatant, isOnline } = useMatchPerspective();
+  const { localCombatant, isOnline, controlledCombatants } = useMatchPerspective();
   const isLocal = owner === localCombatant;
   const caption = isLocal ? 'VOCÊ' : isOnline ? 'RIVAL' : 'CPU';
+
+  /**
+   * Quem arma uma armadilha sabe o que armou — o segredo é só em relação ao
+   * OPONENTE, então a face fica visível pro próprio dono. `controlledCombatants`
+   * (ver `useMatchPerspective`) resolve os 3 modos com uma regra só:
+   * - CPU/online controlam 1 lado só → a própria face aparece sempre, a do
+   *   outro lado nunca (evita vazar a armadilha da IA quando é a vez dela);
+   * - hot-seat controla os 2 → só a do lado que está NA VEZ aparece, porque
+   *   os dois combatentes são o mesmo humano revezando o aparelho.
+   */
+  const turn = useGameStore(selectTurn);
+  const isFaceVisible =
+    controlledCombatants.includes(owner) && (controlledCombatants.length < 2 || owner === turn);
 
   const { mode } = useLayoutMode();
   const { sidebarWidth, slotSize, hitSlop } = TRAP_ZONE_BOUNDS[mode];
@@ -86,8 +108,14 @@ export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
       </Text>
 
       <View style={styles.slots}>
-        {traps.map(({ uid }) => (
-          <TrapBack key={uid} size={slotStyle} hitSlop={slotHitSlop} />
+        {traps.map(({ uid, cardId }) => (
+          <TrapSlot
+            key={uid}
+            cardId={cardId}
+            faceVisible={isFaceVisible}
+            size={slotStyle}
+            hitSlop={slotHitSlop}
+          />
         ))}
 
         {Array.from({ length: emptySlots }, (_, i) => (
@@ -105,19 +133,39 @@ export default TrapZone;
 /* -------------------------------------------------------------------------- */
 
 /**
- * Verso pixelado. Deliberadamente sem identidade: o oponente não pode saber
- * qual armadilha está armada, então todas as cartas viradas são idênticas.
+ * Slot de armadilha armada — UM componente persistente pros dois estados
+ * (verso e face), nunca dois componentes escolhidos condicionalmente.
+ *
+ * Isso importa porque `faceVisible` MUDA sozinho durante a partida (em
+ * hot-seat, a cada troca de turno) sem a armadilha em si ser armada ou
+ * detonada de novo — se verso/face fossem elementos de tipos DIFERENTES na
+ * mesma `key`, o React desmontaria/remontaria a cada troca, disparando
+ * `entering`/`exiting` (`FadeInDown`/`ZoomOut`) num flicker que deveria só
+ * acontecer ao armar/detonar de verdade. Aqui só o CONTEÚDO interno troca —
+ * o `Animated.View` externo (e a caixa que ele mede) é sempre o mesmo.
+ *
+ * Verso: hachura + "?", sem identidade — o oponente não pode saber qual
+ * armadilha está armada. Face: glifo da inicial do nome, colorido pela
+ * raridade — visível só pro dono (`faceVisible`, decidido pelo `<TrapZone />`
+ * via `controlledCombatants`, ver `useMatchPerspective`). Sem nome/custo por
+ * extenso: o slot é pequeno demais (32dp em compact) pra caber texto legível.
  *
  * `exiting={ZoomOut}` marca o consumo — a carta some da mesa ao ser revelada
  * (o `<AcknowledgementModal />` assume a partir daí).
  */
-const TrapBack = memo(function TrapBack({
+const TrapSlot = memo(function TrapSlot({
+  cardId,
+  faceVisible,
   size,
   hitSlop,
 }: {
+  cardId: CardId;
+  faceVisible: boolean;
   size: { width: number; height: number };
   hitSlop?: number;
 }) {
+  const card = getCard(cardId);
+
   return (
     <Animated.View
       entering={FadeInDown.springify().damping(14).mass(0.6)}
@@ -125,17 +173,26 @@ const TrapBack = memo(function TrapBack({
       style={[styles.back, size]}
       hitSlop={hitSlop}
     >
-      {/* Bisel chapado, mesma linguagem do resto da UI. */}
+      {/* Bisel chapado, mesma linguagem do resto da UI — compartilhado pelos
+          dois estados. */}
       <View style={styles.backBevel} pointerEvents="none" />
 
-      {/* Padrão de hachura: 3 barras diagonais em bloco, sem gradiente. */}
-      <View style={styles.backPattern} pointerEvents="none">
-        {[0, 1, 2].map((i) => (
-          <View key={i} style={[styles.backStripe, { width: size.width * 1.6 }]} />
-        ))}
-      </View>
+      {faceVisible ? (
+        <Text style={[styles.faceGlyph, { color: RARITY_COLOR[card.rarity] }]}>
+          {card.name.charAt(0)}
+        </Text>
+      ) : (
+        <>
+          {/* Padrão de hachura: 3 barras diagonais em bloco, sem gradiente. */}
+          <View style={styles.backPattern} pointerEvents="none">
+            {[0, 1, 2].map((i) => (
+              <View key={i} style={[styles.backStripe, { width: size.width * 1.6 }]} />
+            ))}
+          </View>
 
-      <Text style={styles.backGlyph}>?</Text>
+          <Text style={styles.backGlyph}>?</Text>
+        </>
+      )}
     </Animated.View>
   );
 });
@@ -222,6 +279,11 @@ const styles = StyleSheet.create({
   },
   backGlyph: {
     color: colors.winGlow,
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  // Cor chega inline (RARITY_COLOR[card.rarity]) — o glifo em si é neutro.
+  faceGlyph: {
     fontSize: 18,
     fontWeight: '900',
   },

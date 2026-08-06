@@ -93,6 +93,9 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
     case 'ROUND_WIN':
       return `rodada :: ${who} venceu`;
 
+    case 'TURN_PASSED':
+      return `turno :: ${who} passou a vez sem colocar peça`;
+
     case 'CHAOS_RULE':
       return CHAOS_RULE_TEXT[entry.value as ChaosRule] ?? 'caos :: regra alterada';
 
@@ -142,6 +145,8 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
       return `anomalia :: ${who} embaralhou a fila do infinito ${whose === 'sua' ? 'de você' : whose}`;
     case 'CARD_MARK_DOOMED':
       return `obsolescência :: ${who} marcou a peça em ${cellLabel(entry.value)} como a próxima a sumir`;
+    case 'CARD_REBOBINAR':
+      return `rebobinar :: ${who} bloqueou a próxima colocação de peça ${whose}`;
     case 'CARD_LOCK_CELL':
       return `travar :: ${who} lacrou a casa ${cellLabel(entry.value)}`;
     case 'CARD_SPY_PEEK':

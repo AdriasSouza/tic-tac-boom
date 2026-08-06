@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ENERGY_CAP, useGameStore } from '@/store/gameStore';
+import { createEmptyBoard } from '@/engine/rules';
+import { ENERGY_CAP, selectHighlightedOldest, useGameStore } from '@/store/gameStore';
 
 /**
  * Testes de integração direto na store — sem React, só `getState()`/
@@ -10,6 +11,15 @@ import { ENERGY_CAP, useGameStore } from '@/store/gameStore';
  */
 beforeEach(() => {
   useGameStore.getState().startMatch(1);
+});
+
+afterEach(() => {
+  // Rede de segurança para os testes que fecham rodada: `placeMark` agenda um
+  // `setTimeout` real (`scheduleRoundTransition`) mesmo quando o teste avança
+  // a rodada manualmente. Sem isto o timer despertaria ~1.3s depois, no meio
+  // de um teste seguinte, chamando `startNextRound()` num estado que não é
+  // mais o dele.
+  vi.useRealTimers();
 });
 
 describe('energia — regen simétrico ao longo de vários turnos', () => {
@@ -173,5 +183,261 @@ describe('RICOCHETE — inverte dano de ponta a ponta (resolveCounterTraps proce
     // RICOCHETE do PLAYER se consumiu; a carta da MACHINE foi gasta sem efeito próprio.
     expect(state.playerTraps).toEqual([]);
     expect(state.machineHand).toEqual([]);
+  });
+});
+
+describe('forcedVanish não atravessa troca de rodada (bug encontrado limpando código morto na Fase 2)', () => {
+  it('startNextRound limpa forcedVanish, igual ao antigo doomedCell', () => {
+    useGameStore.setState({
+      forcedVanish: { owner: 'MACHINE', mode: 'RANDOM' },
+      status: 'ROUND_OVER',
+      roundWinner: 'PLAYER',
+    });
+
+    useGameStore.getState().startNextRound();
+
+    expect(useGameStore.getState().forcedVanish).toBeNull();
+  });
+
+  it('OBSOLESCÊNCIA marca uma peça, a rodada fecha (linha completada) e a marcação não sobrevive para a fila da rodada nova', () => {
+    // Tabuleiro: MACHINE tem 1 peça em 8 (alvo da carta); PLAYER já tem 2 em
+    // linha (0 e 1), faltando 1 jogada para fechar.
+    const openingBoard = createEmptyBoard();
+    openingBoard[0] = { owner: 'PLAYER', mark: 'X', turnPlaced: 1 };
+    openingBoard[1] = { owner: 'PLAYER', mark: 'X', turnPlaced: 2 };
+    openingBoard[8] = { owner: 'MACHINE', mark: 'O', turnPlaced: 3 };
+
+    useGameStore.setState({
+      board: openingBoard,
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      playerHand: [{ uid: 'o', cardId: 'OBSOLESCENCE' }],
+    });
+
+    // 1. PLAYER joga OBSOLESCÊNCIA na peça da MACHINE em 8 — não consome o
+    // turno (`consumesTurn` ausente), então `turn` continua com o PLAYER.
+    const played = useGameStore.getState().playCard('o', 8);
+    expect(played).toBe(true);
+    expect(useGameStore.getState().forcedVanish).toEqual({
+      owner: 'MACHINE',
+      mode: 'CHOSEN',
+      index: 8,
+      turnPlaced: 3,
+    });
+
+    // 2. PLAYER fecha a linha 0-1-2. `scheduleRoundTransition` (dentro de
+    // `placeMark`) agenda um `setTimeout` real para o avanço automático —
+    // fake timers seguram esse timer para o teste controlar a transição.
+    vi.useFakeTimers();
+    const won = useGameStore.getState().placeMark('PLAYER', 2);
+    expect(won).toBe(true);
+    expect(useGameStore.getState().status).toBe('ROUND_OVER');
+    expect(useGameStore.getState().roundWinner).toBe('PLAYER');
+    // A marca de OBSOLESCÊNCIA continua viva ao FECHAR a rodada — só o início
+    // da rodada NOVA é que a invalida.
+    expect(useGameStore.getState().forcedVanish).not.toBeNull();
+
+    // 3. Avança a rodada manualmente (sem esperar o timer real).
+    useGameStore.getState().startNextRound();
+    expect(useGameStore.getState().forcedVanish).toBeNull();
+
+    // 4. Rodada nova, tabuleiro limpo: MACHINE enche as 3 peças do "infinito"
+    // em 3, 4, 8 (deliberadamente não-alinhadas — nenhum trio aqui fecha
+    // linha, senão a rodada terminaria antes do overflow acontecer) e uma 4ª
+    // jogada em 6 tem que remover a MAIS ANTIGA (3) — não a posição 8 marcada
+    // na rodada anterior, que nem existe mais neste tabuleiro novo.
+    //
+    // `place` neutraliza qualquer surto de caos automático do relógio global
+    // (`turnCount` cruzando `CHAOS_SURGE_INTERVAL_TURNS`, alheio ao que este
+    // teste verifica) depois de cada jogada — sem isto um BLOCKED_CELL
+    // sorteado poderia lacrar uma das células que a sequência ainda precisa.
+    const place = (who: 'PLAYER' | 'MACHINE', index: number): void => {
+      useGameStore.getState().placeMark(who, index);
+      useGameStore.setState({ activeRule: 'NORMAL', blockedCell: null, ruleExpiresAtTurn: null });
+    };
+
+    expect(useGameStore.getState().turn).toBe('MACHINE'); // quem perdeu a rodada começa
+    place('MACHINE', 3);
+    place('PLAYER', 0);
+    place('MACHINE', 4);
+    place('PLAYER', 1);
+    place('MACHINE', 8);
+    place('PLAYER', 7);
+
+    const beforeOverflow = useGameStore.getState();
+    expect(beforeOverflow.board[3]?.owner).toBe('MACHINE');
+    expect(beforeOverflow.status).toBe('PLAYING'); // ninguém fechou linha até aqui
+
+    place('MACHINE', 6);
+    const afterOverflow = useGameStore.getState();
+    // A peça mais antiga (índice 3) sumiu — comportamento normal do
+    // "infinito", sem interferência de uma marca fantasma da rodada anterior.
+    expect(afterOverflow.board[3]).toBeNull();
+    expect(afterOverflow.lastVanishedIndex).toBe(3);
+    expect(afterOverflow.board[6]?.owner).toBe('MACHINE');
+  });
+});
+
+describe('REBOBINAR — bloqueio de colocação de ponta a ponta (playerPlacementBlocked/machinePlacementBlocked)', () => {
+  it('MACHINE bloqueada joga carta comum, arma armadilha, mas não coloca peça — endTurn libera e passa a vez', () => {
+    useGameStore.setState({
+      turn: 'MACHINE',
+      machinePlacementBlocked: true,
+      machineEnergy: 3,
+      machineHp: 3,
+      machineHand: [{ uid: 'heal', cardId: 'HEAL_SELF' }],
+    });
+
+    // 1. Carta comum: sucesso. Offline, toda jogada da MACHINE é anunciada
+    // (`announcesCardPlay`) — o efeito só aplica de fato depois do "Entendi".
+    expect(useGameStore.getState().playMachineCard('heal')).toBe(true);
+    useGameStore.getState().acknowledgePending();
+    expect(useGameStore.getState().machineHp).toBe(4);
+
+    // 2. Arma uma armadilha: sucesso — o armar em si já commitou no estado
+    // antes do "Entendi" (só o ANÚNCIO é que pausa, não a armadilha na mesa).
+    useGameStore.setState({ machineHand: [{ uid: 'shield', cardId: 'SHIELD_TRAP' }], machineEnergy: 3 });
+    expect(useGameStore.getState().playMachineCard('shield')).toBe(true);
+    expect(useGameStore.getState().machineTraps).toEqual([{ uid: 'shield', cardId: 'SHIELD_TRAP' }]);
+    useGameStore.getState().acknowledgePending();
+
+    // 3. Colocar peça: recusado — mesma prova de "nenhum efeito colateral"
+    // já usada nos testes de turno errado.
+    const before = useGameStore.getState();
+    const played = useGameStore.getState().placeMark('MACHINE', 0);
+    const after = useGameStore.getState();
+    expect(played).toBe(false);
+    expect(after).toBe(before);
+
+    // 4. endTurn consome o PRÓPRIO bloqueio e passa a vez.
+    expect(useGameStore.getState().endTurn('MACHINE')).toBe(true);
+    expect(useGameStore.getState().machinePlacementBlocked).toBe(false);
+    expect(useGameStore.getState().turn).toBe('PLAYER');
+  });
+
+  it('os dois lados bloqueados simultaneamente: cada flag expira só no endTurn do PRÓPRIO dono', () => {
+    useGameStore.setState({
+      turn: 'MACHINE',
+      playerPlacementBlocked: true,
+      machinePlacementBlocked: true,
+    });
+
+    expect(useGameStore.getState().endTurn('MACHINE')).toBe(true);
+    let state = useGameStore.getState();
+    expect(state.machinePlacementBlocked).toBe(false); // consumido
+    expect(state.playerPlacementBlocked).toBe(true); // intocado — não é o dono passando a vez agora
+    expect(state.turn).toBe('PLAYER');
+
+    expect(useGameStore.getState().endTurn('PLAYER')).toBe(true);
+    state = useGameStore.getState();
+    expect(state.playerPlacementBlocked).toBe(false);
+    expect(state.turn).toBe('MACHINE');
+  });
+});
+
+describe('startNextRound limpa playerPlacementBlocked/machinePlacementBlocked (auditoria de campos transitórios)', () => {
+  it('as duas flags voltam para false', () => {
+    useGameStore.setState({
+      playerPlacementBlocked: true,
+      machinePlacementBlocked: true,
+      status: 'ROUND_OVER',
+      roundWinner: 'PLAYER',
+    });
+
+    useGameStore.getState().startNextRound();
+
+    const state = useGameStore.getState();
+    expect(state.playerPlacementBlocked).toBe(false);
+    expect(state.machinePlacementBlocked).toBe(false);
+  });
+});
+
+describe('VIDENTE — destaque no tabuleiro (highlightedOldestFor, Fase 2.6)', () => {
+  it('limpa quando o turno do próprio caster termina via placeMark normal', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 5, turnPlaced: 0 },
+    });
+
+    useGameStore.getState().placeMark('PLAYER', 0);
+
+    expect(useGameStore.getState().highlightedOldestFor).toBeNull();
+  });
+
+  it('sobrevive à 2ª colocação de TURNO_EXTRA — é o MESMO turno do caster ainda', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      extraTurnPending: 'PLAYER',
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 5, turnPlaced: 0 },
+    });
+
+    // 1ª colocação: keepsTurn consome extraTurnPending, mas o turno continua com PLAYER.
+    useGameStore.getState().placeMark('PLAYER', 0);
+    expect(useGameStore.getState().turn).toBe('PLAYER');
+    expect(useGameStore.getState().highlightedOldestFor).not.toBeNull();
+
+    // 2ª colocação: agora sim passa a vez de verdade — o destaque limpa junto.
+    useGameStore.getState().placeMark('PLAYER', 1);
+    expect(useGameStore.getState().turn).toBe('MACHINE');
+    expect(useGameStore.getState().highlightedOldestFor).toBeNull();
+  });
+
+  it('limpa via endTurn quando o caster passa a vez sem colocar peça', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 5, turnPlaced: 0 },
+    });
+
+    useGameStore.getState().endTurn('PLAYER');
+
+    expect(useGameStore.getState().highlightedOldestFor).toBeNull();
+  });
+
+  it('startNextRound limpa o destaque', () => {
+    useGameStore.setState({
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 5, turnPlaced: 0 },
+      status: 'ROUND_OVER',
+      roundWinner: 'PLAYER',
+    });
+
+    useGameStore.getState().startNextRound();
+
+    expect(useGameStore.getState().highlightedOldestFor).toBeNull();
+  });
+
+  it('DEMOLIR remove a peça destacada: o glow para de acender por identidade, não por limpeza de campo', () => {
+    const board = createEmptyBoard();
+    board[4] = { owner: 'MACHINE', mark: 'O', turnPlaced: 1 };
+
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      board,
+      playerHand: [
+        { uid: 'v', cardId: 'HIGHLIGHT_OLDEST' },
+        { uid: 'd', cardId: 'BREAK_PIECE' },
+      ],
+    });
+
+    // VIDENTE destaca a peça da MACHINE em 4.
+    expect(useGameStore.getState().playCard('v')).toBe(true);
+    expect(useGameStore.getState().highlightedOldestFor).toEqual({
+      caster: 'PLAYER',
+      owner: 'MACHINE',
+      index: 4,
+      turnPlaced: 1,
+    });
+    expect(selectHighlightedOldest(useGameStore.getState())).not.toBeNull();
+
+    // DEMOLIR remove aquela MESMA peça — ainda o turno de PLAYER, o destaque
+    // não teve chance de expirar por tempo.
+    expect(useGameStore.getState().playCard('d', 4)).toBe(true);
+    expect(useGameStore.getState().board[4]).toBeNull();
+
+    // O CAMPO ainda guarda o valor antigo (nada no caminho de DEMOLIR limpa
+    // highlightedOldestFor) — mas o SELETOR já reporta null: a peça na
+    // posição 4 não existe mais, então a identidade não bate.
+    expect(useGameStore.getState().highlightedOldestFor).not.toBeNull();
+    expect(selectHighlightedOldest(useGameStore.getState())).toBeNull();
   });
 });

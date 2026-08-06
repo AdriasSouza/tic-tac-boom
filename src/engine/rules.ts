@@ -52,6 +52,16 @@ export type ForcedVanish =
   | { owner: Combatant; mode: 'RANDOM' }
   | { owner: Combatant; mode: 'CHOSEN'; index: number; turnPlaced: number };
 
+/** Ver `GameState.highlightedOldestFor`. */
+export type HighlightedOldest = {
+  caster: Combatant;
+  /** Dono da peça destacada — `opponentOf(caster)` no instante do cast. */
+  owner: Combatant;
+  index: number;
+  /** Identidade da peça, mesma ideia do `CHOSEN` de `ForcedVanish`. */
+  turnPlaced: number;
+};
+
 /** Tabuleiro 3x3 achatado em um array de 9 posições (índices 0..8). */
 export type Board = BoardCell[];
 
@@ -69,16 +79,82 @@ export interface HandCard {
 }
 
 /**
- * Ação aguardando um alvo.
+ * Uma escolha do jogador respondendo a um passo de `PendingInteraction`.
  *
- * Enquanto isto não for `null` o tabuleiro está em **modo mira**: toques em
- * células resolvem a carta em vez de posicionar peça.
+ * Zero dependência de `definitions.ts` de propósito (só primitivos) — é por
+ * isso que mora aqui e `definitions.ts` importa daqui, nunca o contrário.
  */
-export type PendingAction = {
-  type: 'PLAY_CARD';
-  uid: string;
+export type InteractionSelection =
+  | { kind: 'BOARD_TARGET'; index: number }
+  | { kind: 'PICK_ONE_FROM_HAND'; uid: string }
+  | { kind: 'PICK_MANY_FROM_HAND'; uids: readonly string[] }
+  | { kind: 'PICK_ONE_REVEALED'; index: number }
+  | { kind: 'SACRIFICE_DRAG'; uids: readonly [string, string] };
+
+interface PendingInteractionBase {
+  caster: Combatant;
   cardId: CardId;
-};
+  cardUid: string;
+  /**
+   * Índice original na mão do `caster` — restaura a carta no MESMO lugar se a
+   * interação for cancelada. Não é "entrar na mão" no sentido de `CLAUDE.md`
+   * #7 (carta nova sempre pelo fim): é desfazer uma remoção, a carta nunca
+   * foi embora de verdade do ponto de vista de quem a possui.
+   */
+  handIndex: number;
+  /** Escolhas de passos ANTERIORES da MESMA jogada, em ordem. Vazio no 1º passo. */
+  priorSelections: readonly InteractionSelection[];
+}
+
+/**
+ * Interação pendente: uma carta pediu uma escolha do jogador e o jogo pausa
+ * até ela chegar (ou a jogada ser cancelada). Generaliza o antigo
+ * `PendingAction`/"modo mira" — `BOARD_TARGET` é o caso que ele virou, não um
+ * sistema à parte.
+ *
+ * Campo ÚNICO em `GameState` (não um par por combatente): só o dono do turno
+ * ATUAL pode ter uma interação viva (`canPlaceAt`/`endTurn` recusam agir
+ * enquanto ela existir — a mesma guarda que `pendingAction` já tinha), e só
+ * um turno está em curso por vez. Extensão do 5º critério de
+ * `docs/NOTAS_TECNICAS.md`: par-por-combatente é para quando os dois lados
+ * PODEM ter um valor vivo ao mesmo tempo — aqui isso é estruturalmente
+ * impossível, igual `highlightedOldestFor`.
+ *
+ * `BOARD_TARGET` é o único `kind` que nunca nasce de `card.effect()` — o
+ * motor de resolução de carta o abre diretamente para cartas
+ * `requiresTarget` sem alvo ainda escolhido (ver `resolveCardPlay`,
+ * `gameStore.ts`). Os outros 4 nascem de `effect()` devolver
+ * `CardEffectResult.interaction` (`definitions.ts`).
+ */
+export type PendingInteraction =
+  | (PendingInteractionBase & { kind: 'BOARD_TARGET' })
+  | (PendingInteractionBase & {
+      kind: 'PICK_ONE_FROM_HAND';
+      /**
+       * De quem é a mão sendo escolhida. `source === caster` → mostra a
+       * FACE (é a própria mão de quem escolhe); `source !== caster` →
+       * mostra o VERSO (mão oculta do oponente). Visibilidade sempre
+       * DERIVADA daqui, nunca um flag à parte.
+       */
+      source: Combatant;
+      optionUids: readonly string[];
+    })
+  | (PendingInteractionBase & {
+      kind: 'PICK_MANY_FROM_HAND';
+      source: Combatant;
+      optionUids: readonly string[];
+      /**
+       * Já clampado a `Math.min(pedido, optionUids.length)` pelo store ao
+       * abrir — nunca confiar num `count` que `effect()` pediu sem reclampar.
+       */
+      count: number;
+    })
+  | (PendingInteractionBase & { kind: 'PICK_ONE_REVEALED'; options: readonly CardId[] })
+  | (PendingInteractionBase & {
+      kind: 'SACRIFICE_DRAG';
+      eligibleUids: readonly string[];
+      count: number; // mesma regra de clamp
+    });
 
 /**
  * Linha do log de combate exibida no ChaosTerminal.
@@ -241,6 +317,46 @@ export interface GameState {
   forcedVanish: ForcedVanish | null;
 
   /**
+   * REBOBINAR em vigor contra este combatente: ele joga o turno normalmente
+   * (energia, cartas, armadilhas) mas `canPlaceAt` recusa qualquer colocação
+   * de peça dele enquanto isto for `true`. Dois campos independentes — não um
+   * `Combatant | null` único — porque os dois valores possíveis qualificam
+   * COMBATENTES DIFERENTES, não a mesma fila/alvo compartilhado (esse é o
+   * caso de `forcedVanish`, onde "o mais recente vence" é correto). Aqui um
+   * campo único faria REBOBINAR contra um lado apagar por acidente o bloqueio
+   * já em vigor contra o outro. Consumido só por `endTurn` do PRÓPRIO
+   * combatente (terminar o turno sempre limpa o próprio bloqueio); resetado
+   * em `startNextRound` como qualquer flag de turno.
+   */
+  playerPlacementBlocked: boolean;
+  machinePlacementBlocked: boolean;
+
+  /**
+   * VIDENTE em vigor: destaca no tabuleiro, só para `caster`, qual peça de
+   * `owner` é a mais antiga (a próxima que sumiria pela regra do "infinito").
+   * Leitura pura — ao contrário de `forcedVanish`/OBSOLESCÊNCIA, não altera a
+   * fila de ninguém, só aponta pra ela.
+   *
+   * Campo ÚNICO (não um par por combatente como `playerPlacementBlocked`/
+   * `machinePlacementBlocked`): aqui é seguro porque os dois valores possíveis
+   * NUNCA coexistem — um destaque só existe enquanto `turn === caster` (é
+   * limpo exatamente quando o turno de quem lançou termina, em `placeMark`/
+   * `endTurn`), e só um turno está em curso por vez. Extensão do critério de
+   * `playerPlacementBlocked` (ver `docs/NOTAS_TECNICAS.md`): par-por-combatente
+   * é necessário quando os dois lados podem ter um valor vivo ao mesmo tempo;
+   * aqui isso é estruturalmente impossível.
+   *
+   * `owner`+`turnPlaced` existem para AUTO-INVALIDAR a leitura (mesma ideia do
+   * `CHOSEN` de `forcedVanish`): se a peça destacada sair do índice por outro
+   * caminho (DEMOLIR, sumiço natural) antes do turno acabar, `owner`/
+   * `turnPlaced` deixam de bater com a peça que está lá agora, e
+   * `isHighlightedOldestValid` já reporta "não destaca mais" — sem precisar
+   * de ninguém limpar o campo àquela hora. `startNextRound` limpa porque
+   * referencia um índice do tabuleiro da rodada anterior.
+   */
+  highlightedOldestFor: HighlightedOldest | null;
+
+  /**
    * Mão do jogador. Os dados da carta (nome, efeito, arte) vêm do
    * `CARD_REGISTRY`, então o estado fica leve e serializável.
    */
@@ -252,8 +368,13 @@ export interface GameState {
    */
   nextCardUid: number;
 
-  /** Carta aguardando alvo. `null` = tabuleiro em modo normal. */
-  pendingAction: PendingAction | null;
+  /**
+   * Interação pendente — carta esperando uma escolha do jogador. `null` =
+   * tabuleiro/mão em modo normal. Ver `PendingInteraction` para o contrato
+   * completo (substitui o antigo `PendingAction`/"modo mira" — `BOARD_TARGET`
+   * é o caso que ele virou).
+   */
+  pendingInteraction: PendingInteraction | null;
 
   /**
    * Armadilhas viradas na mesa, por combatente.
@@ -281,10 +402,10 @@ export interface GameState {
    * Pausa de confirmação manual em exibição. Não-nula entre o gatilho
    * (armadilha revelada, carta de espionagem) e o jogador clicar "Entendi".
    *
-   * Enquanto não for `null`, `canPlaceAt`, `resolveCardPlay` e `setPendingAction`
-   * recusam ação: sem isso, o jogador poderia agir antes do efeito mecânico
-   * (turno extra, dano) ter sido de fato aplicado — o efeito só aplica
-   * quando `acknowledgePending` é chamado.
+   * Enquanto não for `null`, `canPlaceAt` e `resolveCardPlay` recusam ação:
+   * sem isso, o jogador poderia agir antes do efeito mecânico (turno extra,
+   * dano) ter sido de fato aplicado — o efeito só aplica quando
+   * `acknowledgePending` é chamado.
    */
   pendingAcknowledgement: PendingAcknowledgement | null;
   nextAcknowledgementId: number;
@@ -573,6 +694,13 @@ export function revealedKeyFor(combatant: Combatant): 'playerRevealedUids' | 'ma
   return combatant === 'PLAYER' ? 'playerRevealedUids' : 'machineRevealedUids';
 }
 
+/** Mesma ideia de `handKeyFor`, para o bloqueio de colocação da REBOBINAR. */
+export function placementBlockedKeyFor(
+  combatant: Combatant,
+): 'playerPlacementBlocked' | 'machinePlacementBlocked' {
+  return combatant === 'PLAYER' ? 'playerPlacementBlocked' : 'machinePlacementBlocked';
+}
+
 /** HP atual de um combatente. */
 export function hpOf(state: GameState, combatant: Combatant): number {
   return combatant === 'PLAYER' ? state.playerHp : state.machineHp;
@@ -675,9 +803,12 @@ export function canPlaceAt(state: GameState, index: number, combatant: Combatant
   // (armadilha, carta de espionagem) aplicar de fato — jogar nesta janela
   // poderia acontecer ANTES do turno extra/dano valer, criando uma corrida.
   if (state.pendingAcknowledgement !== null) return false;
-  // Modo mira sequestra o tabuleiro: nenhuma peça é posicionada até a carta
-  // resolver ou ser cancelada.
-  if (state.pendingAction !== null) return false;
+  // Interação pendente sequestra o tabuleiro (mira, escolha de carta,
+  // sacrifício...): nenhuma peça é posicionada até ela resolver ou cancelar.
+  if (state.pendingInteraction !== null) return false;
+  // REBOBINAR: o resto do turno de `combatant` segue normal (energia, cartas,
+  // armadilhas) — só a colocação de peça é recusada aqui.
+  if (state[placementBlockedKeyFor(combatant)]) return false;
   if (index < 0 || index > 8) return false;
   if (state.board[index] !== null) return false;
   // Caos (BLOCKED_CELL) e carta (TRAVAR) lacram por caminhos diferentes; aqui
@@ -764,6 +895,20 @@ export function isAutoDrawTurn(turnCount: number): boolean {
  */
 export function isImmuneToTraps(rarity: CardRarity): boolean {
   return rarity === 'LEGENDARY' || rarity === 'BOOM';
+}
+
+/**
+ * O destaque de VIDENTE (`highlightedOldestFor`) ainda aponta pra peça
+ * original? Auto-invalidação — mesma ideia do `CHOSEN` de `forcedVanish`: se
+ * a peça saiu do índice por outro caminho (DEMOLIR, sumiço natural) antes do
+ * turno de quem lançou terminar, o glow só para de acender — ninguém precisa
+ * limpar o campo naquela hora.
+ */
+export function isHighlightedOldestValid(state: GameState): boolean {
+  const marked = state.highlightedOldestFor;
+  if (!marked) return false;
+  const piece = state.board[marked.index];
+  return piece !== null && piece.owner === marked.owner && piece.turnPlaced === marked.turnPlaced;
 }
 
 /* -------------------------------------------------------------------------- */

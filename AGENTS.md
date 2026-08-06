@@ -16,7 +16,9 @@ sozinho.
 
 Regra de domínio se garante no motor, não na camada acima. Se uma regra do jogo (de quem é a vez,
 quem pode agir, o que é alvo válido) só é respeitada porque a UI não oferece o caminho, ela não
-está implementada — está sendo evitada. Três ocorrências até aqui: um ancestral pré-quadrando a
+está implementada — está sendo evitada. Quatro ocorrências até aqui: um ancestral pré-quadrando a
 geometria que só o `<Board />` deve decidir; um `aspectRatio` fazendo o mesmo em outra orientação;
-e `placeMark` sem checagem de dono do turno, protegido apenas por um `isLocalTurn()` que é `true`
-permanente fora do modo online. A guarda vive onde a regra vive.
+`placeMark` sem checagem de dono do turno, protegido apenas por um `isLocalTurn()` que é `true`
+permanente fora do modo online; e `resolveCardPlay` (Fase 3, `pendingInteraction`) sem checagem de
+interação pendente — nada no motor impedia jogar uma 2ª carta enquanto a mira/escolha da 1ª estava
+aberta, só `canDrag` (UI, `<CardItem />`) evitava o caminho. A guarda vive onde a regra vive.

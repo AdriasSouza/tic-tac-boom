@@ -95,3 +95,176 @@ lista de efeitos pós-patch à mão — ou se a duplicação atual é deliberada
 devesse continuar sendo). Não é bug hoje (`RICOCHET_INVERSIONS` não produz
 nenhum caso que a lacuna acima afetaria), é risco de DIVERGÊNCIA silenciosa
 se um efeito futuro de armadilha crescer sem essa checagem.
+
+**Resolvido na Fase 3 — unificado, não mantido separado.** A Fase 3 introduziu
+um TERCEIRO consumidor do mesmo `CardEffectResult` (`resolveInteraction`, o
+passo final de uma interação pendente) — três cópias da mesma lista de "o que
+fazer depois do patch" deixou de ser sustentável. `applyCardEffectResult(caster,
+cardId, result, basePatch)` (`gameStore.ts`) foi extraído como o ÚNICO lugar
+que faz `findWinner` recheck, `consumesTurn`/avanço de turno, `log`/`notice`/
+`damage`/`heal`/`draw`/`triggersChaosGlitch`/`opensAltar`/`acknowledge` — usado
+por `resolveCardPlay` (caminho imediato), `resolveInteraction` (passo final) e
+`resolveCounterTraps`. A lacuna que este documento apontava (`resolveCounterTraps`
+não rechecava `findWinner`/`consumesTurn`/`opensAltar`) fecha de graça: os três
+chamadores agora passam pelo mesmo código, não por três listas mantidas à mão.
+**Restrição nova, deliberada:** uma armadilha reativa NUNCA pode produzir
+`result.interaction` — `resolveCounterTraps` não trata esse campo (comentário
+no código registra isso explicitamente). Um contra-ataque abrindo uma 3ª
+interação no MEIO da resolução de outra carta é território novo o bastante
+para merecer discussão própria, não uma consequência acidental da unificação;
+hoje nenhuma trap pede escolha, então a restrição não corta nenhum caso real.
+
+## Auditoria de campos transitórios em `startNextRound`/`startMatch` (Fase 2)
+
+**Contexto:** `forcedVanish` sobreviveu à troca de rodada sem teste algum até
+uma sessão de limpeza de código morto (removendo o antigo `doomedCell`) esbarrar
+nele por acaso — `startNextRound` limpava `doomedCell` desde sempre, mas nunca
+foi atualizado quando `forcedVanish` o substituiu. Corrigido e coberto em
+`src/store/gameStore.test.ts` ("forcedVanish não atravessa troca de rodada").
+O bug só não tinha efeito observável ainda porque nenhuma partida real chegou a
+gerar a combinação exata que o exporia — exatamente o tipo de lacuna que passa
+despercebida sem uma varredura deliberada.
+
+**A varredura, campo a campo.** Só os campos que são "marcação, pendência ou
+flag de turno" — os que uma FUTURA interação pendente (`placementBlockedFor` da
+Fase 2.5, `pendingInteraction` da Fase 3) também vai ser. Estado persistente da
+partida (HP, mão, armadilhas, energia, seed, `matchWinner`, `turnCount` — este
+último documentado como relógio que NUNCA reseta) fica de fora: não é da
+mesma classe de risco, porque ele é **suposto** atravessar rodadas.
+
+| Campo | `startNextRound` | `startMatch` | Veredito |
+|---|---|---|---|
+| `blockedCell` | recomputado p/ o tabuleiro novo (`pickFreeCell`) se `activeRule === 'BLOCKED_CELL'`, senão `null` | limpo (`null`) | **Tratado explicitamente** |
+| `lockedCell` | `null` | limpo | **Tratado explicitamente** |
+| `lockedCellExpiresAtTurn` | `null` | limpo | **Tratado explicitamente** |
+| `forcedVanish` | `null` | limpo | **Tratado explicitamente** — era o bug, corrigido nesta rodada |
+| `pendingInteraction` (Fase 3 — substituiu `pendingAction`) | `null` | limpo | **Tratado explicitamente** — campo ÚNICO apesar de qualificar um combatente (`caster`), mesma extensão do 5º critério que já cobre `highlightedOldestFor`: só o dono do turno ATUAL pode ter uma interação viva, porque `canPlaceAt`/`endTurn` recusam enquanto `pendingInteraction !== null` — nunca dois turnos em curso ao mesmo tempo, logo nunca duas interações vivas simultâneas. |
+| `pendingAcknowledgement` | `null` | limpo | **Tratado explicitamente** |
+| `extraTurnPending` | `null` | limpo | **Tratado explicitamente** |
+| `roundWinner` | `null` | limpo | **Tratado explicitamente** |
+| `winningLine` | `null` | limpo | **Tratado explicitamente** |
+| `lastVanishedIndex` | `null` | limpo | **Tratado explicitamente** — precisa ser limpo porque é o ÚNICO dos campos `lastX` sem `id` monotônico companheiro (ver linha abaixo); sem isso um sumiço no MESMO índice na rodada nova não mudaria de valor e a UI não teria como perceber. |
+| `machineCardTurn` | não tocado | limpo | **Preservado deliberadamente** — autoinvalida sozinho (`machineCardTurn === turnCount`, e `turnCount` só cresce, nunca repete um valor já usado); documentado no próprio JSDoc do campo em `rules.ts`. |
+| `activeRule` / `ruleExpiresAtTurn` | não tocados | limpos (`'NORMAL'` / `null`) | **Preservado deliberadamente** — o surto de caos é definido em unidades do relógio GLOBAL (`turnCount`), não por rodada; `blockedCell` acima é recomputado para o tabuleiro novo justamente para o caso `BLOCKED_CELL` continuar coerente enquanto a regra persiste. |
+| `isPaused` | não tocado | limpo (`false`) | **Preservado deliberadamente** — é um toggle do usuário (menu de pausa), independente do ciclo de rodada; nada nele é "marcação de jogada". |
+| `playerRevealedUids` / `machineRevealedUids` | não tocados | limpos (`[]`) | **Preservado deliberadamente, mas não estava comentado em `startNextRound`** até esta auditoria — corrigido: comentário adicionado junto da preservação de mão/armadilhas (mesmo motivo: é informação sobre uma carta que CONTINUA na mão, e a mão não é limpa entre rodadas). |
+| `lastDamageEvent`/`nextDamageEventId`, `lastExtraTurn`/`nextExtraTurnId`, `lastNotice`/`nextNoticeId`, `lastAltarPrompt`/`nextAltarPromptId` | não tocados | limpos | **Preservado deliberadamente** — todos têm `id` monotônico; a UI reage à MUDANÇA do `id`, nunca ao conteúdo, então um valor "velho" sobrevivendo não pode disparar nada de novo por engano. Mesma razão pela qual `lastVanishedIndex` (sem `id`) É o único que precisa de limpeza explícita. |
+| `playerPlacementBlocked` / `machinePlacementBlocked` (Fase 2.5, REBOBINAR) | ambos → `false` | limpos (`false`) | **Tratado explicitamente** — flag de turno, não se encaixa em nenhuma categoria que sobrevive sem tratamento; mesmo raciocínio de `extraTurnPending`/`forcedVanish` (um bloqueio pertence a um turno/rodada que já não existe mais). Ver 5º critério abaixo — por que são DOIS campos, não um só. |
+| `highlightedOldestFor` (Fase 2.6, VIDENTE) | `null` | limpo (`null`) | **Tratado explicitamente** — categoria 2 (referencia um índice do tabuleiro da rodada). Campo ÚNICO apesar de qualificar um combatente (`caster`) — ver a extensão do 5º critério logo abaixo: seguro por exclusividade TEMPORAL, não por regra de negócio. Auto-invalida por identidade da peça (`owner`+`turnPlaced`) dentro do MESMO turno — mesma ideia do `CHOSEN` de `forcedVanish` — então mesmo sem esperar `startNextRound` o glow já para de acender se a peça sair do tabuleiro antes. |
+
+**Nenhum campo ficou como "não tratado" de fato** — o único item que a
+auditoria mudou foi documentar `playerRevealedUids`/`machineRevealedUids`, que
+já estava correto mas silencioso.
+
+**O padrão que emergiu, para reaproveitar:**
+1. Se o campo carrega um `id` monotônico próprio → não precisa reset; a UI já
+   trata "conteúdo repetido" como não-evento.
+2. Se o campo referencia um ÍNDICE/estado do TABULEIRO da rodada que terminou
+   (`forcedVanish`, `lastVanishedIndex`, `lockedCell`, `blockedCell`) → precisa
+   reset ou recomputação para o tabuleiro novo, porque o tabuleiro é recriado
+   vazio a cada rodada e uma referência antiga não aponta pra nada válido.
+3. Se o campo é relativo ao relógio GLOBAL (`turnCount`, que nunca reseta) →
+   pode sobreviver sem tratamento, porque a comparação contra `turnCount` já
+   autoinvalida sozinha.
+4. Se o campo é um toggle de UI/usuário sem relação com o ciclo de rodada
+   (`isPaused`) → sobrevive por definição.
+5. **Se o campo QUALIFICA um combatente específico, precisa de uma entrada POR
+   combatente — nunca um slot compartilhado.** Descoberto na Fase 2.5: a
+   primeira leitura de REBOBINAR usava `placementBlockedFor: Combatant | null`
+   (campo único, copiando o padrão de `forcedVanish`). A analogia era falsa —
+   `forcedVanish` é single-owner porque as duas cartas concorrentes (ANOMALIA/
+   OBSOLESCÊNCIA) miram a MESMA fila do MESMO oponente, e "a marcação mais
+   recente vence" é semanticamente correto ali. REBOBINAR é diferente: os dois
+   valores possíveis (`'PLAYER'` bloqueado, `'MACHINE'` bloqueado) descrevem
+   ESTADOS DE COMBATENTES DIFERENTES, não uma fila compartilhada — um campo
+   único faria bloquear um lado apagar por acidente o bloqueio já em vigor
+   contra o outro. Corrigido para `playerPlacementBlocked`/
+   `machinePlacementBlocked` (dois booleans, padrão de `playerHp`/`machineHp`).
+   **A pergunta a fazer antes de copiar o desenho de `forcedVanish`:** os
+   valores possíveis do campo competem pelo MESMO recurso (fila, alvo), ou
+   descrevem dois jogadores independentemente? Só o primeiro caso justifica um
+   slot único.
+
+   **Extensão do critério, Fase 2.6 — `highlightedOldestFor` (VIDENTE):** este
+   campo TAMBÉM qualifica um combatente específico (`caster`) e AINDA ASSIM é
+   um slot único, não um par por combatente — sem contradizer o critério
+   acima. A pergunta certa não é só "os valores competem pelo mesmo recurso",
+   é mais geral: **os dois lados podem ter um valor vivo AO MESMO TEMPO?**
+   `playerPlacementBlocked`/`machinePlacementBlocked` podiam (nada impede
+   MACHINE estar bloqueada enquanto PLAYER também está). `highlightedOldestFor`
+   não pode: o destaque só existe enquanto `turn === caster` (é limpo
+   exatamente quando o turno de quem lançou termina, em `placeMark`/
+   `endTurn`), e só um turno está em curso por vez — logo nunca há dois
+   destaques vivos simultaneamente, e um campo único é seguro. Regra
+   consolidada: **par-por-combatente quando os dois valores podem coexistir
+   no tempo; campo único quando são mutuamente exclusivos (por regra de
+   negócio OU por exclusividade temporal).**
+
+**Checklist para todo campo transitório NOVO** (`pendingInteraction` na Fase
+3, e qualquer outro que vier depois): decidir EXPLICITAMENTE, no mesmo PR que
+introduz o campo —
+- [ ] O campo qualifica UM combatente específico? Se sim, é uma entrada POR
+      combatente (5º critério) — nunca um slot único "compartilhado" a menos
+      que os valores possíveis disputem o MESMO recurso (caso de
+      `forcedVanish`).
+- [ ] O que `startNextRound` faz com ele — limpar, recomputar para o tabuleiro
+      novo, ou preservar? Qual das categorias 1–4 acima ele é (o 5º critério é
+      sobre a FORMA do campo, não sobre o que acontece na troca de rodada)?
+- [ ] O que `startMatch` faz com ele — geralmente coberto de graça pelo reset
+      total via `{ ...createInitialState() }`, mas confirmar que o campo tem
+      valor neutro em `createInitialState()`.
+- [ ] Teste cobrindo a decisão — não só a existência do campo, o CICLO dele
+      atravessando (ou não) uma troca de rodada.
+- Se o campo é uma interação/pendência que trava alguma parte do tabuleiro
+  (é exatamente o caso de `pendingInteraction`): confirmar que ele NUNCA
+  fica `!= null` no instante em que `startNextRound` roda — do contrário uma
+  rodada pode terminar (`findWinner` fecha linha) no MEIO de uma interação
+  pendente, e o campo sobrevivendo (ou sendo apagado sem resolver a promessa
+  que ele representava) trava o jogo. `pendingAcknowledgement` já resolve
+  isso hoje bloqueando `canPlaceAt` enquanto pendente (ver comentário em
+  `startNextRound`) — `pendingInteraction` precisa da mesma garantia.
+
+**Checklist acima, aplicado a `pendingInteraction` (Fase 3) — resolvido:**
+campo único (justificado na linha da tabela acima), `canPlaceAt`/`endTurn`
+recusam enquanto pendente (mesma guarda que `pendingAction` já tinha),
+`startNextRound` limpa explicitamente, `createInitialState()` nasce com
+`null`, e a garantia "nunca `!= null` quando uma rodada fecha" é estrutural
+(não apagada sem resolver: `cancelInteraction`/`resolveInteraction` são os
+únicos caminhos que limpam o campo fora de `startNextRound`/`forfeitMatch`, e
+os dois sempre resolvem a promessa — aplicando o efeito final ou reembolsando
+carta+energia — antes de zerá-lo). Testado em `gameStore.test.ts`.
+
+**Achado extra durante a Fase 3, fora do escopo desta auditoria mas do mesmo
+gênero:** `resolveCardPlay` não tinha NENHUMA checagem de `pendingInteraction`
+— só a UI (`canDrag` desabilitado em `<CardItem />`) impedia jogar uma 2ª
+carta com uma interação já aberta. Registrado como a 4ª ocorrência do padrão
+"regra de domínio só evitada pela UI" em `AGENTS.md` (seção "Invariantes de
+domínio"); corrigido com uma guarda cedo em `resolveCardPlay`
+(`if (state.pendingInteraction !== null) return false;`), coberta por teste
+dedicado com carta real provando retorno `false` e zero mudança de estado.
+
+## `isSelected` em `<CardItem />` — inalcançável desde a Fase 3, deixado como está
+
+O timing unificado de `pendingInteraction` (Fase 3: toda interação, `BOARD_TARGET`
+incluso, remove a carta da mão no INSTANTE em que abre, não quando resolve) tem um efeito
+colateral na UI: a carta armada é removida (`splice`) da mão assim que a mira abre, então o
+`<CardItem />` daquela carta desmonta antes de qualquer novo toque poder recolocá-lo em
+`isSelected=true`. A prop existe, `CardHand.tsx` ainda a calcula, mas nenhuma instância
+renderizada de `<CardItem />` pode mais recebê-la como `true` — junto foi removido só o que
+ficou literalmente morto (`cancelTargeting` e o ramo do tap-gesture que o chamava); a prop
+`isSelected` em si, o shared value `selected`, seu `useEffect` e o blend em `animatedStyle`
+(lift/scale/borda/sombra) ficaram intactos.
+
+**Decisão explícita: não remover agora.** Diferente de `doomedCell` (achado limpando código
+morto na Fase 2, ver auditoria acima) — aquele era estado de MOTOR, com risco real de
+alguém reativar a lógica errada por engano ao reaproveitar o campo. `isSelected` é prop +
+shared value de UI sem consumidor: não mente para ninguém, não pode ser reativada por
+acidente, só ocupa espaço. Não é a mesma classe de risco, não merece a mesma urgência de
+limpeza — e "inalcançável hoje" não é "inalcançável para sempre": se a Fase 6 mudar a
+seleção do Altar, ou uma variação futura de `BOARD_TARGET` decidir manter a carta visível
+durante a mira (em vez de remover da mão), o código volta a ser usado. Reconstruir a
+animação depois custaria mais do que manter quieta agora.
+
+**Revisitar** quando alguma fase futura de fato tocar este caminho (Altar/`SACRIFICE_DRAG`
+na Fase 6, ou qualquer mudança na semântica de "carta armada continua na mão") — só então
+decidir se `isSelected` volta a ter consumidor ou se aí sim vale remover.

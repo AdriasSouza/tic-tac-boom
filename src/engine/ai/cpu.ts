@@ -41,6 +41,8 @@ export interface CpuActions {
   placeMark: (index: number) => void;
   /** Resolve a partir da mão da máquina. A IA nunca toca na mão do Player. */
   playCard: (uid: string, targetIndex?: number) => boolean;
+  /** Passa a vez sem colocar peça — plano B quando `chooseCpuMove` não decide nada. */
+  endTurn: () => void;
 }
 
 /** Token de cancelamento cooperativo. O React vira `cancelled = true` no cleanup. */
@@ -309,6 +311,11 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
  * 3. **Posicional** — sorteia dentro do melhor grupo de células disponível.
  */
 export function chooseCpuMove(state: GameState, positionalBias = true): CpuDecision | null {
+  // REBOBINAR: a CPU joga o turno normalmente (já jogou carta/armou armadilha
+  // antes de chegar aqui, ver `chooseCpuCardPlay`), só não decide colocação —
+  // tratado exatamente como "sem jogada legal", sem precisar simular nada.
+  if (state.machinePlacementBlocked) return null;
+
   const moves = legalMoves(state);
   if (moves.length === 0) return null;
 
@@ -377,7 +384,7 @@ export async function playCPUTurn(
   // Revalidação pós-atraso. Cada guarda cobre um caso real de corrida:
   if (fresh.status !== 'PLAYING') return null; // rodada acabou nesse meio-tempo
   if (fresh.turn !== CPU) return null; // armadilha ou carta devolveu a vez
-  if (fresh.pendingAction !== null) return null; // humano está mirando
+  if (fresh.pendingInteraction !== null) return null; // humano está mirando/escolhendo
 
   /* --- Cartas antes do tabuleiro -------------------------------------------
      No máximo uma por turno (ver `chooseCpuCardPlay`). A mensagem de log já
@@ -392,7 +399,7 @@ export async function playCPUTurn(
       // encerrado a rodada — decidir a jogada de tabuleiro com dados velhos
       // arriscaria jogar num estado que já não existe mais.
       fresh = getState ? getState() : fresh;
-      if (fresh.status !== 'PLAYING' || fresh.turn !== CPU || fresh.pendingAction !== null) {
+      if (fresh.status !== 'PLAYING' || fresh.turn !== CPU || fresh.pendingInteraction !== null) {
         return null;
       }
 
@@ -411,7 +418,23 @@ export async function playCPUTurn(
   }
 
   const decision = chooseCpuMove(fresh, positionalBias);
-  if (!decision) return null;
+  if (!decision) {
+    // `endTurn` recusa (devolve `false`) se houver `pendingAcknowledgement` —
+    // e chamá-lo aqui nesse caso seria um no-op silencioso, o MESMO soft-lock
+    // que esta função existe para eliminar, uma camada acima. Hoje isto é
+    // INALCANÇÁVEL: o hook (`useCpuOpponent`) já tem `hasPendingAcknowledgement`
+    // nas próprias dependências e recusa AGENDAR esta função enquanto uma
+    // confirmação está pendente; e a única fonte de confirmação DENTRO desta
+    // função (a carta que a CPU acabou de jogar) já foi checada explicitamente
+    // acima, antes de chegar aqui. Guarda mesmo assim, defensiva: se uma fonte
+    // nova de `pendingAcknowledgement` aparecer no futuro sem passar por
+    // nenhum dos dois pontos acima, o turno fica preso até a pendência limpar
+    // e o PRÓPRIO hook tenta de novo — nunca desiste em silêncio.
+    if (fresh.pendingAcknowledgement !== null) return null;
+
+    actions.endTurn();
+    return null;
+  }
 
   actions.placeMark(decision.index);
   return decision;

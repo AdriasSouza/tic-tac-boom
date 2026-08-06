@@ -46,7 +46,7 @@ export function useCpuOpponent({
   /**
    * `turnCount` é o gatilho, não `turn`.
    *
-   * Com a carta REBOBINAR (ou a MINA detonando), a máquina joga duas vezes
+   * Com a carta TURNO_EXTRA (ou a MINA detonando), a máquina joga duas vezes
    * seguidas e `turn` permanece `'MACHINE'` — as dependências não mudariam e o
    * efeito não rodaria de novo, travando o jogo. `turnCount` avança a cada
    * jogada e destrava esse caso.
@@ -82,6 +82,9 @@ export function useCpuOpponent({
       {
         placeMark: (index) => useGameStore.getState().placeMark('MACHINE', index),
         playCard: (uid, targetIndex) => useGameStore.getState().playMachineCard(uid, targetIndex),
+        endTurn: () => {
+          useGameStore.getState().endTurn('MACHINE');
+        },
       },
       {
         signal,

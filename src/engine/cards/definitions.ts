@@ -8,6 +8,7 @@ import type {
   AcknowledgementKind,
   Combatant,
   GameState,
+  InteractionSelection,
 } from '@/engine/rules';
 import type { LogPayload, NoticePayload } from '@/engine/log';
 
@@ -45,7 +46,8 @@ export type CardId =
   | 'HIGHLIGHT_OLDEST'
   | 'QUEUE_SHUFFLE'
   | 'ANTI_SPELL_TRAP'
-  | 'REFLECT_TRAP';
+  | 'REFLECT_TRAP'
+  | 'REBOBINAR';
 
 /**
  * - `ACTION`  — resolve imediatamente ao ser jogada.
@@ -154,6 +156,22 @@ export interface CardEffectContext {
   readonly event?: GameEvent;
   /** Canal `CARDS` do RNG — determinístico e isolado dos outros sistemas. */
   readonly rng: Rng;
+  /**
+   * Presente SÓ ao resolver um passo de uma `PendingInteraction` já aberta
+   * (2ª+ chamada de `effect` para a MESMA jogada de carta) — ausente na 1ª
+   * chamada. `effect` é a SUA PRÓPRIA continuação: quando este campo está
+   * presente, ele decide se já tem tudo que precisa (devolve um resultado
+   * normal) ou se quer mais um passo (devolve `interaction` de novo, com um
+   * `kind` possivelmente diferente do anterior — é assim que uma carta de
+   * múltiplos passos, tipo "escolha 1 sua, depois 1 do oponente", funciona
+   * sem precisar de uma função separada nem de um `kind` de composição).
+   */
+  readonly interaction?: {
+    /** A escolha feita no passo que acabou de resolver. */
+    readonly selection: InteractionSelection;
+    /** Escolhas de passos ANTERIORES da mesma jogada, em ordem. */
+    readonly priorSelections: readonly InteractionSelection[];
+  };
 }
 
 /**
@@ -257,7 +275,41 @@ export interface CardEffectResult {
    * discordar sobre o que aconteceu — só sobre quanto texto usar para dizê-lo.
    */
   notice?: NoticePayload;
+  /**
+   * Em vez de resolver agora, pede uma escolha do jogador — o motor abre uma
+   * `PendingInteraction` (`rules.ts`) e pausa até ela chegar. Quando chegar,
+   * `effect` é chamado DE NOVO, com `context.interaction` preenchido (ver lá)
+   * — não existe uma função `resolveInteraction` separada por carta.
+   *
+   * Exclusivo com todos os outros campos deste resultado: uma carta que pede
+   * interação não aplica patch/dano/etc. NESTA chamada — só quando `effect`
+   * devolver um resultado SEM `interaction`.
+   */
+  interaction?: PendingInteractionRequest;
 }
+
+/**
+ * O que uma carta pode PEDIR ao abrir uma interação — sem os campos que só o
+ * STORE sabe preencher (`caster`/`cardId`/`cardUid`/`handIndex`/
+ * `priorSelections`, ver `PendingInteraction` em `rules.ts`).
+ *
+ * `BOARD_TARGET` não aparece aqui de propósito: ele nunca nasce de um
+ * `effect()` — só o próprio motor de resolução de carta o abre, para cartas
+ * `requiresTarget` sem alvo ainda escolhido. Ver o comentário de
+ * `PendingInteraction` em `rules.ts` para o porquê dessa assimetria (cartas
+ * `requiresTarget` existentes leem `targetIndex` direto do contexto; não
+ * têm como decidir "preciso de alvo" ANTES de já ter um).
+ */
+export type PendingInteractionRequest =
+  | { kind: 'PICK_ONE_FROM_HAND'; source: Combatant; optionUids: readonly string[] }
+  | {
+      kind: 'PICK_MANY_FROM_HAND';
+      source: Combatant;
+      optionUids: readonly string[];
+      count: number;
+    }
+  | { kind: 'PICK_ONE_REVEALED'; options: readonly CardId[] }
+  | { kind: 'SACRIFICE_DRAG'; eligibleUids: readonly string[]; count: number };
 
 /** Retornar `null` significa "jogada inválida" — a carta volta para a mão. */
 export type CardEffect = (context: CardEffectContext) => CardEffectResult | null;

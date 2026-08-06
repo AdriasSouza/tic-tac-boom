@@ -575,6 +575,12 @@ documentado como limitação conhecida, abaixo.
   barato) — está fora do escopo de "heurística básica".
 - **A CPU joga no máximo 1 carta por turno**, sempre antes do movimento de tabuleiro — nunca
   encadeia duas cartas na mesma jogada, mesmo quando nenhuma delas consome o turno.
+- **A CPU reage a ser bloqueada por REBOBINAR (chama `endTurn` em vez de travar), mas não
+  ganhou heurística para JOGAR a carta.** `chooseCpuCardPlay` não considera REBOBINAR entre
+  as prioridades — fica para uma fase futura de IA mais avançada (Fase 7). Pelo mesmo motivo,
+  `chooseCpuMove` não deixa de "bloquear" uma ameaça do humano quando o humano também está
+  impedido de colocar peça (`playerPlacementBlocked`) — jogar defensivo demais nesse caso é
+  sub-ótimo, não incorreto.
 - **A fonte no terminal é independente do resto do app.** `expo-font` não alcança o documento do
   WebView/iframe; usar a Press Start 2P lá dentro exige embutir o `.ttf` como base64 num
   `@font-face` dentro do próprio HTML.

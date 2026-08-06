@@ -13,6 +13,7 @@ import PauseModal from '@/components/ui/PauseModal';
 import DamageFlashOverlay from '@/components/ui/DamageFlashOverlay';
 import AcknowledgementModal from '@/components/ui/AcknowledgementModal';
 import AltarModal from '@/components/ui/AltarModal';
+import InteractionModal from '@/components/ui/InteractionModal';
 import ExtraTurnBanner from '@/components/ui/ExtraTurnBanner';
 import NoticeToast from '@/components/ui/NoticeToast';
 import OpponentDisconnectedModal from '@/components/ui/OpponentDisconnectedModal';
@@ -244,6 +245,11 @@ export default function GameScreen() {
           a carta (`caster === localCombatant`, checado dentro do próprio
           componente). Nenhuma prop precisa descer até aqui. */}
       <AltarModal />
+      {/* Cobre os 3 `kind`s de `pendingInteraction` que precisam de grade
+          tocável (PICK_ONE_FROM_HAND/PICK_MANY_FROM_HAND/PICK_ONE_REVEALED).
+          BOARD_TARGET usa a UI de mira do próprio tabuleiro; SACRIFICE_DRAG
+          continua no `AltarModal` acima até a Fase 6. */}
+      <InteractionModal />
       {/* Acima do fim de jogo: se a sala caiu, o resultado da partida não
           importa mais — o que o jogador precisa é de uma saída. */}
       <OpponentLeftModal />

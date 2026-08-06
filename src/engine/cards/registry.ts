@@ -9,6 +9,7 @@ import {
   isImmuneToTraps,
   occupiedIndexes,
   opponentOf,
+  placementBlockedKeyFor,
   revealedKeyFor,
 } from '@/engine/rules';
 import { RARITY_DRAW_WEIGHT } from './definitions';
@@ -513,8 +514,11 @@ const DRAW_CARD_BIG: CardDefinition = {
 /**
  * Carta nova. Leitura PURA: destaca a peça mais antiga do oponente no
  * tabuleiro (a próxima que sumiria sozinha ao ele colocar a 4ª peça) — não
- * marca nada no estado do jogo, não destrói nada, só `log`/`notice` com o
- * índice para a apresentação destacar.
+ * altera a fila do "infinito" nem destrói nada (isso é OBSOLESCÊNCIA). O
+ * destaque em si (`highlightedOldestFor`, `rules.ts`) É estado — efêmero, só
+ * para a apresentação (`<Cell />`) acender um glow visível apenas para
+ * `caster` — auto-invalida se a peça sair do índice por outro caminho antes
+ * do turno de `caster` terminar (ver `isHighlightedOldestValid`).
  *
  * `canPlay` exige só >=1 peça do oponente, não as 3 do "infinito" — a spec
  * (`docs/CARTAS.md`) só define o caso de borda "sem NENHUMA peça", não
@@ -538,9 +542,16 @@ const HIGHLIGHT_OLDEST: CardDefinition = {
     const target = opponentOf(caster);
     const oldest = getPieceIndexes(state.board, target)[0];
     if (oldest === undefined) return null;
+    const piece = state.board[oldest]!; // sempre não-nulo — veio de getPieceIndexes
 
     const event = { code: 'CARD_HIGHLIGHT_OLDEST', subject: caster, target, value: oldest } as const;
-    return { log: event, notice: event };
+    return {
+      patch: {
+        highlightedOldestFor: { caster, owner: target, index: oldest, turnPlaced: piece.turnPlaced },
+      },
+      log: event,
+      notice: event,
+    };
   },
 };
 
@@ -913,6 +924,43 @@ const ALTAR_OF_SACRIFICE: CardDefinition = {
   }),
 };
 
+/**
+ * Bloqueia a COLOCAÇÃO de peça do oponente por um turno — o resto do turno
+ * dele segue normal (energia regenera, ele joga cartas, arma armadilhas).
+ * Mecanismo novo (`playerPlacementBlocked`/`machinePlacementBlocked`,
+ * `rules.ts`), consultado só por `canPlaceAt`. Distinto de TURNO_EXTRA
+ * (`extraTurnPending`), que pula a alternância de turno INTEIRA — aqui o
+ * oponente ainda tem a vez, só não pode jogar peça nela.
+ *
+ * Sem `canPlay`: sempre jogável, mesmo contra um alvo já bloqueado (dois
+ * turnos seguidos seria o resultado — jogada tática legítima, já paga com
+ * carta+energia, não desperdício a impedir) e mesmo enquanto o PRÓPRIO caster
+ * está bloqueado (jogar aqui não desbloqueia quem joga — `canPlay` não existe
+ * para proteger o jogador de decisão ruim, mesmo raciocínio do VIDENTE).
+ */
+const PLACEMENT_LOCK: CardDefinition = {
+  id: 'REBOBINAR',
+  name: 'REBOBINAR',
+  type: 'ACTION',
+  description:
+    'O oponente joga o turno normalmente (energia, cartas, armadilhas), mas não pode colocar peça nele.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 3,
+  cost: 3,
+
+  effect: ({ caster }) => {
+    const target = opponentOf(caster);
+    const event = { code: 'CARD_REBOBINAR', subject: caster, target } as const;
+
+    return {
+      patch: { [placementBlockedKeyFor(target)]: true },
+      log: event,
+      notice: { ...event, tone: 'NEUTRAL' },
+    };
+  },
+};
+
 /* -------------------------------------------------------------------------- */
 /*                                   REGISTRY                                  */
 /* -------------------------------------------------------------------------- */
@@ -947,6 +995,7 @@ export const CARD_REGISTRY: Record<CardId, CardDefinition> = {
   QUEUE_SHUFFLE,
   ANTI_SPELL_TRAP,
   REFLECT_TRAP,
+  REBOBINAR: PLACEMENT_LOCK,
 };
 
 export const CARD_IDS = Object.keys(CARD_REGISTRY) as CardId[];

@@ -33,10 +33,12 @@ import {
   isCellUnavailable,
   isChaosRuleExpired,
   isChaosSurgeTurn,
+  isHighlightedOldestValid,
   isLockedCellExpired,
   isValidTargetForCard,
   opponentOf,
   pickFreeCell,
+  placementBlockedKeyFor,
   regenEnergy,
   trapsKeyFor,
   type AcknowledgementCode,
@@ -49,10 +51,11 @@ import {
   type Notice,
   type NoticePayload,
   type NoticeTone,
+  type InteractionSelection,
   type PendingAcknowledgement,
-  type PendingAction,
+  type PendingInteraction,
 } from '@/engine/rules';
-import type { CardId } from '@/engine/cards/definitions';
+import type { CardEffectResult, CardId, PendingInteractionRequest } from '@/engine/cards/definitions';
 import type { GameEvent } from '@/engine/events';
 
 /** Intervalo entre o fim da rodada e a limpeza automática do tabuleiro. */
@@ -140,12 +143,13 @@ export type {
   CardId,
   Combatant,
   GameState,
+  InteractionSelection,
   LogPayload,
   Notice,
   NoticePayload,
   NoticeTone,
   PendingAcknowledgement,
-  PendingAction,
+  PendingInteraction,
 };
 
 export interface GameActions {
@@ -222,8 +226,17 @@ export interface GameActions {
   /** Limpa o tabuleiro mantendo o HP — usado entre rodadas. */
   startNextRound: () => void;
 
-  /** Passa a vez sem jogar (útil para cartas de "pular turno"). */
-  endTurn: () => void;
+  /**
+   * Passa a vez sem jogar — útil para cartas de "pular turno" (REBOBINAR) e
+   * para o jogador escolher não colocar peça.
+   *
+   * `combatant` precisa bater com `state.turn` — mesma exigência de
+   * `placeMark`/`resolveCardPlay` (AGENTS.md: a guarda mora no motor, não na
+   * UI que só não oferece o caminho). Devolve `true` se o turno passou,
+   * `false` se foi recusado (status, turno, pausa, confirmação ou mira
+   * pendente) — mesmo contrato de `placeMark`/`playCard`.
+   */
+  endTurn: (combatant: Combatant) => boolean;
 
   /**
    * Sorteia uma nova `ChaosRule` **caótica** (nunca `NORMAL`) pelo canal
@@ -265,15 +278,31 @@ export interface GameActions {
   playMachineCard: (uid: string, targetIndex?: number) => boolean;
 
   /**
-   * Entra em modo mira. Valida antes de armar: turno, fase, presença na mão e
-   * se a carta realmente exige alvo.
+   * Resolve o PASSO ATUAL da interação pendente do combatente cuja vez é
+   * agora, com `selection`. `BOARD_TARGET` chama `card.effect` com o
+   * `targetIndex` escolhido (mesma chamada que toda carta `requiresTarget`
+   * já espera); os outros `kind`s chamam `card.effect` de novo com
+   * `context.interaction` preenchido — não existe uma função separada por
+   * carta (ver `PendingInteraction`/`CardEffectContext.interaction`,
+   * `rules.ts`/`definitions.ts`).
    *
-   * @returns `true` se o modo mira foi armado.
+   * Se o resultado tiver `.interaction` de novo, abre o PRÓXIMO passo (mesmo
+   * custo já pago, histórico cresce). Se vier um resultado normal, aplica e
+   * fecha a interação. Se vier `null`, trata como CANCELAMENTO — reembolsa
+   * energia e devolve a carta, exatamente como `cancelInteraction`.
+   *
+   * @returns `false` se não havia interação pendente deste combatente, ou a
+   * escolha não bate com o passo atual (`selection.kind !== pending.kind`).
    */
-  setPendingAction: (action: PendingAction | null) => boolean;
+  resolveInteraction: (combatant: Combatant, selection: InteractionSelection) => boolean;
 
-  /** Sai do modo mira sem jogar a carta. */
-  clearPendingAction: () => void;
+  /**
+   * Cancela a interação pendente do combatante — devolve a carta (no
+   * `handIndex` original, não pelo fim) e a energia (`getCard(cardId).cost`),
+   * em qualquer passo da cadeia. Nunca há "meio reembolso": o custo pago é
+   * sempre o da carta ORIGINAL, não importa quantos passos já resolveram.
+   */
+  cancelInteraction: (combatant: Combatant) => boolean;
 
   /**
    * Publica um fato no barramento e resolve as armadilhas que ele acionar.
@@ -352,9 +381,12 @@ const createInitialState = (): GameState => ({
   lockedCell: null,
   lockedCellExpiresAtTurn: null,
   forcedVanish: null,
+  playerPlacementBlocked: false,
+  machinePlacementBlocked: false,
+  highlightedOldestFor: null,
   playerHand: [],
   nextCardUid: 0,
-  pendingAction: null,
+  pendingInteraction: null,
   playerTraps: [],
   machineTraps: [],
   playerRevealedUids: [],
@@ -619,6 +651,205 @@ export const useGameStore = create<GameStore>()((set, get) => {
   }
 
   /**
+   * Aplica um `CardEffectResult` FINAL (nunca `.interaction` — quem chama já
+   * confirmou que não tem) — recheca `findWinner`, avança o turno se
+   * `consumesTurn`, e processa `log`/`notice`/`damage`/`heal`/`draw`/
+   * `triggersChaosGlitch`/`opensAltar`/`acknowledge`.
+   *
+   * Único caminho para os TRÊS consumidores de `CardEffectResult`
+   * (`resolveCardPlay`, `resolveInteraction`, `resolveCounterTraps`) — antes
+   * da Fase 3, `resolveCounterTraps` duplicava um SUBCONJUNTO desta lista à
+   * mão (sem recheck de `findWinner`, sem `consumesTurn`/`opensAltar`/
+   * `triggersChaosGlitch` — lacuna documentada em `docs/NOTAS_TECNICAS.md`).
+   * Unificado agora que um TERCEIRO consumidor ia duplicar de novo.
+   *
+   * `basePatch` é o que o CHAMADOR já monta (remoção de mão + débito de
+   * energia + `machineCardTurn`, cada um variando por chamador) — esta
+   * função só soma o `patch` do efeito por cima e decide o que fazer com o
+   * resultado.
+   *
+   * **Restrição:** armadilha reativa (`resolveCounterTraps`) NUNCA chama isto
+   * com um `result.interaction` presente — um contra-ataque pausando o jogo
+   * para uma 3ª decisão, no MEIO da resolução de outra carta, é território
+   * novo o bastante para merecer discussão própria, não uma consequência
+   * acidental desta unificação. Nenhuma armadilha hoje pede isso.
+   */
+  function applyCardEffectResult(
+    caster: Combatant,
+    cardId: CardId,
+    result: CardEffectResult,
+    basePatch: Partial<GameState>,
+  ): void {
+    // Mesma blindagem de sempre: nenhum patch de carta toca `turnCount`/
+    // energia diretamente — só via `consumesTurn`/`energySpend` (já embutido
+    // em `basePatch` por quem chama).
+    const {
+      turnCount: _turnCountIsNotCardBusiness,
+      playerEnergy: _playerEnergyIsNotCardBusiness,
+      machineEnergy: _machineEnergyIsNotCardBusiness,
+      ...safePatch
+    } = result.patch ?? {};
+
+    const patch: Partial<GameState> = { ...basePatch, ...safePatch };
+
+    // Cartas podem mover/remover peças, então revalidamos a linha vencedora
+    // — é exatamente o recheck que faltava em `resolveCounterTraps`.
+    const outcome = findWinner(safePatch.board ?? get().board);
+
+    if (outcome) {
+      set({ ...patch, status: 'ROUND_OVER', roundWinner: outcome.winner, winningLine: outcome.line });
+      get().pushLog({ code: 'ROUND_WIN', subject: outcome.winner });
+      get().takeDamage(outcome.winner === 'PLAYER' ? 'MACHINE' : 'PLAYER', ROUND_DAMAGE);
+      if (get().status !== 'MATCH_OVER') scheduleRoundTransition();
+      return;
+    }
+
+    // `{ ...get(), ...basePatch }`: o regen precisa da energia PÓS-custo do
+    // caster. Funciona nos dois casos que este helper atende — quando
+    // `basePatch` ainda NÃO foi escrito no store (resolução normal, o débito
+    // está só no objeto que estamos montando) e quando já FOI escrito antes
+    // (passo final de uma interação, o débito aconteceu ao abrir) — nos dois,
+    // sobrepor `basePatch` por cima do estado atual dá o valor efetivo certo.
+    const nextTurnInfo = result.consumesTurn ? beginTurn({ ...get(), ...basePatch }) : null;
+
+    set({
+      ...patch,
+      ...(nextTurnInfo
+        ? { turn: opponentOf(caster), turnCount: get().turnCount + 1, ...nextTurnInfo.patch }
+        : null),
+    });
+
+    if (result.log) get().pushLog(result.log);
+    if (result.notice) get().pushNotice(result.notice);
+    if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
+    if (result.heal) get().healTarget(result.heal.target, result.heal.amount);
+    if (result.draw) drawCardsFor(result.draw.target, result.draw.count);
+    // TIC TAC BOOM!: mesma roleta do surto automático do relógio global, só
+    // que provocada pelo jogador. `triggerTerminalGlitch` não é pura (lê
+    // `activeRule`, publica seu próprio log/aviso da REGRA sorteada), por
+    // isso a carta só sinaliza a intenção e o store decide chamá-la.
+    if (result.triggersChaosGlitch) get().triggerTerminalGlitch();
+
+    // ALTAR DE SACRIFÍCIO: publica o fato efêmero que o `<AltarModal />`
+    // observa. `id` monotônico pelo mesmo motivo de `lastExtraTurn` — jogar a
+    // carta duas vezes seguidas com o mesmo `caster` precisa reabrir o modal
+    // as duas vezes, e comparar só `caster` não distinguiria isso.
+    if (result.opensAltar) {
+      const id = get().nextAltarPromptId;
+      set({ lastAltarPrompt: { caster, id }, nextAltarPromptId: id + 1 });
+    }
+
+    // Cartas de espionagem (ESPIONAGEM, VISÃO ABSOLUTA): a revelação já
+    // aconteceu (é o que `card.effect` acabou de calcular), isto só pausa o
+    // jogo com um modal até o jogador confirmar que leu.
+    if (result.acknowledge) {
+      queueAcknowledgement(result.acknowledge, () => {});
+    }
+  }
+
+  /**
+   * Monta a `PendingInteraction` completa a partir do que `effect()` PEDIU
+   * (`PendingInteractionRequest`, sem os campos que só o store sabe
+   * preencher) — e é AQUI que `count` é clampado a
+   * `Math.min(pedido, fonte.length)` (regra obrigatória do contrato), nunca
+   * confiando no que a carta pediu.
+   */
+  function openInteraction(
+    base: {
+      caster: Combatant;
+      cardId: CardId;
+      cardUid: string;
+      handIndex: number;
+      priorSelections: InteractionSelection[];
+    },
+    request: PendingInteractionRequest,
+  ): PendingInteraction {
+    switch (request.kind) {
+      case 'PICK_MANY_FROM_HAND':
+        return {
+          ...base,
+          kind: request.kind,
+          source: request.source,
+          optionUids: request.optionUids,
+          count: Math.min(request.count, request.optionUids.length),
+        };
+      case 'SACRIFICE_DRAG':
+        return {
+          ...base,
+          kind: request.kind,
+          eligibleUids: request.eligibleUids,
+          count: Math.min(request.count, request.eligibleUids.length),
+        };
+      case 'PICK_ONE_FROM_HAND':
+        return { ...base, kind: request.kind, source: request.source, optionUids: request.optionUids };
+      case 'PICK_ONE_REVEALED':
+        return { ...base, kind: request.kind, options: request.options };
+    }
+  }
+
+  /**
+   * Reembolso — usado tanto por `cancelInteraction` (explícito) quanto por um
+   * passo inválido (`effect` devolvendo `null` ao resolver, ver
+   * `resolveInteraction`). Devolve a carta no `handIndex` ORIGINAL (não pelo
+   * fim — não é "entrar na mão" no sentido de `CLAUDE.md` #7, é desfazer) e a
+   * energia (`getCard(cardId).cost` — sempre o custo da carta ORIGINAL,
+   * nunca importa quantos passos de uma cadeia já resolveram).
+   */
+  function refundInteraction(pending: PendingInteraction): Partial<GameState> {
+    const card = getCard(pending.cardId);
+    const handKey = handKeyFor(pending.caster);
+    const hand = [...get()[handKey]];
+    hand.splice(pending.handIndex, 0, { uid: pending.cardUid, cardId: pending.cardId });
+
+    return {
+      [handKey]: hand,
+      [energyKeyFor(pending.caster)]: get()[energyKeyFor(pending.caster)] + card.cost,
+      pendingInteraction: null,
+    };
+  }
+
+  /**
+   * Termina o passo de interação que acabou de resolver: encadeia (mais um
+   * `interaction`), reembolsa (resultado `null`), ou aplica o resultado final
+   * via `applyCardEffectResult`. Compartilhado pelos dois ramos de
+   * `resolveInteraction` (`BOARD_TARGET` e os outros 4 `kind`s).
+   */
+  function finishInteractionStep(
+    pending: PendingInteraction,
+    selection: InteractionSelection,
+    result: CardEffectResult | null,
+    combatant: Combatant,
+  ): boolean {
+    if (!result) {
+      set(refundInteraction(pending));
+      return true;
+    }
+
+    if (result.interaction) {
+      set({
+        pendingInteraction: openInteraction(
+          {
+            caster: pending.caster,
+            cardId: pending.cardId,
+            cardUid: pending.cardUid,
+            handIndex: pending.handIndex,
+            priorSelections: [...pending.priorSelections, selection],
+          },
+          result.interaction,
+        ),
+      });
+      return true;
+    }
+
+    applyCardEffectResult(pending.caster, pending.cardId, result, {
+      pendingInteraction: null,
+      ...(combatant === 'MACHINE' ? { machineCardTurn: get().turnCount } : null),
+    });
+    get().dispatchEvent({ type: 'CARD_PLAYED', player: pending.caster, cardId: pending.cardId });
+    return true;
+  }
+
+  /**
    * Dá à(s) TRAP(s) armadas do OPONENTE de `event.player` a chance de vetar
    * uma carta de ação antes do efeito dela rodar.
    *
@@ -656,16 +887,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
       if (!result?.cancelsAction) continue;
 
       const remaining = state[trapsKey].filter((t) => t.uid !== trap.uid);
-      set({ ...result.patch, [trapsKey]: remaining });
-      if (result.log) get().pushLog(result.log);
-      if (result.notice) get().pushNotice(result.notice);
-      // RICOCHETE é a primeira armadilha cujo efeito precisa disto — antes só
-      // cancelava (PROTEÇÃO/ANTIMAGIA nunca causaram dano/cura). Mesmo
-      // tratamento pós-patch de `applyResult`, para o contrato de
-      // `CardEffectResult` valer igual dentro e fora do contra-ataque.
-      if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
-      if (result.heal) get().healTarget(result.heal.target, result.heal.amount);
-      if (result.draw) drawCardsFor(result.draw.target, result.draw.count);
+      // `result.interaction` não é tratado de propósito — ver a restrição no
+      // JSDoc de `applyCardEffectResult`. Nenhuma armadilha hoje o produz.
+      applyCardEffectResult(defender, trap.cardId, result, { [trapsKey]: remaining });
 
       queueAcknowledgement(
         { code: 'TRAP_TRIGGERED', subject: defender, target: actor, cardId: trap.cardId },
@@ -695,6 +919,12 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // Mesma janela de `canPlaceAt`: uma confirmação manual pendente segura
     // qualquer ação até o jogador clicar "Entendi".
     if (state.pendingAcknowledgement !== null) return false;
+    // Lacuna encontrada nesta fase (Fase 3): NADA aqui impedia jogar uma
+    // SEGUNDA carta enquanto uma interação da primeira ainda estava pendente
+    // — só a UI (`canDrag` desabilitado durante a mira) evitava o caminho.
+    // 4ª ocorrência do padrão do AGENTS.md (regra de domínio só respeitada
+    // porque a UI não oferece o caminho). A guarda mora aqui agora.
+    if (state.pendingInteraction !== null) return false;
 
     const handKey = handKeyFor(caster);
     const handIndex = state[handKey].findIndex((c) => c.uid === uid);
@@ -707,7 +937,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // Mesmo idioma das guardas acima: energia insuficiente aborta em silêncio,
     // sem consumir a carta nem tocar o RNG. Cobre TRAP e ação igualmente —
     // armar uma armadilha custa ⚡ tanto quanto resolver uma ação na hora, e
-    // este é o único ponto que os dois caminhos abaixo atravessam.
+    // este é o único ponto que os dois caminhos abaixo atravessam. Também
+    // cobre ABRIR uma interação (armar a mira de `BOARD_TARGET` incluso) —
+    // antes desta fase, `setPendingAction` nunca checava energia nenhuma; só
+    // a UI (`canAfford`) evitava armar mira sem crédito. Fica coberto de
+    // graça agora que abrir mira passa por este mesmo portão.
     if (state[energyKeyFor(caster)] < card.cost) return false;
     const energySpend: Partial<GameState> = {
       [energyKeyFor(caster)]: state[energyKeyFor(caster)] - card.cost,
@@ -732,7 +966,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
       if (resolveCounterTraps({ type: 'CARD_ABOUT_TO_RESOLVE', player: caster, cardId })) {
         set({
           [handKey]: hand,
-          pendingAction: null,
           ...energySpend,
           ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
         });
@@ -742,7 +975,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
       set({
         [handKey]: hand,
         [trapsKey]: [...state[trapsKey], { uid, cardId }],
-        pendingAction: null,
         ...energySpend,
         ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
       });
@@ -764,10 +996,47 @@ export const useGameStore = create<GameStore>()((set, get) => {
       return true;
     }
 
-    // Carta de mira sem alvo legal nunca resolve.
-    if (card.requiresTarget) {
-      if (targetIndex === undefined) return false;
-      if (!isValidTargetFor(state, cardId, targetIndex, caster)) return false;
+    /* --- BOARD_TARGET: abre a interação em vez de exigir o alvo já pronto ---
+       Cartas `requiresTarget` sem `targetIndex` ainda (o caso de sempre —
+       jogador tocou a carta, ainda não tocou uma célula) abrem
+       `pendingInteraction` aqui, em vez de `setPendingAction` (removida) ou
+       de recusar a jogada. `card.effect` NÃO roda ainda — cartas como
+       DEMOLIR/TRAVAR/OBSOLESCÊNCIA leem `targetIndex` do contexto e não têm
+       como rodar antes de ele existir; o alvo só é resolvido de verdade em
+       `resolveInteraction`, exatamente como `resolveCardPlay(uid, targetIndex)`
+       já fazia antes desta fase — nenhuma carta muda de comportamento. */
+    if (card.requiresTarget && targetIndex === undefined) {
+      if (card.canPlay && !card.canPlay({ state, caster, uid, targetIndex: undefined })) return false;
+
+      // Sem alvo legal no tabuleiro, abrir a interação travaria o jogador num
+      // modo do qual só cancelar sairia — mesma checagem que `setPendingAction`
+      // já fazia (`hasAnyTarget`).
+      const hasAnyTarget = state.board.some((_, index) =>
+        isValidTargetFor(state, cardId, index, caster),
+      );
+      if (!hasAnyTarget) return false;
+
+      const openBoardTarget = (): void => {
+        const hand = [...state[handKey]];
+        hand.splice(handIndex, 1);
+        set({
+          [handKey]: hand,
+          ...energySpend,
+          pendingInteraction: { kind: 'BOARD_TARGET', caster, cardId, cardUid: uid, handIndex, priorSelections: [] },
+          ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
+        });
+      };
+
+      // Mesmo anúncio que qualquer outra jogada — abrir a mira É jogar a
+      // carta (energia/mão já saem daqui, decisão desta fase: ver "Timing de
+      // cobrança" no plano). Consistente com o resto do fluxo: em online,
+      // TODA jogada se anuncia antes de aplicar, não só a resolução final.
+      if (announcesCardPlay(state, caster)) {
+        queueAcknowledgement({ code: 'CARD_PLAYED', subject: caster, cardId }, openBoardTarget);
+        return true;
+      }
+      openBoardTarget();
+      return true;
     }
 
     if (card.canPlay && !card.canPlay({ state, caster, uid, targetIndex })) return false;
@@ -780,7 +1049,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
       hand.splice(handIndex, 1);
       set({
         [handKey]: hand,
-        pendingAction: null,
         ...energySpend,
         // A carta da máquina foi gasta, ainda que anulada — sem marcar o
         // turno aqui, a IA voltaria do "Entendi" da armadilha achando que
@@ -791,48 +1059,24 @@ export const useGameStore = create<GameStore>()((set, get) => {
     }
 
     // --- Efeito ------------------------------------------------------------
-    // O efeito é puro: devolve um patch, não mexe no store. Se devolver null,
-    // nada é consumido — nem a carta, nem números do RNG já sacados.
+    // O efeito é puro: devolve um patch (ou pede uma interação), não mexe no
+    // store. Se devolver null, nada é consumido — nem a carta, nem números do
+    // RNG já sacados. `targetIndex` aqui só existe para cartas `requiresTarget`
+    // que JÁ chegam com o alvo (CPU sempre resolve o próprio alvo antes de
+    // chamar `playCard`/`playMachineCard` — nunca abre `BOARD_TARGET`).
     const result = card.effect({ state, caster, uid, targetIndex, rng: getChannel('CARDS') });
     if (!result) return false;
-
-    /* --- Blindagem do relógio global e da energia ---------------------------
-       `turnCount` é o relógio que dispara compra automática, surto de caos e —
-       via `placeMark` — o sumiço de peças. Uma carta que o adiantasse faria
-       peças evaporarem "do nada" no meio de uma jogada de carta, que era
-       exatamente o bug relatado. O contrato passa a ser explícito e verificado
-       pelo compilador: NENHUM patch de carta pode tocar em `turnCount`. Quem
-       precisa passar a vez usa `consumesTurn`, tratado abaixo num lugar só.
-
-       Mesma blindagem, mesmo motivo, para `playerEnergy`/`machineEnergy`: o
-       débito do CUSTO (`energySpend`, calculado acima) é a única escrita de
-       energia que este fluxo autoriza. Uma futura carta que precise CONCEDER
-       energia ganha seu próprio campo em `CardEffectResult` — como `damage`/
-       `heal`/`draw` já fazem — em vez de escrever o número direto no patch. */
-    const {
-      turnCount: _turnCountIsNotCardBusiness,
-      playerEnergy: _playerEnergyIsNotCardBusiness,
-      machineEnergy: _machineEnergyIsNotCardBusiness,
-      ...safePatch
-    } = result.patch ?? {};
 
     // --- Aplicação -----------------------------------------------------------
     // Remoção padrão: exclui a carta jogada da mão do caster. Se o EFEITO já
     // mexeu nessa mesma mão (SAQUE, TROCA — ambos recebem `uid` e excluem a
-    // carta jogada sozinhos), `...safePatch` é aplicado DEPOIS e prevalece,
+    // carta jogada sozinhos), o patch do efeito é aplicado DEPOIS e prevalece,
     // então não há dupla remoção nem a carta "voltando" por cima do patch.
     const defaultCasterHand = state[handKey].filter((c) => c.uid !== uid);
-
-    /* Patch ESTREITO, não `{...state, ...}`: reescrever o estado inteiro a
-       partir do snapshot lido no topo da função desfaria silenciosamente
-       qualquer coisa que tivesse mudado desde então (um contra-ataque, um
-       log). Zustand faz merge raso, então listar só o que muda é ao mesmo
-       tempo mais barato e mais seguro. */
-    const patch: Partial<GameState> = {
+    const basePatch: Partial<GameState> = {
       [handKey]: defaultCasterHand,
-      ...safePatch,
       ...energySpend,
-      pendingAction: null, // a mira (se havia) cumpriu seu papel
+      pendingInteraction: null,
       // Marca que a máquina já gastou a carta deste turno. Sem isto ela
       // recomeçaria a decisão do zero depois do "Entendi" do anúncio e
       // jogaria uma segunda carta no mesmo turno.
@@ -840,68 +1084,29 @@ export const useGameStore = create<GameStore>()((set, get) => {
     };
 
     /**
-     * Aplica tudo o que a carta produziu. Fica numa closure porque a jogada da
-     * CPU só executa DEPOIS do jogador fechar o anúncio — ver logo abaixo.
+     * Aplica tudo o que a carta produziu (ou abre a interação que ela pediu).
+     * Fica numa closure porque a jogada da CPU só executa DEPOIS do jogador
+     * fechar o anúncio — ver logo abaixo.
      */
     const applyResult = (): void => {
-      // Cartas podem mover/remover peças, então revalidamos a linha vencedora.
-      const outcome = findWinner(safePatch.board ?? state.board);
-
-      if (outcome) {
+      if (result.interaction) {
+        // Comita energia+mão AGORA (decisão desta fase: toda interação cobra
+        // ao abrir, `BOARD_TARGET` incluso — cancelar sempre devolve os dois).
+        const hand = [...state[handKey]];
+        hand.splice(handIndex, 1);
         set({
-          ...patch,
-          status: 'ROUND_OVER',
-          roundWinner: outcome.winner,
-          winningLine: outcome.line,
+          [handKey]: hand,
+          ...energySpend,
+          pendingInteraction: openInteraction(
+            { caster, cardId, cardUid: uid, handIndex, priorSelections: [] },
+            result.interaction,
+          ),
+          ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
         });
-        get().pushLog({ code: 'ROUND_WIN', subject: outcome.winner });
-        get().takeDamage(outcome.winner === 'PLAYER' ? 'MACHINE' : 'PLAYER', ROUND_DAMAGE);
-        if (get().status !== 'MATCH_OVER') scheduleRoundTransition();
         return;
       }
 
-      // `{ ...state, ...energySpend }`: o regen precisa da energia PÓS-custo
-      // do caster (`energySpend` já a calculou acima), não do snapshot de
-      // `state` capturado antes da carta gastar energia nenhuma.
-      const nextTurnInfo = result.consumesTurn ? beginTurn({ ...state, ...energySpend }) : null;
-
-      set({
-        ...patch,
-        // Único caminho pelo qual uma carta avança o relógio global, e ainda
-        // assim só se ela pedir explicitamente.
-        ...(nextTurnInfo
-          ? { turn: opponentOf(caster), turnCount: get().turnCount + 1, ...nextTurnInfo.patch }
-          : null),
-      });
-
-      if (result.log) get().pushLog(result.log);
-      if (result.notice) get().pushNotice(result.notice);
-      if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
-      if (result.heal) get().healTarget(result.heal.target, result.heal.amount);
-      if (result.draw) drawCardsFor(result.draw.target, result.draw.count);
-      // TIC TAC BOOM!: mesma roleta do surto automático do relógio global,
-      // só que provocada pelo jogador. `triggerTerminalGlitch` não é pura
-      // (lê `activeRule`, publica seu próprio log/aviso da REGRA sorteada),
-      // por isso a carta só sinaliza a intenção e o store decide chamá-la.
-      if (result.triggersChaosGlitch) get().triggerTerminalGlitch();
-
-      // ALTAR DE SACRIFÍCIO: publica o fato efêmero que o `<AltarModal />`
-      // observa. `id` monotônico pelo mesmo motivo de `lastExtraTurn` —
-      // jogar a carta duas vezes seguidas com o mesmo `caster` precisa reabrir
-      // o modal as duas vezes, e comparar só `caster` não distinguiria isso.
-      if (result.opensAltar) {
-        const id = get().nextAltarPromptId;
-        set({ lastAltarPrompt: { caster, id }, nextAltarPromptId: id + 1 });
-      }
-
-      // Cartas de espionagem (ESPIONAGEM, VISÃO ABSOLUTA): a revelação já
-      // aconteceu (é o que `card.effect` acabou de calcular), isto só pausa o
-      // jogo com um modal até o jogador confirmar que leu. `apply` vazio: não
-      // há efeito mecânico para adiar, diferente do caso das armadilhas.
-      if (result.acknowledge) {
-        queueAcknowledgement(result.acknowledge, () => {});
-      }
-
+      applyCardEffectResult(caster, cardId, result, basePatch);
       get().dispatchEvent({ type: 'CARD_PLAYED', player: caster, cardId });
     };
 
@@ -910,10 +1115,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
        sensação de "aconteceu do nada": o jogador vê o HP cair, a mão encolher
        ou a casa travar sem nunca ter visto a causa. Enfileirar o anúncio ANTES
        de aplicar inverte isso — primeiro ele lê "O OPONENTE JOGOU SAQUE",
-       confirma, e só então o efeito acontece.
-
-       A carta já saiu da mão do caster aqui (o `patch` está montado), mas nada
-       dele foi escrito ainda: `applyResult` é o `apply` da fila. */
+       confirma, e só então o efeito acontece (patch normal OU abertura de
+       interação — as duas passam pelo mesmo anúncio). */
     if (announcesCardPlay(state, caster)) {
       queueAcknowledgement({ code: 'CARD_PLAYED', subject: caster, cardId }, applyResult);
       return true;
@@ -975,6 +1178,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
         status: 'ROUND_OVER',
         roundWinner: result.winner,
         winningLine: result.line,
+        // VIDENTE: a rodada de `owner` termina aqui de qualquer forma (não há
+        // "próximo turno" a considerar) — limpa o destaque dele incondicional,
+        // mesmo padrão de `forcedVanish` acima.
+        highlightedOldestFor:
+          state.highlightedOldestFor?.caster === owner ? null : state.highlightedOldestFor,
       });
 
       // Quem perdeu a rodada leva dano. takeDamage cuida do fim de partida.
@@ -1014,6 +1222,13 @@ export const useGameStore = create<GameStore>()((set, get) => {
       turn: nextTurnHolder,
       ...nextTurnInfo.patch,
       extraTurnPending: keepsTurn ? null : state.extraTurnPending,
+      // VIDENTE: sobrevive à 2ª colocação de TURNO_EXTRA (`keepsTurn` — é o
+      // MESMO turno de `owner` ainda) e só limpa quando o turno de fato passa
+      // adiante.
+      highlightedOldestFor:
+        !keepsTurn && state.highlightedOldestFor?.caster === owner
+          ? null
+          : state.highlightedOldestFor,
     });
 
     /* Toda jogada de tabuleiro entra no log, de QUALQUER combatente.
@@ -1069,7 +1284,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
   forfeitMatch: (winner) => {
     if (get().status === 'MATCH_OVER') return; // HP já decidiu — W.O. atrasado não sobrescreve
-    set({ status: 'MATCH_OVER', matchWinner: winner, matchOverReason: 'FORFEIT' });
+    // `pendingInteraction` por higiene: `MATCH_OVER` já bloqueia tudo sozinho
+    // (nenhum reembolso pendente importa mais), mas não custa deixar limpo.
+    set({ status: 'MATCH_OVER', matchWinner: winner, matchOverReason: 'FORFEIT', pendingInteraction: null });
   },
 
   sacrificeCards: (caster, uids) => {
@@ -1172,13 +1389,22 @@ export const useGameStore = create<GameStore>()((set, get) => {
         winningLine: null,
         lastVanishedIndex: null,
         extraTurnPending: null, // turno extra não atravessa rodadas
-        pendingAction: null, // mira pendente morre com a rodada
+        // Interação pendente morre com a rodada — mesma flag de turno que
+        // `extraTurnPending`. Nunca deveria estar setada aqui de qualquer
+        // forma (`canPlaceAt` bloqueia `placeMark` enquanto ela existir, ver
+        // comentário de `pendingAcknowledgement` abaixo), mas o reset é
+        // higiene defensiva, não reversão de algo que aconteceu de verdade.
+        pendingInteraction: null,
         // Nunca há confirmação pendente aqui: `canPlaceAt` bloqueia jogadas
         // enquanto `pendingAcknowledgement !== null`, então uma rodada nunca
         // termina (via placeMark) no meio de uma pausa de confirmação.
         pendingAcknowledgement: null,
         // Armadilhas e mãos NÃO são limpas: continuam de pé até dispararem ou
         // serem jogadas. É o que justifica gastar uma carta numa aposta longa.
+        // Pelo mesmo motivo `playerRevealedUids`/`machineRevealedUids` (abaixo,
+        // fora deste patch — nada os toca aqui de propósito) também atravessam:
+        // é informação sobre uma carta que ainda está na mão, e a mão persiste.
+        // Ver auditoria completa em `docs/NOTAS_TECNICAS.md`.
         blockedCell: state.activeRule === 'BLOCKED_CELL' ? pickFreeCell(createEmptyBoard()) : null,
         // A trava do TRAVAR, ao contrário da regra caótica, foi comprada para
         // uma situação de tabuleiro específica. Com o tabuleiro limpo ela não
@@ -1191,18 +1417,64 @@ export const useGameStore = create<GameStore>()((set, get) => {
         // não significa mais nada — as peças de lá nem existem no tabuleiro
         // novo. Mesmo cuidado que o antigo `doomedCell` já tomava aqui.
         forcedVanish: null,
+        // REBOBINAR: um bloqueio pertence ao turno da rodada que acabou de
+        // fechar — sem isto, um REBOBINAR jogado pouco antes do PRÓPRIO
+        // caster fechar linha (a rodada termina antes do turno bloqueado do
+        // oponente sequer chegar) vazaria o bloqueio pra rodada seguinte.
+        // Mesma classe de bug que `forcedVanish` teve (ver auditoria em
+        // docs/NOTAS_TECNICAS.md).
+        playerPlacementBlocked: false,
+        machinePlacementBlocked: false,
+        // VIDENTE: referencia um índice do tabuleiro da rodada anterior —
+        // sem sentido no tabuleiro novo, mesma classe de `forcedVanish` acima.
+        highlightedOldestFor: null,
       };
     });
   },
 
-  endTurn: () => {
+  endTurn: (combatant) => {
     const state = get();
-    if (state.status !== 'PLAYING') return;
+    // Mesma linguagem de `canPlaceAt`/`resolveCardPlay`: quem chama declara
+    // quem está passando a vez, e a guarda recusa se não bater com a vez real.
+    if (state.status !== 'PLAYING') return false;
+    if (state.turn !== combatant) return false;
+    if (state.isPaused) return false;
+    if (state.pendingAcknowledgement !== null) return false;
+    if (state.pendingInteraction !== null) return false;
 
-    const nextTurn = opponentOf(state.turn);
+    const nextTurnCount = state.turnCount + 1;
+    const nextTurn = opponentOf(combatant);
     const { patch } = beginTurn(state);
 
-    set({ turn: nextTurn, turnCount: state.turnCount + 1, ...patch });
+    set({
+      turn: nextTurn,
+      turnCount: nextTurnCount,
+      ...patch,
+      // Terminar o PRÓPRIO turno sempre consome o PRÓPRIO bloqueio de
+      // REBOBINAR — sem ambiguidade de "para quem" (diferente de
+      // `forcedVanish`): só quem está passando a vez pode estar bloqueado
+      // agora, e passar a vez é exatamente o que o bloqueio permitia fazer.
+      [placementBlockedKeyFor(combatant)]: false,
+      // Mesmo consumo que `placeMark` já faz para a 2ª colocação de
+      // TURNO_EXTRA: se o combatente tinha a concessão e escolheu passar em
+      // vez de usá-la, ela não pode sobrar para reativar `keepsTurn` numa
+      // jogada futura dele.
+      extraTurnPending: state.extraTurnPending === combatant ? null : state.extraTurnPending,
+      // VIDENTE: o destaque de `combatant` só existe enquanto o turno DELE
+      // não terminou — passar a vez é exatamente isso terminando.
+      highlightedOldestFor:
+        state.highlightedOldestFor?.caster === combatant ? null : state.highlightedOldestFor,
+    });
+
+    get().pushLog({ code: 'TURN_PASSED', subject: combatant });
+
+    // `placeMark` sempre chama isto (compra automática, expiração/surto de
+    // caos) — `endTurn` nunca tinha um caller real para expor que não
+    // chamava. Sem isto, qualquer turno que termina por "passar" em vez de
+    // "colocar" pararia o relógio global nesse instante.
+    tickGlobalClock(nextTurnCount);
+
+    return true;
   },
 
   triggerTerminalGlitch: () => {
@@ -1227,55 +1499,74 @@ export const useGameStore = create<GameStore>()((set, get) => {
   drawCard: (count = 1) => drawCardsFor('PLAYER', count),
   drawMachineCard: (count = 1) => drawCardsFor('MACHINE', count),
 
-  setPendingAction: (action) => {
-    if (action === null) {
-      set({ pendingAction: null });
-      return false;
-    }
-
+  resolveInteraction: (combatant, selection) => {
     const state = get();
-    // Mesma primeira linha de defesa de `resolveCardPlay`: armar mira fora de
-    // `PLAYING` deixaria o tabuleiro num modo mira que nenhuma jogada real
-    // resolveria — revisado e confirmado como o portão de entrada correto.
     if (state.status !== 'PLAYING') return false;
+    if (state.turn !== combatant) return false;
+    if (state.pendingAcknowledgement !== null) return false;
 
-    /**
-     * O caster é quem tem a VEZ, não `'PLAYER'` fixo.
-     *
-     * A mira só pode ser armada por quem está jogando, então `state.turn` já
-     * é a resposta — e derivar dele em vez de assumir `'PLAYER'` é o que faz
-     * a função valer para os dois lados. Com o literal, quem controla o
-     * `MACHINE` (o convidado numa sala online, ou o segundo jogador no modo
-     * local) nunca conseguia armar uma carta de alvo: a guarda recusava
-     * antes mesmo de olhar a mão dele.
-     */
-    const caster = state.turn;
+    const pending = state.pendingInteraction;
+    if (!pending || pending.caster !== combatant) return false;
+    if (pending.kind !== selection.kind) return false;
 
-    const entry = handOf(state, caster).find((c) => c.uid === action.uid);
-    if (!entry || entry.cardId !== action.cardId) return false;
+    const card = getCard(pending.cardId);
 
-    const card = getCard(entry.cardId);
-    if (!card.requiresTarget) return false; // carta sem mira não arma nada
-    if (
-      card.canPlay &&
-      !card.canPlay({ state, caster, uid: action.uid, targetIndex: undefined })
-    ) {
-      return false;
+    if (pending.kind === 'BOARD_TARGET') {
+      if (selection.kind !== 'BOARD_TARGET') return false; // estreita o tipo pro TS
+      if (!isValidTargetFor(state, pending.cardId, selection.index, combatant)) return false;
+      if (
+        card.canPlay &&
+        !card.canPlay({ state, caster: combatant, uid: pending.cardUid, targetIndex: selection.index })
+      ) {
+        return false;
+      }
+
+      /* --- Janela de contra-ataque -----------------------------------------
+         Mesmo ponto de sempre: depois do alvo validado, antes de `effect`
+         rodar. Nenhuma carta muda de comportamento — é o mesmo lugar onde
+         `resolveCardPlay` já chamava isto antes desta fase, só que agora
+         numa função própria porque abrir e resolver deixaram de ser a
+         MESMA chamada. */
+      if (resolveCounterTraps({ type: 'CARD_ABOUT_TO_RESOLVE', player: combatant, cardId: pending.cardId })) {
+        set({
+          pendingInteraction: null,
+          ...(combatant === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
+        });
+        return true;
+      }
+
+      const result = card.effect({
+        state,
+        caster: combatant,
+        uid: pending.cardUid,
+        targetIndex: selection.index,
+        rng: getChannel('CARDS'),
+      });
+      return finishInteractionStep(pending, selection, result, combatant);
     }
 
-    // Sem alvo legal no tabuleiro, armar a mira travaria o jogador num modo
-    // do qual só o botão de cancelar sairia.
-    const hasAnyTarget = state.board.some((_, index) =>
-      isValidTargetFor(state, entry.cardId, index, caster),
-    );
-    if (!hasAnyTarget) return false;
-
-    set({ pendingAction: action });
-    return true;
+    // Os outros 4 `kind`s: `effect` é a própria continuação — chamado de novo
+    // com o histórico de escolhas (ver `CardEffectContext.interaction`).
+    const result = card.effect({
+      state,
+      caster: combatant,
+      uid: pending.cardUid,
+      rng: getChannel('CARDS'),
+      interaction: { selection, priorSelections: pending.priorSelections },
+    });
+    return finishInteractionStep(pending, selection, result, combatant);
   },
 
-  clearPendingAction: () => {
-    if (get().pendingAction !== null) set({ pendingAction: null });
+  cancelInteraction: (combatant) => {
+    const state = get();
+    if (state.status !== 'PLAYING') return false;
+    if (state.turn !== combatant) return false;
+
+    const pending = state.pendingInteraction;
+    if (!pending || pending.caster !== combatant) return false;
+
+    set(refundInteraction(pending));
+    return true;
   },
 
   pushLog: (payload) =>
@@ -1449,11 +1740,11 @@ export function isValidTargetFor(
   return isValidTargetForCard(state, getCard(cardId), index, caster);
 }
 
-/** A célula é alvo legal para a carta atualmente em mira? */
+/** A célula é alvo legal para a carta atualmente em mira (`BOARD_TARGET`)? */
 export function isPendingTarget(state: GameState, index: number): boolean {
-  const pending = state.pendingAction;
-  if (!pending) return false;
-  // O caster é quem tem a vez — mesma razão de `setPendingAction`. Cartas
+  const pending = state.pendingInteraction;
+  if (!pending || pending.kind !== 'BOARD_TARGET') return false;
+  // O caster é quem tem a vez — mesma razão de `resolveInteraction`. Cartas
   // cujo alvo válido depende de quem joga (DEMOLIR, TRAVAR) destacariam as
   // células erradas no tabuleiro do convidado se isto assumisse `'PLAYER'`.
   return isValidTargetFor(state, pending.cardId, index, state.turn);
@@ -1482,7 +1773,7 @@ export const selectPlayerHand = (s: GameStore) => s.playerHand;
 export const selectHandOf = (combatant: Combatant) => (s: GameStore) =>
   combatant === 'PLAYER' ? s.playerHand : s.machineHand;
 export const selectExtraTurnPending = (s: GameStore) => s.extraTurnPending;
-export const selectPendingAction = (s: GameStore) => s.pendingAction;
+export const selectPendingInteraction = (s: GameStore) => s.pendingInteraction;
 export const selectPlayerTraps = (s: GameStore) => s.playerTraps;
 export const selectMachineTraps = (s: GameStore) => s.machineTraps;
 /** Pausa de confirmação manual em exibição, ou `null` fora dessa janela. */
@@ -1491,6 +1782,13 @@ export const selectPendingAcknowledgement = (s: GameStore) => s.pendingAcknowled
 export const selectHasPendingAcknowledgement = (s: GameStore) => s.pendingAcknowledgement !== null;
 export const selectTerminalLog = (s: GameStore) => s.terminalLog;
 export const selectIsPaused = (s: GameStore) => s.isPaused;
+/**
+ * O destaque de VIDENTE, já filtrado por validade — devolve `null` se a peça
+ * saiu do índice original (auto-invalidação, ver `isHighlightedOldestValid`),
+ * então quem consome (`<Cell />`) não precisa repetir a checagem.
+ */
+export const selectHighlightedOldest = (s: GameStore) =>
+  s.highlightedOldestFor && isHighlightedOldestValid(s) ? s.highlightedOldestFor : null;
 export const selectMachineHand = (s: GameStore) => s.machineHand;
 export const selectLastDamageEvent = (s: GameStore) => s.lastDamageEvent;
 /** Aviso efêmero mais recente — alimenta o toast sobre o tabuleiro. */
@@ -1523,14 +1821,22 @@ export const selectTraps = (owner: Combatant) => (s: GameStore) =>
 export const selectRevealedUids = (owner: Combatant) => (s: GameStore) =>
   owner === 'PLAYER' ? s.playerRevealedUids : s.machineRevealedUids;
 
-/** Tabuleiro em modo mira? Booleano — barato de assinar em qualquer lugar. */
-export const selectIsTargeting = (s: GameStore) => s.pendingAction !== null;
+/**
+ * Existe QUALQUER interação pendente? Booleano — barato de assinar em
+ * qualquer lugar. Substitui o antigo `selectIsTargeting`: bloqueia mão/
+ * tabuleiro pra qualquer `kind`, não só `BOARD_TARGET` (mira).
+ */
+export const selectIsInteracting = (s: GameStore) => s.pendingInteraction !== null;
+
+/** Tabuleiro especificamente em modo mira (`BOARD_TARGET`)? */
+export const selectIsTargeting = (s: GameStore) => s.pendingInteraction?.kind === 'BOARD_TARGET';
 
 /** `uid` da carta em mira, ou `null`. Primitivo, seguro para assinar. */
-export const selectPendingUid = (s: GameStore) => s.pendingAction?.uid ?? null;
+export const selectPendingUid = (s: GameStore) =>
+  s.pendingInteraction?.kind === 'BOARD_TARGET' ? s.pendingInteraction.cardUid : null;
 
 /**
- * A célula é alvo válido da carta em mira?
+ * A célula é alvo válido da carta atualmente em mira (`BOARD_TARGET`)?
  *
  * Booleano por célula: cada `<Cell />` assina o seu e só a linha de células
  * elegíveis re-renderiza ao entrar/sair do modo mira.
@@ -1555,7 +1861,7 @@ export const selectCanPlayCards = (s: GameStore) =>
  * se ainda há espaço na mesa. Não substitui as guardas do store — é só a
  * UI antecipando se `playCard` vai aceitar, para desabilitar o botão.
  *
- * Assim como `setPendingAction`, o caster é `s.turn` e não `'PLAYER'`: quem
+ * Assim como `resolveInteraction`, o caster é `s.turn` e não `'PLAYER'`: quem
  * controla o `MACHINE` teria todas as cartas permanentemente desabilitadas no
  * modo foco.
  */
@@ -1583,6 +1889,18 @@ export const selectHp = (target: Combatant) => (s: GameStore) =>
 
 /** Energia (⚡) atual de um combatente específico. */
 export const selectEnergy = (target: Combatant) => (s: GameStore) => s[energyKeyFor(target)];
+
+/**
+ * Quantos pips de energia (⚡) de `target` estão "reservados" agora — já
+ * debitados no store pelo timing unificado de `pendingInteraction` (a carta
+ * cobra ao ABRIR a interação, não ao resolver), mas recuperáveis via
+ * `cancelInteraction`. `0` fora dessa janela ou quando a interação pendente é
+ * de outro combatente. Alimenta o 3º estado visual (contorno tracejado) do
+ * `<EnergyPip />` — nunca muda o TAMANHO do pip nem a altura da fileira, só a
+ * borda de pips que já estão vazios por causa da reserva.
+ */
+export const selectReservedEnergy = (target: Combatant) => (s: GameStore) =>
+  s.pendingInteraction?.caster === target ? getCard(s.pendingInteraction.cardId).cost : 0;
 
 /** Célula do tabuleiro isolada — ideal para o componente `<Cell />`. */
 export const selectCell = (index: number) => (s: GameStore) => s.board[index];

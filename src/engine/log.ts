@@ -25,6 +25,8 @@ export type LogCode =
   | 'MOVE_PLACED'
   /** `subject` venceu a rodada. */
   | 'ROUND_WIN'
+  /** `subject` passou a vez sem colocar peça (botão ou REBOBINAR). */
+  | 'TURN_PASSED'
 
   /* --- Caos --------------------------------------------------------------- */
   /** Regra caótica entrou em vigor. `value` = `ChaosRule`. */
@@ -83,6 +85,11 @@ export type LogCode =
    * imediata). `value` = índice.
    */
   | 'CARD_MARK_DOOMED'
+  /**
+   * `subject` bloqueou a colocação de peça de `target` no próximo turno dele
+   * (REBOBINAR). O resto do turno de `target` segue normal — sem `value`.
+   */
+  | 'CARD_REBOBINAR'
   /** `subject` lacrou uma célula. `value` = índice. */
   | 'CARD_LOCK_CELL'
   /** `subject` espiou uma carta aleatória de `target`. `value` = `CardId`. */
