@@ -14,7 +14,7 @@ import {
 } from '@/engine/rules';
 import { RARITY_DRAW_WEIGHT } from './definitions';
 import type { Rng } from '@/engine/rng';
-import type { Combatant, GameState } from '@/engine/rules';
+import type { Combatant, GameState, HandCard } from '@/engine/rules';
 import type { CardDefinition, CardEffectResult, CardId, CardRarity } from './definitions';
 
 /* -------------------------------------------------------------------------- */
@@ -199,30 +199,50 @@ const BREAK_PIECE: CardDefinition = {
   },
 };
 
+/**
+ * Sucessora da antiga ESPIADA (mesmo id): antes o peek era por RNG, sem
+ * escolha nenhuma do jogador. Fase 4 (`pendingInteraction`, `PICK_ONE_FROM_HAND`)
+ * — o jogador escolhe, às cegas, qual carta oculta da mão do oponente revelar.
+ * O modelo de persistência da revelação (`revealedUids`, sem expiração,
+ * `revealedKeyFor`) não muda — só QUEM decide qual `uid` marcar.
+ */
 const PEEK_RANDOM: CardDefinition = {
   id: 'PEEK_RANDOM',
   name: 'ESPIADA',
   type: 'ACTION',
-  description: 'Revela uma carta aleatória da mão do oponente.',
+  description: 'Abra a mão oculta do oponente e escolha 1 carta para revelar.',
   targeting: 'NONE',
   rarity: 'RARE',
   weight: 3,
   cost: 1,
-  // Categoria de PROTEÇÃO: ESPIADA já lê (não retira) uma carta da mão do
-  // oponente hoje, mesmo antes da escolha manual da spec chegar.
   readsOrRemovesFromHand: true,
 
   canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
-  // Sem ramo de IA: ao contrário da antiga ESPIONAGEM, esta carta nunca abriu
-  // modal — é sempre um peek automático, então funciona igual para os dois
-  // lados desde o início. Não existe "atalho da IA" para simplificar aqui.
-  effect: ({ state, caster, rng }) => {
+  effect: (ctx) => {
+    const { state, caster } = ctx;
     const target = opponentOf(caster);
-    const opponentHand = state[handKeyFor(target)];
-    if (opponentHand.length === 0) return null;
 
-    const spied = rng.pick(opponentHand);
+    if (!ctx.interaction) {
+      const opponentHand = state[handKeyFor(target)];
+      if (opponentHand.length === 0) return null;
+      return {
+        interaction: {
+          kind: 'PICK_ONE_FROM_HAND',
+          source: target,
+          optionUids: opponentHand.map((c) => c.uid),
+        },
+      };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_ONE_FROM_HAND') return null;
+    // A carta jogada já saiu da mão do caster (removida ao ABRIR a interação,
+    // timing unificado da Fase 3) — `state` aqui é lido de novo no momento da
+    // resolução, então já reflete isso; nenhum filtro extra é necessário.
+    const spied = state[handKeyFor(target)].find((c) => c.uid === selection.uid);
+    if (!spied) return null;
+
     const event = {
       code: 'CARD_SPY_PEEK',
       subject: caster,
@@ -273,43 +293,70 @@ const DRAW_CARD: CardDefinition = {
 };
 
 /**
- * Sucessora do antigo SAQUE: mesma carta, mas sem o ramo de "destrói se
- * falhar" — agora uma falha é só isso, uma falha. O golpe garantido virava a
- * carta boa demais para o custo dela.
+ * Sucessora do antigo SAQUE: a falha agora DESTRÓI 1 carta aleatória do
+ * oponente (antes era no-op — golpe garantido de graça, pedido explícito de
+ * `docs/CARTAS.md`), e o sucesso abre `pendingInteraction` (`PICK_ONE_FROM_HAND`)
+ * para o jogador ESCOLHER qual carta roubar, em vez de sortear.
+ *
+ * A rolagem (`rng.chance`) acontece na 1ª chamada, ANTES de qualquer
+ * interação — o canal `CARDS` só é consultado uma vez por jogada, e o ramo de
+ * falha nunca abre modal nenhum (resolve na hora, como sempre).
  */
 const HAND_RAID: CardDefinition = {
   id: 'HAND_RAID',
   name: 'SAQUE',
   type: 'ACTION',
-  description: '50% de chance de roubar uma carta aleatória do oponente. Se falhar, nada acontece.',
+  description: '50% de chance de escolher uma carta do oponente para roubar. Se falhar, destrói 1 aleatória dele.',
   targeting: 'NONE',
   rarity: 'RARE',
   weight: 2,
   cost: 2,
   // Categorias reativas: PROTEÇÃO (lê/retira da mão) e RICOCHETE (roubo —
-  // inversão bem definida, ver RICOCHET_INVERSIONS).
+  // inversão bem definida, ver RICOCHET_INVERSIONS). Cobrem o ramo de
+  // sucesso E o de falha — RICOCHETE intercepta ANTES do `rng.chance` rodar,
+  // então não importa qual ramo teria saído.
   readsOrRemovesFromHand: true,
   targetsOpponentResource: true,
 
   canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
-  // A carta jogada (`uid`) é excluída da mão do caster ANTES de qualquer
-  // outra operação — sem isso ela sobreviveria "fantasma" dentro do patch,
-  // já que o efeito é a única camada que sabe qual entrada é a jogada.
-  effect: ({ state, caster, uid, rng }) => {
+  effect: (ctx) => {
+    const { state, caster, rng } = ctx;
     const target = opponentOf(caster);
-    const victimHand = state[handKeyFor(target)];
-    if (victimHand.length === 0) return null;
 
-    if (!rng.chance(0.5)) {
-      // Sem `patch`: a remoção padrão da própria carta (feita pelo store,
-      // fora daqui) é a ÚNICA mudança de estado de uma tentativa que falhou.
-      return { log: { code: 'CARD_RAID_FAILED', subject: caster, target } };
+    if (!ctx.interaction) {
+      const victimHand = state[handKeyFor(target)];
+      if (victimHand.length === 0) return null;
+
+      if (!rng.chance(0.5)) {
+        const destroyed = rng.pick(victimHand);
+        const event = {
+          code: 'CARD_RAID_DESTROYED',
+          subject: caster,
+          target,
+          value: destroyed.cardId,
+        } as const;
+        return {
+          patch: { [handKeyFor(target)]: victimHand.filter((c) => c.uid !== destroyed.uid) },
+          log: event,
+          notice: event,
+        };
+      }
+
+      return {
+        interaction: {
+          kind: 'PICK_ONE_FROM_HAND',
+          source: target,
+          optionUids: victimHand.map((c) => c.uid),
+        },
+      };
     }
 
-    const casterHand = state[handKeyFor(caster)].filter((c) => c.uid !== uid);
-    const stolen = rng.pick(victimHand);
-    const remainingVictimHand = victimHand.filter((c) => c.uid !== stolen.uid);
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_ONE_FROM_HAND') return null;
+    const victimHand = state[handKeyFor(target)];
+    const stolen = victimHand.find((c) => c.uid === selection.uid);
+    if (!stolen) return null;
 
     // O `cardId` roubado viaja no evento. Sem ele o jogador via a mão
     // encolher e não tinha como saber o que perdeu — o pior tipo de
@@ -323,9 +370,14 @@ const HAND_RAID: CardDefinition = {
     } as const;
 
     return {
+      // A carta jogada já saiu da mão do caster ao abrir a interação (timing
+      // unificado da Fase 3) — `state[handKeyFor(caster)]` aqui já reflete
+      // isso, sem precisar filtrar de novo. Rouba com o MESMO `uid` — decisão
+      // fechada na Fase 4 ("ressurreição de uid", `docs/NOTAS_TECNICAS.md`):
+      // quem já viu a carta continua conhecendo-a depois do roubo.
       patch: {
-        [handKeyFor(caster)]: [...casterHand, stolen],
-        [handKeyFor(target)]: remainingVictimHand,
+        [handKeyFor(caster)]: [...state[handKeyFor(caster)], stolen],
+        [handKeyFor(target)]: victimHand.filter((c) => c.uid !== stolen.uid),
       },
       // Sem `tone`: quem rouba ganha e quem é roubado perde, e só a
       // perspectiva sabe quem é quem. O tradutor decide a cor.
@@ -437,19 +489,17 @@ const MARK_DOOMED: CardDefinition = {
 };
 
 /**
- * Sucessora da antiga ESPIONAGEM (mesmo id): antes só REVELAVA (o jogador
- * escolhia qual carta virar, nada saía da mão do oponente). Agora ela mesma
- * decide (RNG) qual carta descobre — e a REMOVE da mão dele. "O jogador
- * seleciona um índice" do pedido virou sorteio pelo mesmo motivo do TROCAR:
- * dar essa escolha de verdade exigiria uma seleção síncrona com consequência
- * real, o que pediria um novo tipo de ação replicada em rede (como
- * ACKNOWLEDGE/FORFEIT) só para isto — fora do escopo desta etapa de cartas.
+ * Sucessora da antiga ESPIONAGEM (mesmo id): antes decidia sozinha (RNG) qual
+ * carta descobria e removia. Fase 4 (`pendingInteraction`, `PICK_ONE_FROM_HAND`)
+ * — o jogador ESCOLHE, às cegas, qual carta oculta do oponente descartar; a
+ * identidade só é revelada a ele DEPOIS, via `acknowledge` (mesmo padrão de
+ * hoje, pulado para a CPU via `isAIController`).
  */
 const SPY_CARD: CardDefinition = {
   id: 'SABOTAGE',
   name: 'SABOTAGEM',
   type: 'ACTION',
-  description: 'Revela e descarta uma carta aleatória da mão do oponente.',
+  description: 'Abra a mão oculta do oponente e escolha 1 carta para descartar.',
   targeting: 'NONE',
   rarity: 'EPIC',
   weight: 3,
@@ -458,13 +508,27 @@ const SPY_CARD: CardDefinition = {
 
   canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
-  effect: ({ state, caster, rng }) => {
+  effect: (ctx) => {
+    const { state, caster } = ctx;
     const target = opponentOf(caster);
-    const opponentHand = state[handKeyFor(target)];
-    if (opponentHand.length === 0) return null;
 
-    const found = rng.pick(opponentHand);
-    const remainingOpponentHand = opponentHand.filter((c) => c.uid !== found.uid);
+    if (!ctx.interaction) {
+      const opponentHand = state[handKeyFor(target)];
+      if (opponentHand.length === 0) return null;
+      return {
+        interaction: {
+          kind: 'PICK_ONE_FROM_HAND',
+          source: target,
+          optionUids: opponentHand.map((c) => c.uid),
+        },
+      };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_ONE_FROM_HAND') return null;
+    const opponentHand = state[handKeyFor(target)];
+    const found = opponentHand.find((c) => c.uid === selection.uid);
+    if (!found) return null;
 
     const event = {
       code: 'CARD_SPY_DISCARD',
@@ -474,12 +538,14 @@ const SPY_CARD: CardDefinition = {
     } as const;
 
     return {
-      patch: { [handKeyFor(target)]: remainingOpponentHand },
+      patch: { [handKeyFor(target)]: opponentHand.filter((c) => c.uid !== found.uid) },
       log: event,
       notice: event,
-      /* Só quem jogou vê QUAL carta era. O oponente já sabe a própria mão —
-         não há nada para ele "descobrir" no próprio prejuízo — e a IA não
-         precisa de modal nenhum (é uma ferramenta de leitura humana). */
+      /* Só quem jogou vê QUAL carta era — ele escolheu às cegas, este
+         acknowledge é o que confirma a identidade. O oponente já sabe a
+         própria mão — não há nada para ele "descobrir" no próprio prejuízo —
+         e a IA não precisa de modal nenhum (é uma ferramenta de leitura
+         humana). */
       acknowledge: isAIController(state, caster)
         ? undefined
         : {
@@ -588,6 +654,205 @@ const QUEUE_SHUFFLE: CardDefinition = {
   },
 };
 
+/**
+ * Carta nova. Troca 1 carta por vez, com escolha manual dos dois lados —
+ * distinta de PERMUTA CAÓTICA (`HAND_SWAP`, Lendária, mão inteira, sem
+ * escolha). Encadeamento de 2 passos via `pendingInteraction`: passo 1
+ * (`source: caster`) escolhe a carta PRÓPRIA a oferecer; passo 2
+ * (`source: oponente`) escolhe, às cegas, a carta a receber. Mesmo formato
+ * que a fixture "TROCAR-shaped" da Fase 3 já provou (`pendingInteraction.test.ts`),
+ * agora com carta real.
+ *
+ * RICOCHETE (Fase 4, Achado 2): `targetsOpponentResource: true` mantém o
+ * VETO (a carta lê a mão do oponente antes de completar), mas SEM entrada em
+ * `RICOCHET_INVERSIONS` — no instante em que o contra-ataque dispara (antes
+ * do passo 1 abrir), não existe ainda "a carta que o atacante escolheria"
+ * para inverter. Cai no mesmo fallback de ANTIMAGIA (só anula) — ver
+ * `docs/NOTAS_TECNICAS.md`.
+ */
+const SINGLE_CARD_TRADE: CardDefinition = {
+  id: 'SINGLE_CARD_TRADE',
+  name: 'TROCAR',
+  type: 'ACTION',
+  description: 'Escolha 1 carta sua e troque por 1 carta oculta do oponente.',
+  targeting: 'NONE',
+  rarity: 'RARE',
+  weight: 2,
+  cost: 2,
+  readsOrRemovesFromHand: true,
+  targetsOpponentResource: true,
+
+  // Precisa de mais alguma carta na própria mão além da própria TROCAR
+  // (senão não há o que oferecer) e de alguma carta do lado do oponente.
+  canPlay: ({ state, caster }) =>
+    state[handKeyFor(caster)].length > 1 && state[handKeyFor(opponentOf(caster))].length > 0,
+
+  effect: (ctx) => {
+    const { state, caster, uid } = ctx;
+    const target = opponentOf(caster);
+
+    if (!ctx.interaction) {
+      // Passo 1: mão PRÓPRIA do caster, excluindo a própria TROCAR jogada
+      // (ela só sai da mão no `resolveCardPlay` normal — aqui `uid` ainda
+      // identifica a carta jogada nesta 1ª chamada).
+      const ownOptions = state[handKeyFor(caster)].filter((c) => c.uid !== uid).map((c) => c.uid);
+      if (ownOptions.length === 0) return null;
+      return { interaction: { kind: 'PICK_ONE_FROM_HAND', source: caster, optionUids: ownOptions } };
+    }
+
+    if (ctx.interaction.priorSelections.length === 0) {
+      // Passo 2: mão OCULTA do oponente.
+      const opponentOptions = state[handKeyFor(target)].map((c) => c.uid);
+      if (opponentOptions.length === 0) return null;
+      return {
+        interaction: { kind: 'PICK_ONE_FROM_HAND', source: target, optionUids: opponentOptions },
+      };
+    }
+
+    // Passo 3: aplica a troca com as duas escolhas já no histórico.
+    const offered = ctx.interaction.priorSelections[0];
+    const received = ctx.interaction.selection;
+    if (offered.kind !== 'PICK_ONE_FROM_HAND' || received.kind !== 'PICK_ONE_FROM_HAND') return null;
+
+    // A carta jogada já saiu da mão do caster ao abrir a interação (Fase 3,
+    // timing unificado) — `state` aqui já reflete isso.
+    const casterHand = state[handKeyFor(caster)];
+    const opponentHand = state[handKeyFor(target)];
+    const offeredCard = casterHand.find((c) => c.uid === offered.uid);
+    const receivedCard = opponentHand.find((c) => c.uid === received.uid);
+    if (!offeredCard || !receivedCard) return null;
+
+    const event = {
+      code: 'CARD_SINGLE_TRADE',
+      subject: caster,
+      target,
+      value: receivedCard.cardId,
+    } as const;
+
+    return {
+      patch: {
+        [handKeyFor(caster)]: [...casterHand.filter((c) => c.uid !== offeredCard.uid), receivedCard],
+        [handKeyFor(target)]: [...opponentHand.filter((c) => c.uid !== receivedCard.uid), offeredCard],
+      },
+      log: event,
+      notice: event,
+    };
+  },
+};
+
+/**
+ * Carta nova. Sucessora espiritual da antiga ESPIONAGEM (que virou SABOTAGEM,
+ * ver acima) — revela SEM descartar. Usa `PICK_MANY_FROM_HAND` (não
+ * `PICK_ONE_FROM_HAND` ×2): a escolha é simultânea, não encadeada, e o clamp
+ * de `count` já pronto do `openInteraction` (Fase 3) resolve sozinho o caso
+ * de borda "mão do oponente com só 1 carta" — vira `count: 1`, sem travar.
+ */
+const INTEL_REVEAL: CardDefinition = {
+  id: 'INTEL_REVEAL',
+  name: 'ESPIONAGEM',
+  type: 'ACTION',
+  description: 'Abra a mão oculta do oponente e revele até 2 cartas, sem descartar.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 2,
+  cost: 2,
+  readsOrRemovesFromHand: true,
+
+  canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
+
+  effect: (ctx) => {
+    const { state, caster } = ctx;
+    const target = opponentOf(caster);
+
+    if (!ctx.interaction) {
+      const opponentHand = state[handKeyFor(target)];
+      if (opponentHand.length === 0) return null;
+      return {
+        interaction: {
+          kind: 'PICK_MANY_FROM_HAND',
+          source: target,
+          optionUids: opponentHand.map((c) => c.uid),
+          count: 2,
+        },
+      };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_MANY_FROM_HAND') return null;
+
+    const revealedKey = revealedKeyFor(target);
+    const alreadyRevealed = state[revealedKey];
+    const newlyRevealed = selection.uids.filter((cardUid) => !alreadyRevealed.includes(cardUid));
+
+    const event = {
+      code: 'CARD_INTEL_REVEAL',
+      subject: caster,
+      target,
+      value: selection.uids.length,
+    } as const;
+
+    return {
+      patch: newlyRevealed.length === 0 ? {} : { [revealedKey]: [...alreadyRevealed, ...newlyRevealed] },
+      log: event,
+      notice: event,
+    };
+  },
+};
+
+/**
+ * Monta um `HandCard` novo com um `uid` fresco — mesma convenção de
+ * `drawCardsFor` (`${cardId}#${sequência}`). Compartilhado por PROCRASTINAR/
+ * PROCRASTINAR II: as duas resolvem o passo final da mesma forma, só a
+ * GERAÇÃO das opções difere entre elas.
+ */
+function draftHandCard(cardId: CardId, nextUid: number): HandCard {
+  return { uid: `${cardId}#${nextUid}`, cardId };
+}
+
+/**
+ * Carta nova. `PICK_ONE_REVEALED` com opções geradas NA HORA pelo deck — não
+ * são cartas de nenhuma mão, por isso `source`/`optionUids` (que sempre
+ * apontam pra uma mão) não se aplicam; `options: CardId[]` é o formato certo
+ * (já previsto no contrato da Fase 3). Sem `canPlay`: a carta jogada já saiu
+ * da mão antes do efeito resolver, e o draft entrega exatamente 1 de volta —
+ * o tamanho da mão nunca ultrapassa o que já era antes de jogar.
+ */
+const CARD_DRAFT: CardDefinition = {
+  id: 'CARD_DRAFT',
+  name: 'PROCRASTINAR',
+  type: 'ACTION',
+  description: 'Revela 3 cartas novas do baralho e escolha 1 para a mão.',
+  targeting: 'NONE',
+  rarity: 'RARE',
+  weight: 2,
+  cost: 2,
+
+  effect: (ctx) => {
+    const { state, caster, rng } = ctx;
+
+    if (!ctx.interaction) {
+      const options = [drawCardId(rng), drawCardId(rng), drawCardId(rng)];
+      return { interaction: { kind: 'PICK_ONE_REVEALED', options } };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_ONE_REVEALED') return null;
+
+    const handKey = handKeyFor(caster);
+    const drafted = draftHandCard(selection.cardId, state.nextCardUid);
+    const event = { code: 'CARD_DRAFT_PICK', subject: caster, value: selection.cardId } as const;
+
+    return {
+      patch: {
+        [handKey]: [...state[handKey], drafted],
+        nextCardUid: state.nextCardUid + 1,
+      },
+      log: event,
+      notice: event,
+    };
+  },
+};
+
 /* -------------------------------------------------------------------------- */
 /*                          CUSTO 3 — IMPACTO TOTAL                            */
 /* -------------------------------------------------------------------------- */
@@ -607,6 +872,124 @@ const DIRECT_DAMAGE: CardDefinition = {
     damage: { target: opponentOf(caster), amount: 1 },
     log: { code: 'CARD_DAMAGE', subject: caster, target: opponentOf(caster) },
   }),
+};
+
+/**
+ * Carta nova. Mesmo formato de SAQUE, com probabilidade de sucesso maior
+ * (25/75 em vez de 50/50) pelo custo mais alto. Corpo do `effect` idêntico ao
+ * de `HAND_RAID` — só a probabilidade e os textos mudam — não extraído num
+ * helper compartilhado porque os dois `LogCode`/`description` já divergem o
+ * bastante pra uma função genérica não ficar mais simples que duas cópias.
+ */
+const HAND_RAID_II: CardDefinition = {
+  id: 'HAND_RAID_II',
+  name: 'SAQUE II',
+  type: 'ACTION',
+  description: '75% de chance de escolher uma carta do oponente para roubar. Se falhar, destrói 1 aleatória dele.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 2,
+  cost: 3,
+  readsOrRemovesFromHand: true,
+  targetsOpponentResource: true,
+
+  canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
+
+  effect: (ctx) => {
+    const { state, caster, rng } = ctx;
+    const target = opponentOf(caster);
+
+    if (!ctx.interaction) {
+      const victimHand = state[handKeyFor(target)];
+      if (victimHand.length === 0) return null;
+
+      if (!rng.chance(0.25)) {
+        const destroyed = rng.pick(victimHand);
+        const event = {
+          code: 'CARD_RAID_DESTROYED',
+          subject: caster,
+          target,
+          value: destroyed.cardId,
+        } as const;
+        return {
+          patch: { [handKeyFor(target)]: victimHand.filter((c) => c.uid !== destroyed.uid) },
+          log: event,
+          notice: event,
+        };
+      }
+
+      return {
+        interaction: {
+          kind: 'PICK_ONE_FROM_HAND',
+          source: target,
+          optionUids: victimHand.map((c) => c.uid),
+        },
+      };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_ONE_FROM_HAND') return null;
+    const victimHand = state[handKeyFor(target)];
+    const stolen = victimHand.find((c) => c.uid === selection.uid);
+    if (!stolen) return null;
+
+    const event = {
+      code: 'CARD_RAID_STOLE',
+      subject: caster,
+      target,
+      value: stolen.cardId,
+    } as const;
+
+    return {
+      patch: {
+        [handKeyFor(caster)]: [...state[handKeyFor(caster)], stolen],
+        [handKeyFor(target)]: victimHand.filter((c) => c.uid !== stolen.uid),
+      },
+      log: event,
+      notice: event,
+    };
+  },
+};
+
+/**
+ * Carta nova. Mesma resolução final de PROCRASTINAR — só a GERAÇÃO das
+ * opções muda: distribuição de raridade GARANTIDA (2 comuns + 2 épicas + 1
+ * lendária), via `draftTieredCardIds` (sorteio PARALELO a `drawCardId`,
+ * bypassando `RARITY_POOL`/`RARITY_DRAW_WEIGHT` de propósito).
+ */
+const CARD_DRAFT_TIERED: CardDefinition = {
+  id: 'CARD_DRAFT_TIERED',
+  name: 'PROCRASTINAR II',
+  type: 'ACTION',
+  description: 'Revela 5 cartas novas do baralho (2 comuns, 2 épicas, 1 lendária) e escolha 1 para a mão.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 2,
+  cost: 3,
+
+  effect: (ctx) => {
+    const { state, caster, rng } = ctx;
+
+    if (!ctx.interaction) {
+      return { interaction: { kind: 'PICK_ONE_REVEALED', options: draftTieredCardIds(rng) } };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_ONE_REVEALED') return null;
+
+    const handKey = handKeyFor(caster);
+    const drafted = draftHandCard(selection.cardId, state.nextCardUid);
+    const event = { code: 'CARD_DRAFT_PICK', subject: caster, value: selection.cardId } as const;
+
+    return {
+      patch: {
+        [handKey]: [...state[handKey], drafted],
+        nextCardUid: state.nextCardUid + 1,
+      },
+      log: event,
+      notice: event,
+    };
+  },
 };
 
 const HEAL_SELF: CardDefinition = {
@@ -813,6 +1196,36 @@ const ANTI_SPELL_TRAP: CardDefinition = {
  * inverte e atinge o próprio autor" é lido como a versão CANÔNICA/garantida
  * do efeito, não uma repetição do sorteio dele.
  */
+/**
+ * Corpo compartilhado por `HAND_RAID`/`HAND_RAID_II` na tabela abaixo — as
+ * duas invertem exatamente da mesma forma (rouba 1 carta aleatória do
+ * atacante), só o `cost`/probabilidade de cada uma diferem, e nenhuma delas
+ * importa aqui (RICOCHETE intercepta ANTES do `rng.chance` da carta original
+ * rodar, então "qual carta era" nunca chega a se saber).
+ */
+function stealRandomFromAttacker({
+  state,
+  rng,
+  defender,
+  attacker,
+}: {
+  state: GameState;
+  rng: Rng;
+  defender: Combatant;
+  attacker: Combatant;
+}): Partial<CardEffectResult> {
+  const attackerHand = state[handKeyFor(attacker)];
+  if (attackerHand.length === 0) return {};
+
+  const stolen = rng.pick(attackerHand);
+  return {
+    patch: {
+      [handKeyFor(defender)]: [...state[handKeyFor(defender)], stolen],
+      [handKeyFor(attacker)]: attackerHand.filter((c) => c.uid !== stolen.uid),
+    },
+  };
+}
+
 const RICOCHET_INVERSIONS: Partial<
   Record<
     CardId,
@@ -821,18 +1234,14 @@ const RICOCHET_INVERSIONS: Partial<
 > = {
   DIRECT_DAMAGE: ({ attacker }) => ({ damage: { target: attacker, amount: 1 } }),
 
-  HAND_RAID: ({ state, rng, defender, attacker }) => {
-    const attackerHand = state[handKeyFor(attacker)];
-    if (attackerHand.length === 0) return {};
+  HAND_RAID: stealRandomFromAttacker,
+  HAND_RAID_II: stealRandomFromAttacker,
 
-    const stolen = rng.pick(attackerHand);
-    return {
-      patch: {
-        [handKeyFor(defender)]: [...state[handKeyFor(defender)], stolen],
-        [handKeyFor(attacker)]: attackerHand.filter((c) => c.uid !== stolen.uid),
-      },
-    };
-  },
+  // SINGLE_CARD_TRADE (TROCAR) fica de propósito FORA desta tabela — Fase 4,
+  // Achado 2: no instante em que o contra-ataque dispara (antes do passo 1
+  // da interação abrir), não existe ainda "a carta que o atacante ofereceria"
+  // pra inverter. Cai no fallback abaixo (`?? {}`) — RICOCHETE só anula,
+  // mesmo comportamento de ANTIMAGIA. Ver `docs/NOTAS_TECNICAS.md`.
 };
 
 /**
@@ -996,6 +1405,11 @@ export const CARD_REGISTRY: Record<CardId, CardDefinition> = {
   ANTI_SPELL_TRAP,
   REFLECT_TRAP,
   REBOBINAR: PLACEMENT_LOCK,
+  HAND_RAID_II,
+  SINGLE_CARD_TRADE,
+  INTEL_REVEAL,
+  CARD_DRAFT,
+  CARD_DRAFT_TIERED,
 };
 
 export const CARD_IDS = Object.keys(CARD_REGISTRY) as CardId[];
@@ -1060,4 +1474,41 @@ const RARITY_POOL = (Object.keys(RARITY_DRAW_WEIGHT) as CardRarity[])
 export function drawCardId(rng: Rng): CardId {
   const rarity = rng.weighted(RARITY_POOL);
   return rng.pick(IDS_BY_RARITY[rarity]);
+}
+
+/** Faixas e quantidades garantidas de `draftTieredCardIds` — 2 comuns, 2 épicas, 1 lendária. */
+const TIERED_DRAFT_PLAN: readonly (readonly [CardRarity, number])[] = [
+  ['COMMON', 2],
+  ['EPIC', 2],
+  ['LEGENDARY', 1],
+];
+
+/**
+ * Sorteio PARALELO ao normal (`drawCardId`) — usado só por PROCRASTINAR II.
+ * Garante EXATAMENTE 2 comuns + 2 épicas + 1 lendária, ignorando o peso por
+ * faixa (`RARITY_DRAW_WEIGHT`/`RARITY_POOL`) de propósito: é uma distribuição
+ * GARANTIDA pelo design da carta, não uma compra ponderada normal. Consome 5
+ * números do canal (1 `pick` por carta) — quantidade fixa, mesmo raciocínio
+ * de determinismo de `drawCardId`.
+ *
+ * **Invariant explícito, não deixado para `rng.pick` estourar sozinho:** hoje
+ * (COMMON/EPIC/LEGENDARY todas com várias cartas) isto nunca dispara — mas é
+ * contagem do PRESENTE, não garantia futura. Se uma fase futura reclassificar
+ * a raridade de uma carta e uma faixa esvaziar, o erro aqui aponta
+ * exatamente qual faixa faltou e por qual carta, em vez do genérico
+ * `[rng] pick() recebeu uma lista vazia` sem contexto nenhum.
+ */
+export function draftTieredCardIds(rng: Rng): CardId[] {
+  const picks: CardId[] = [];
+  for (const [rarity, count] of TIERED_DRAFT_PLAN) {
+    const pool = IDS_BY_RARITY[rarity];
+    if (pool.length === 0) {
+      throw new Error(
+        `[cards] draftTieredCardIds: faixa ${rarity} não tem carta nenhuma registrada — ` +
+          'PROCRASTINAR II (CARD_DRAFT_TIERED) não pode garantir a distribuição 2 comuns + 2 épicas + 1 lendária sem isso.',
+      );
+    }
+    for (let i = 0; i < count; i++) picks.push(rng.pick(pool));
+  }
+  return picks;
 }

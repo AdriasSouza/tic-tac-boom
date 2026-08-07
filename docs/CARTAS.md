@@ -173,9 +173,8 @@
     (sem RNG).
   - **Abre modal:** Sim (seleção dos dois lados da troca). **Exige alvo no tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por PROTEÇÃO (categoria "lê/retira da mão" — a troca lê a mão
-    do oponente antes de completar), por RICOCHETE (troca é efeito de inversão bem definida — os
-    papéis se invertem, quem trocaria perde a própria carta escolhida) e por ANTIMAGIA (cobertura
-    universal).
+    do oponente antes de completar), por RICOCHETE (só ANULA — fallback, não inversão; ver nota
+    abaixo) e por ANTIMAGIA (cobertura universal).
   - **Casos de borda:**
     - **Mão do oponente vazia:** carta fica indisponível (nada para trocar).
     - Precisa de mais alguma carta na própria mão além da própria TROCAR — senão não há o que
@@ -184,6 +183,14 @@
   - **Nota de migração:** carta NOVA — o `CARD_TRADE` atual (troca 1 carta ALEATÓRIA de cada lado,
     sem modal) vira PERMUTA CAÓTICA, não esta. Ver a nota de "ressurreição de uid" na entrada de
     PERMUTA CAÓTICA.
+  - **RICOCHETE, correção fechada na Fase 4:** este documento originalmente descrevia uma inversão
+    ("os papéis se invertem, quem trocaria perde a própria carta escolhida"), mas a arquitetura não
+    sustenta isso — `resolveCounterTraps` dispara ANTES da interação abrir, antes até do passo 1
+    (escolher a própria carta a oferecer) acontecer, então não existe "a carta escolhida" nesse
+    instante para inverter. RICOCHETE cai no fallback já documentado ("quando a inversão exigiria
+    re-selecionar algo que ainda não existe, RICOCHETE apenas anula, como ANTIMAGIA") — sem entrada
+    em `RICOCHET_INVERSIONS`, `SINGLE_CARD_TRADE` só é vetada, nunca invertida. Ver
+    `docs/NOTAS_TECNICAS.md`.
 
   ### VIDENTE (`HIGHLIGHT_OLDEST`, novo)
   - **Custo:** 2⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`

@@ -69,6 +69,12 @@ export type LogCode =
   | 'CARD_RAID_STOLE'
   /** SAQUE de `subject` contra `target` falhou — nada aconteceu. */
   | 'CARD_RAID_FAILED'
+  /**
+   * `subject` destruiu 1 carta aleatória de `target` — ramo de falha de SAQUE/
+   * SAQUE II (antes era no-op; Fase 4 passou a destruir de verdade). `value` =
+   * `CardId` destruída.
+   */
+  | 'CARD_RAID_DESTROYED'
   /** `subject` liberou uma célula interditada. `value` = índice. */
   | 'CARD_CLEANSE'
   /** `subject` limpou TODAS as células interditadas do tabuleiro. Sem `value`. */
@@ -98,6 +104,24 @@ export type LogCode =
   | 'CARD_SPY_DISCARD'
   /** `subject` leu a mão inteira de `target`. `value` = nº de cartas. */
   | 'CARD_INTEL_HAND'
+  /**
+   * `subject` revelou N cartas da mão de `target` (ESPIONAGEM) sem descartar
+   * nenhuma — as cartas continuam com `target`. `value` = nº de cartas
+   * reveladas (1 ou 2, conforme o tamanho real da mão dele).
+   */
+  | 'CARD_INTEL_REVEAL'
+  /**
+   * `subject` trocou 1 carta com `target` (TROCAR — 1 por 1, com escolha
+   * manual dos dois lados). `value` = `CardId` que `subject` recebeu na
+   * troca.
+   */
+  | 'CARD_SINGLE_TRADE'
+  /**
+   * `subject` escolheu 1 carta entre as opções reveladas (PROCRASTINAR/
+   * PROCRASTINAR II) — as outras são descartadas sem entrar em jogo. `value`
+   * = `CardId` escolhida.
+   */
+  | 'CARD_DRAFT_PICK'
   /** `subject` disparou a roleta do caos. */
   | 'CARD_CHAOS_ROULETTE'
   /** `subject` abriu o Altar de Sacrifício (a escolha das cartas acontece depois, fora do motor). */

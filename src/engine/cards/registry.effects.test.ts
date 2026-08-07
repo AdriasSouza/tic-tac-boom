@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import { CENTER_INDEX } from '@/engine/events';
-import { createRng } from '@/engine/rng';
+import { createRng, type Rng } from '@/engine/rng';
 import type { Board, Piece } from '@/engine/rules';
 import { createTestState } from '@/engine/testHelpers';
 import { getCard } from '@/engine/cards/registry';
 
 const rng = createRng(1);
+
+/** `rng` com alguns métodos sobrescritos — para forçar um ramo sem depender de seed. */
+function fixedRng(overrides: Partial<Rng>): Rng {
+  return { ...createRng(1), ...overrides };
+}
 
 function piece(owner: Piece['owner'], turnPlaced: number): Piece {
   return { owner, mark: owner === 'PLAYER' ? 'X' : 'O', turnPlaced };
@@ -512,5 +517,441 @@ describe('REBOBINAR — carta nova (Fase 2.5): bloqueia colocação do oponente,
     // patch, então ela continua `true` até o caster terminar o próprio turno.
     expect(result?.patch).toEqual({ machinePlacementBlocked: true });
     expect(result?.patch).not.toHaveProperty('playerPlacementBlocked');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    FASE 4 — CARTAS COM INTERAÇÃO (carta real)               */
+/* -------------------------------------------------------------------------- */
+/* `card.effect()` chamado diretamente, duas vezes (como `resolveCardPlay`/
+   `resolveInteraction` já fazem): 1ª chamada sem `interaction` (abre), 2ª com
+   `interaction` preenchido (resolve). O clamp de `count`/a orquestração de
+   `pendingInteraction` em si são responsabilidade do STORE (Fase 3), testados
+   à parte em `pendingInteraction.test.ts`/`gameStore.test.ts` — aqui só a
+   LÓGICA da carta. */
+
+describe('SABOTAGEM (SABOTAGE) — escolha manual, substitui o rng.pick de antes', () => {
+  const card = getCard('SABOTAGE');
+
+  it('abre PICK_ONE_FROM_HAND com a mão oculta do oponente', () => {
+    const state = createTestState({
+      machineHand: [
+        { uid: 'm1', cardId: 'HEAL_SELF' },
+        { uid: 'm2', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.interaction).toEqual({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'MACHINE',
+      optionUids: ['m1', 'm2'],
+    });
+  });
+
+  it('canPlay: indisponível com a mão do oponente vazia', () => {
+    const state = createTestState();
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('resolve: descarta a carta escolhida e revela a identidade via acknowledge (humano)', () => {
+    const state = createTestState({
+      machineHand: [
+        { uid: 'm1', cardId: 'HEAL_SELF' },
+        { uid: 'm2', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'm2' }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    expect(result?.log).toMatchObject({ code: 'CARD_SPY_DISCARD', value: 'DIRECT_DAMAGE' });
+    expect(result?.acknowledge).toMatchObject({ code: 'HAND_REVEALED', cardId: 'DIRECT_DAMAGE' });
+  });
+
+  it('resolve: sem acknowledge quando quem joga é a CPU (offline)', () => {
+    const state = createTestState({ machineHand: [], playerHand: [{ uid: 'p1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({
+      state,
+      caster: 'MACHINE',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'p1' }, priorSelections: [] },
+    });
+    expect(result?.acknowledge).toBeUndefined();
+  });
+
+  it('resolve: uid inexistente na mão devolve null (passo inválido)', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'fantasma' }, priorSelections: [] },
+    });
+    expect(result).toBeNull();
+  });
+});
+
+describe('ESPIADA (PEEK_RANDOM) — escolha manual, substitui o rng.pick de antes', () => {
+  const card = getCard('PEEK_RANDOM');
+
+  it('abre PICK_ONE_FROM_HAND com a mão oculta do oponente', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.interaction).toEqual({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'MACHINE',
+      optionUids: ['m1'],
+    });
+  });
+
+  it('canPlay: indisponível com a mão do oponente vazia', () => {
+    const state = createTestState();
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('resolve: marca o uid espiado como revelado, sem remover nada da mão', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'm1' }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({ machineRevealedUids: ['m1'] });
+    expect(result?.log).toMatchObject({ code: 'CARD_SPY_PEEK', value: 'HEAL_SELF' });
+  });
+
+  it('resolve: uid já revelado não recria o array (dedupe)', () => {
+    const state = createTestState({
+      machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }],
+      machineRevealedUids: ['m1'],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'm1' }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({});
+  });
+});
+
+describe('SAQUE (HAND_RAID) — falha agora destrói; sucesso abre escolha manual', () => {
+  const card = getCard('HAND_RAID');
+
+  it('canPlay: indisponível com a mão do oponente vazia', () => {
+    const state = createTestState();
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('falha (50%): destrói 1 carta aleatória do oponente (efeito alterado — antes era no-op)', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng: fixedRng({ chance: () => false, pick: (items) => items[0] }),
+    });
+    expect(result?.patch).toEqual({ machineHand: [] });
+    expect(result?.log).toMatchObject({ code: 'CARD_RAID_DESTROYED', value: 'HEAL_SELF' });
+  });
+
+  it('sucesso (50%): abre PICK_ONE_FROM_HAND em vez de sortear', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng: fixedRng({ chance: () => true }),
+    });
+    expect(result?.interaction).toEqual({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'MACHINE',
+      optionUids: ['m1'],
+    });
+  });
+
+  it('resolve: rouba a carta escolhida MANTENDO o uid (decisão da Fase 4 — sem ressurreição cortada)', () => {
+    const state = createTestState({
+      playerHand: [], // a própria carta SAQUE já saiu da mão ao abrir a interação
+      machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'saque',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'm1' }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({
+      playerHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }],
+      machineHand: [],
+    });
+    expect(result?.log).toMatchObject({ code: 'CARD_RAID_STOLE', value: 'HEAL_SELF' });
+  });
+});
+
+describe('SAQUE II (HAND_RAID_II) — mesmo formato de SAQUE, odds 25/75', () => {
+  const card = getCard('HAND_RAID_II');
+
+  it('custo 3⚡, raridade ÉPICA (SAQUE é 2⚡/RARA)', () => {
+    expect(card.cost).toBe(3);
+    expect(card.rarity).toBe('EPIC');
+  });
+
+  it('falha (25%): destrói 1 carta aleatória do oponente', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng: fixedRng({ chance: () => false, pick: (items) => items[0] }),
+    });
+    expect(result?.log).toMatchObject({ code: 'CARD_RAID_DESTROYED' });
+  });
+
+  it('sucesso (75%): abre PICK_ONE_FROM_HAND', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng: fixedRng({ chance: () => true }),
+    });
+    expect(result?.interaction).toMatchObject({ kind: 'PICK_ONE_FROM_HAND' });
+  });
+
+  it('RICOCHETE rouba de graça (mesma inversão de HAND_RAID, entrada própria na tabela)', () => {
+    // Prova indireta: se a carta não tivesse entrada em RICOCHET_INVERSIONS,
+    // a cobertura completa está em gameStore.test.ts (ponta a ponta, com trap
+    // armada) — este teste só confirma que a carta é elegível (readsOrRemovesFromHand
+    // + targetsOpponentResource), pré-requisito pro trigger de PROTEÇÃO/RICOCHETE.
+    expect(card.readsOrRemovesFromHand).toBe(true);
+    expect(card.targetsOpponentResource).toBe(true);
+  });
+});
+
+describe('TROCAR (SINGLE_CARD_TRADE) — encadeamento de 2 passos com carta real', () => {
+  const card = getCard('SINGLE_CARD_TRADE');
+
+  it('canPlay: indisponível sem outra carta própria além da TROCAR', () => {
+    const state = createTestState({
+      playerHand: [{ uid: 't', cardId: 'SINGLE_CARD_TRADE' }],
+      machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }],
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 't' })).toBe(false);
+  });
+
+  it('canPlay: indisponível com a mão do oponente vazia', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 't', cardId: 'SINGLE_CARD_TRADE' },
+        { uid: 'o', cardId: 'HEAL_SELF' },
+      ],
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 't' })).toBe(false);
+  });
+
+  it('passo 1: oferece a mão PRÓPRIA, excluindo a própria TROCAR', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 't', cardId: 'SINGLE_CARD_TRADE' },
+        { uid: 'o', cardId: 'HEAL_SELF' },
+      ],
+      machineHand: [{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }],
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 't', rng });
+    expect(result?.interaction).toEqual({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'PLAYER',
+      optionUids: ['o'],
+    });
+  });
+
+  it('passo 2: pede a mão OCULTA do oponente', () => {
+    const state = createTestState({
+      playerHand: [{ uid: 'o', cardId: 'HEAL_SELF' }], // a TROCAR já saiu ao abrir
+      machineHand: [{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 't',
+      rng,
+      interaction: {
+        selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'o' },
+        priorSelections: [],
+      },
+    });
+    expect(result?.interaction).toEqual({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'MACHINE',
+      optionUids: ['m1'],
+    });
+  });
+
+  it('passo 3: troca as duas cartas escolhidas, mantendo os uids', () => {
+    const state = createTestState({
+      playerHand: [{ uid: 'o', cardId: 'HEAL_SELF' }],
+      machineHand: [{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 't',
+      rng,
+      interaction: {
+        selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'm1' },
+        priorSelections: [{ kind: 'PICK_ONE_FROM_HAND', uid: 'o' }],
+      },
+    });
+    expect(result?.patch).toEqual({
+      playerHand: [{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }],
+      machineHand: [{ uid: 'o', cardId: 'HEAL_SELF' }],
+    });
+    expect(result?.log).toMatchObject({ code: 'CARD_SINGLE_TRADE', value: 'DIRECT_DAMAGE' });
+  });
+
+  it('passo 3: uid oferecido ou recebido inexistente devolve null', () => {
+    const state = createTestState({
+      playerHand: [{ uid: 'o', cardId: 'HEAL_SELF' }],
+      machineHand: [{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 't',
+      rng,
+      interaction: {
+        selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'fantasma' },
+        priorSelections: [{ kind: 'PICK_ONE_FROM_HAND', uid: 'o' }],
+      },
+    });
+    expect(result).toBeNull();
+  });
+});
+
+describe('ESPIONAGEM (INTEL_REVEAL) — revela sem descartar; count sempre 2 (clamp é do store)', () => {
+  const card = getCard('INTEL_REVEAL');
+
+  it('canPlay: indisponível com a mão do oponente vazia', () => {
+    const state = createTestState();
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('abre PICK_MANY_FROM_HAND pedindo 2 — mesmo com a mão do oponente tendo só 1 carta (clamp é do openInteraction, Fase 3)', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.interaction).toEqual({
+      kind: 'PICK_MANY_FROM_HAND',
+      source: 'MACHINE',
+      optionUids: ['m1'],
+      count: 2,
+    });
+  });
+
+  it('resolve: marca os uids escolhidos como revelados, sem remover nada da mão', () => {
+    const state = createTestState({
+      machineHand: [
+        { uid: 'm1', cardId: 'HEAL_SELF' },
+        { uid: 'm2', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_MANY_FROM_HAND', uids: ['m1', 'm2'] }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({ machineRevealedUids: ['m1', 'm2'] });
+    expect(result?.log).toMatchObject({ code: 'CARD_INTEL_REVEAL', value: 2 });
+  });
+
+  it('resolve: uids já revelados não se duplicam no array', () => {
+    const state = createTestState({
+      machineHand: [
+        { uid: 'm1', cardId: 'HEAL_SELF' },
+        { uid: 'm2', cardId: 'DIRECT_DAMAGE' },
+      ],
+      machineRevealedUids: ['m1'],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_MANY_FROM_HAND', uids: ['m1', 'm2'] }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({ machineRevealedUids: ['m1', 'm2'] });
+  });
+});
+
+describe('PROCRASTINAR (CARD_DRAFT) — opções geradas na hora, não são cartas de nenhuma mão', () => {
+  const card = getCard('CARD_DRAFT');
+
+  it('abre PICK_ONE_REVEALED com 3 opções vindas do canal CARDS', () => {
+    const state = createTestState();
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng: createRng(1) });
+    expect(result?.interaction?.kind).toBe('PICK_ONE_REVEALED');
+    if (result?.interaction?.kind === 'PICK_ONE_REVEALED') {
+      expect(result.interaction.options).toHaveLength(3);
+    }
+  });
+
+  it('resolve: adiciona a carta escolhida à mão com um uid novo, sem estourar HAND_LIMIT', () => {
+    const state = createTestState({ playerHand: [], nextCardUid: 7 });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_REVEALED', cardId: 'HEAL_SELF' }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({
+      playerHand: [{ uid: 'HEAL_SELF#7', cardId: 'HEAL_SELF' }],
+      nextCardUid: 8,
+    });
+    expect(result?.log).toMatchObject({ code: 'CARD_DRAFT_PICK', value: 'HEAL_SELF' });
+  });
+});
+
+describe('PROCRASTINAR II (CARD_DRAFT_TIERED) — distribuição garantida 2 comuns + 2 épicas + 1 lendária', () => {
+  const card = getCard('CARD_DRAFT_TIERED');
+
+  it('abre PICK_ONE_REVEALED com 5 opções na distribuição garantida (não o sorteio ponderado normal)', () => {
+    const state = createTestState();
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng: createRng(1) });
+    expect(result?.interaction?.kind).toBe('PICK_ONE_REVEALED');
+    if (result?.interaction?.kind === 'PICK_ONE_REVEALED') {
+      const rarities = result.interaction.options.map((id) => getCard(id).rarity);
+      expect(rarities.filter((r) => r === 'COMMON')).toHaveLength(2);
+      expect(rarities.filter((r) => r === 'EPIC')).toHaveLength(2);
+      expect(rarities.filter((r) => r === 'LEGENDARY')).toHaveLength(1);
+    }
+  });
+
+  it('resolve: mesma resolução final de PROCRASTINAR (mesmo log, mesmo formato de uid)', () => {
+    const state = createTestState({ playerHand: [], nextCardUid: 0 });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_REVEALED', cardId: 'HAND_SWAP' }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({
+      playerHand: [{ uid: 'HAND_SWAP#0', cardId: 'HAND_SWAP' }],
+      nextCardUid: 1,
+    });
+    expect(result?.log).toMatchObject({ code: 'CARD_DRAFT_PICK', value: 'HAND_SWAP' });
   });
 });

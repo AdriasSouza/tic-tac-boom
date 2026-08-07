@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CardDefinition, CardId } from '@/engine/cards/definitions';
 import * as registry from '@/engine/cards/registry';
 import { createEmptyBoard } from '@/engine/rules';
+import { getChannel } from '@/engine/rng';
 import { useGameStore } from '@/store/gameStore';
 
 /**
@@ -105,7 +106,7 @@ const fixtureRevealedDef: CardDefinition = {
     }
     const sel = ctx.interaction.selection;
     if (sel.kind !== 'PICK_ONE_REVEALED') return null;
-    return { log: { code: 'CARD_DRAW', subject: ctx.caster, value: sel.index } };
+    return { log: { code: 'CARD_DRAW', subject: ctx.caster, value: sel.cardId } };
   },
 };
 
@@ -383,7 +384,7 @@ describe('pendingInteraction — fluxo completo por kind', () => {
     expect(state.terminalLog.at(-1)).toMatchObject({ code: 'CARD_INTEL_HAND', value: 2 });
   });
 
-  it('PICK_ONE_REVEALED (fixture): abre com opções geradas na hora, resolve por índice', () => {
+  it('PICK_ONE_REVEALED (fixture): abre com opções geradas na hora, resolve por cardId', () => {
     installFixtures({ [FIXTURE_REVEALED]: fixtureRevealedDef });
     useGameStore.setState({
       turn: 'PLAYER',
@@ -397,13 +398,17 @@ describe('pendingInteraction — fluxo completo por kind', () => {
       options: ['HEAL_SELF', 'DIRECT_DAMAGE'],
     });
 
+    // A seleção carrega o `cardId` diretamente (Fase 4, Achado 1) — o passo
+    // final não recebe `pending.options` de volta, só a escolha já resolvida.
     expect(
-      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'PICK_ONE_REVEALED', index: 1 }),
+      useGameStore
+        .getState()
+        .resolveInteraction('PLAYER', { kind: 'PICK_ONE_REVEALED', cardId: 'DIRECT_DAMAGE' }),
     ).toBe(true);
 
     const state = useGameStore.getState();
     expect(state.pendingInteraction).toBeNull();
-    expect(state.terminalLog.at(-1)).toMatchObject({ code: 'CARD_DRAW', value: 1 });
+    expect(state.terminalLog.at(-1)).toMatchObject({ code: 'CARD_DRAW', value: 'DIRECT_DAMAGE' });
   });
 
   it('SACRIFICE_DRAG (fixture — só mecanismo; Altar migra para isto na Fase 6): abre, resolve com 2 uids, aplica', () => {
@@ -661,5 +666,123 @@ describe('resolveCounterTraps — regressão via applyCardEffectResult (Fase 3)'
     expect(state.status).toBe('ROUND_OVER');
     expect(state.roundWinner).toBe('PLAYER');
     expect(state.machineHp).toBeLessThan(hpBefore); // ROUND_DAMAGE aplicado ao perdedor
+  });
+});
+
+describe('Fase 4 — cobertura com carta real (fecha a lacuna dos kinds só-fixture da Fase 3)', () => {
+  it('PICK_ONE_FROM_HAND: SAQUE (carta real) abre a escolha e resolve o roubo pelo store', () => {
+    // Controla o coin flip de SAQUE direto no canal `CARDS` — mesma carta
+    // real, sem fixture nenhuma; só força o ramo de sucesso.
+    vi.spyOn(getChannel('CARDS'), 'chance').mockReturnValue(true);
+
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      playerHand: [{ uid: 'saque', cardId: 'HAND_RAID' }],
+      machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }],
+    });
+
+    expect(useGameStore.getState().playCard('saque')).toBe(true);
+    expect(useGameStore.getState().pendingInteraction).toMatchObject({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'MACHINE',
+      optionUids: ['m1'],
+    });
+
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'PICK_ONE_FROM_HAND', uid: 'm1' }),
+    ).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.pendingInteraction).toBeNull();
+    expect(state.playerHand).toEqual([{ uid: 'm1', cardId: 'HEAL_SELF' }]);
+    expect(state.machineHand).toEqual([]);
+  });
+
+  it('PICK_MANY_FROM_HAND: ESPIONAGEM (carta real) clampa count pro tamanho real da mão (1 carta)', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      playerHand: [{ uid: 'esp', cardId: 'INTEL_REVEAL' }],
+      machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }], // só 1 carta — caso de borda da spec
+    });
+
+    expect(useGameStore.getState().playCard('esp')).toBe(true);
+    expect(useGameStore.getState().pendingInteraction).toMatchObject({
+      kind: 'PICK_MANY_FROM_HAND',
+      optionUids: ['m1'],
+      count: 1, // pedido era 2 — clampado pelo openInteraction (Fase 3)
+    });
+
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'PICK_MANY_FROM_HAND', uids: ['m1'] }),
+    ).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.pendingInteraction).toBeNull();
+    expect(state.machineRevealedUids).toEqual(['m1']);
+    expect(state.machineHand).toEqual([{ uid: 'm1', cardId: 'HEAL_SELF' }]); // nada foi descartado
+  });
+
+  it('PICK_ONE_REVEALED: PROCRASTINAR (carta real) abre 3 opções do deck e resolve por cardId', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      playerHand: [{ uid: 'proc', cardId: 'CARD_DRAFT' }],
+    });
+
+    expect(useGameStore.getState().playCard('proc')).toBe(true);
+    const pending = useGameStore.getState().pendingInteraction;
+    expect(pending?.kind).toBe('PICK_ONE_REVEALED');
+    const options = pending?.kind === 'PICK_ONE_REVEALED' ? pending.options : [];
+    expect(options).toHaveLength(3);
+
+    expect(
+      useGameStore
+        .getState()
+        .resolveInteraction('PLAYER', { kind: 'PICK_ONE_REVEALED', cardId: options[0] }),
+    ).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.pendingInteraction).toBeNull();
+    expect(state.playerHand).toHaveLength(1);
+    expect(state.playerHand[0].cardId).toBe(options[0]);
+  });
+
+  it('TROCAR (carta real): encadeamento de 2 passos completo pelo store, de ponta a ponta', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      playerHand: [
+        { uid: 't', cardId: 'SINGLE_CARD_TRADE' },
+        { uid: 'o', cardId: 'HEAL_SELF' },
+      ],
+      machineHand: [{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }],
+    });
+
+    expect(useGameStore.getState().playCard('t')).toBe(true);
+    expect(useGameStore.getState().pendingInteraction).toMatchObject({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'PLAYER',
+      optionUids: ['o'],
+    });
+
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'PICK_ONE_FROM_HAND', uid: 'o' }),
+    ).toBe(true);
+    expect(useGameStore.getState().pendingInteraction).toMatchObject({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'MACHINE',
+      optionUids: ['m1'],
+    });
+
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'PICK_ONE_FROM_HAND', uid: 'm1' }),
+    ).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.pendingInteraction).toBeNull();
+    expect(state.playerHand).toEqual([{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }]);
+    expect(state.machineHand).toEqual([{ uid: 'o', cardId: 'HEAL_SELF' }]);
   });
 });

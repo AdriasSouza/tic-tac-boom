@@ -581,6 +581,8 @@ documentado como limitação conhecida, abaixo.
   `chooseCpuMove` não deixa de "bloquear" uma ameaça do humano quando o humano também está
   impedido de colocar peça (`playerPlacementBlocked`) — jogar defensivo demais nesse caso é
   sub-ótimo, não incorreto.
+- **SAQUE/SABOTAGEM da CPU escolhem a carta a roubar/descartar aleatoriamente, sem avaliar
+  valor** (`resolveCpuInteraction`, `src/engine/ai/cpu.ts`) — candidato para Fase 7.
 - **A fonte no terminal é independente do resto do app.** `expo-font` não alcança o documento do
   WebView/iframe; usar a Press Start 2P lá dentro exige embutir o `.ttf` como base64 num
   `@font-face` dentro do próprio HTML.

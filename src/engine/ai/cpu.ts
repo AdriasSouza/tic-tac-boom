@@ -16,6 +16,8 @@ import {
   type Board,
   type Combatant,
   type GameState,
+  type InteractionSelection,
+  type PendingInteraction,
 } from '@/engine/rules';
 import type { CardId } from '@/engine/cards/definitions';
 
@@ -43,6 +45,12 @@ export interface CpuActions {
   playCard: (uid: string, targetIndex?: number) => boolean;
   /** Passa a vez sem colocar peça — plano B quando `chooseCpuMove` não decide nada. */
   endTurn: () => void;
+  /**
+   * Resolve o passo atual de uma `pendingInteraction` da PRÓPRIA CPU (SAQUE/
+   * SABOTAGEM, Fase 4 — ver `resolveCpuInteraction`). Nunca chamada para uma
+   * interação de outro combatente.
+   */
+  resolveInteraction: (selection: InteractionSelection) => boolean;
 }
 
 /** Token de cancelamento cooperativo. O React vira `cancelled = true` no cleanup. */
@@ -346,6 +354,48 @@ export function chooseCpuMove(state: GameState, positionalBias = true): CpuDecis
 }
 
 /* -------------------------------------------------------------------------- */
+/*                          INTERAÇÃO PENDENTE DA CPU                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Resolve, com uma heurística INGÊNUA (`rng.pick`/`rng.shuffle`, sem avaliar
+ * QUAL opção vale mais — limitação conhecida registrada no README), o passo
+ * atual de uma `pendingInteraction` que a PRÓPRIA CPU acabou de abrir (Fase
+ * 4, SAQUE/SAQUE II/SABOTAGEM — ver Achado 3 do plano da fase).
+ *
+ * `BOARD_TARGET` nunca chega aqui: a CPU sempre resolve o alvo sozinha ANTES
+ * de jogar a carta (`chooseCpuCardPlay` devolve `targetIndex` de antemão),
+ * então essa carta nunca abre uma interação pra CPU resolver depois. Os
+ * outros 4 `kind`s ganham um ramo cada, cobertos por completude — hoje só
+ * `PICK_ONE_FROM_HAND` é de fato alcançável pela CPU.
+ */
+function resolveCpuInteraction(pending: PendingInteraction, actions: CpuActions): void {
+  const rng = getChannel('AI');
+
+  switch (pending.kind) {
+    case 'BOARD_TARGET':
+      return;
+    case 'PICK_ONE_FROM_HAND':
+      actions.resolveInteraction({ kind: 'PICK_ONE_FROM_HAND', uid: rng.pick(pending.optionUids) });
+      return;
+    case 'PICK_MANY_FROM_HAND': {
+      const shuffled = rng.shuffle(pending.optionUids);
+      actions.resolveInteraction({ kind: 'PICK_MANY_FROM_HAND', uids: shuffled.slice(0, pending.count) });
+      return;
+    }
+    case 'PICK_ONE_REVEALED':
+      actions.resolveInteraction({ kind: 'PICK_ONE_REVEALED', cardId: rng.pick(pending.options) });
+      return;
+    case 'SACRIFICE_DRAG': {
+      if (pending.eligibleUids.length < 2) return;
+      const [first, second] = rng.shuffle(pending.eligibleUids);
+      actions.resolveInteraction({ kind: 'SACRIFICE_DRAG', uids: [first, second] });
+      return;
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /*                                   TURNO                                     */
 /* -------------------------------------------------------------------------- */
 
@@ -384,7 +434,28 @@ export async function playCPUTurn(
   // Revalidação pós-atraso. Cada guarda cobre um caso real de corrida:
   if (fresh.status !== 'PLAYING') return null; // rodada acabou nesse meio-tempo
   if (fresh.turn !== CPU) return null; // armadilha ou carta devolveu a vez
-  if (fresh.pendingInteraction !== null) return null; // humano está mirando/escolhendo
+
+  /* --- Interação pendente ---------------------------------------------------
+     Duas leituras possíveis pra `pendingInteraction !== null` aqui: é de um
+     HUMANO mirando/escolhendo (espera — `pending.caster` só pode ser CPU
+     quando `fresh.turn === CPU`, mas a guarda checa os dois por segurança),
+     ou é a PRÓPRIA CPU que acabou de abrir SAQUE/SABOTAGEM (Fase 4, Achado 3)
+     e ainda não tem quem resolva — sem tratamento aqui o turno trava pra
+     sempre, porque `resolveInteraction` recusa qualquer combatente que não
+     seja `pending.caster`. Sequência completa (ver plano da Fase 4): a CPU
+     joga a carta → o anúncio ("O OPONENTE JOGOU SAQUE") pausa ANTES da
+     interação abrir de verdade → o humano confirma → `pendingAcknowledgement`
+     vira `null` → o hook (`useCpuOpponent`) já tem isso nas dependências e
+     RE-DISPARA esta função → é NESTA 2ª chamada que a interação já está
+     aberta e cai aqui. */
+  if (fresh.pendingInteraction !== null) {
+    if (fresh.pendingInteraction.caster !== CPU) return null; // humano mirando/escolhendo
+    resolveCpuInteraction(fresh.pendingInteraction, actions);
+    fresh = getState ? getState() : fresh;
+    if (fresh.status !== 'PLAYING' || fresh.turn !== CPU || fresh.pendingAcknowledgement !== null) {
+      return null;
+    }
+  }
 
   /* --- Cartas antes do tabuleiro -------------------------------------------
      No máximo uma por turno (ver `chooseCpuCardPlay`). A mensagem de log já

@@ -39,6 +39,18 @@ efeito de troca/roubo deveria emitir um `uid` novo (cortando a revelação de
 propósito). Não é um bug bloqueante hoje — é uma decisão de design que ainda
 não foi tomada.
 
+**Decidido na Fase 4: mantém o `uid` antigo — sem mudança de comportamento.**
+SAQUE/SAQUE II (`HAND_RAID`/`HAND_RAID_II`) e TROCAR (`SINGLE_CARD_TRADE`)
+continuam movendo o `HandCard` com o MESMO `uid` para a mão nova, pela mesma
+razão que este documento já apontava: quem viu a carta antes dela mudar de
+mão continua conhecendo-a — a "ressurreição" reafirma algo verdadeiro na
+maioria dos casos. Cortar a revelação mintando um `uid` novo só na troca
+trocaria este risco por um pior (perder uma informação que o jogador
+genuinamente já tinha) para resolver um caso de borda (`exposed` lendo
+estranho num cenário raro e cosmético) que não compromete nenhuma regra do
+jogo. PERMUTA CAÓTICA (`HAND_SWAP`) não foi tocada nesta fase — já seguia a
+mesma convenção antes, sem mudança necessária.
+
 ## VISÃO ABSOLUTA (`FULL_INTEL`) — mecânica de temporizador não implementada
 
 **Contexto:** `FULL_INTEL` (registry.ts) hoje só loga a contagem da mão do
@@ -268,3 +280,40 @@ animação depois custaria mais do que manter quieta agora.
 **Revisitar** quando alguma fase futura de fato tocar este caminho (Altar/`SACRIFICE_DRAG`
 na Fase 6, ou qualquer mudança na semântica de "carta armada continua na mão") — só então
 decidir se `isSelected` volta a ter consumidor ou se aí sim vale remover.
+
+## `nextCardUid` e `patch` são descartados em silêncio quando `result.interaction` está presente (Fase 4)
+
+**Contexto:** PROCRASTINAR/PROCRASTINAR II (`CARD_DRAFT`/`CARD_DRAFT_TIERED`) mintam uma
+carta nova escrevendo `patch: { [handKey]: [...hand, novo], nextCardUid: state.nextCardUid +
+1 }` — mas só na chamada TERMINAL de `effect()` (a que NÃO devolve `interaction`). Isso levou
+à pergunta: se um efeito futuro precisar mintar carta em MAIS de um passo do mesmo
+encadeamento, o `nextCardUid` incrementado no passo N chega atualizado ao passo N+1?
+
+**Resposta, verificada direto no código:** a pergunta não chega a se colocar, porque **não é
+possível mintar num passo intermediário hoje** — `finishInteractionStep` (`gameStore.ts`,
+~linha 828) e o `applyResult` de `resolveCardPlay` (~linha 1092) checam `if
+(result.interaction)` e, se verdadeiro, **retornam sem nunca ler `result.patch`**. Ou seja:
+se um efeito algum dia devolver `patch` **e** `interaction` na MESMA chamada (mintando uma
+carta enquanto pede mais um passo de escolha), o `patch` — junto com o incremento de
+`nextCardUid` que ele carregaria — é **descartado em silêncio**, sem erro, sem log. Isso é
+pior do que uma colisão de `uid`: uma colisão pelo menos produziria um sintoma visível (duas
+cartas com o mesmo `uid`); um patch descartado simplesmente faz a carta mintada nunca
+aparecer, e quem depurar vai procurar em todo lugar MENOS nesta regra de exclusividade.
+
+**Por que não é bug hoje:** nenhuma carta (PROCRASTINAR/PROCRASTINAR II incluídas) tenta
+mintar em passo não-terminal — as duas mintam uma vez só, na chamada final. `nextCardUid` só
+é lido fresco (via `get()`, dentro de `resolveInteraction`/`resolveCardPlay`) no INSTANTE da
+chamada terminal, então dentro de uma única jogada de carta não há corrida: se um efeito
+precisar mintar MAIS de uma carta, mas todas dentro da MESMA chamada terminal (um único
+`patch`), basta computar os `uid`s sequencialmente a partir de `state.nextCardUid` num
+contador local (`state.nextCardUid`, `state.nextCardUid + 1`, ...) — seguro, porque é
+aritmética síncrona dentro de uma função só, mesmo padrão que `drawCardsFor`
+(`gameStore.ts`) já usa para comprar várias cartas de uma vez.
+
+**Ação para quando isto importar de verdade (Fase 6 ou depois):** uma carta que precise
+mintar em PASSOS DIFERENTES do encadeamento (não só cartas diferentes no mesmo passo) exige
+mudar o contrato — `applyCardEffectResult`/`finishInteractionStep` precisariam aplicar
+`result.patch` MESMO quando `result.interaction` está presente, em vez de ignorá-lo. Isso é
+uma mudança de `rules.ts`/`definitions.ts`/`gameStore.ts` (o "pare e avise" que já vale para
+essa camada) — não decidir isso sem registrar a razão de precisar, exatamente como a Fase 3
+pediu para os `kind`s do contrato original.

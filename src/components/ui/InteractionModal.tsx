@@ -138,7 +138,7 @@ export function InteractionModal() {
             <FlipCard
               cardId={optionCardId}
               revealed
-              onPress={() => resolve({ kind: 'PICK_ONE_REVEALED', index })}
+              onPress={() => resolve({ kind: 'PICK_ONE_REVEALED', cardId: optionCardId })}
             />
           </View>
         ))}

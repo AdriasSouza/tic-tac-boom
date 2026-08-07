@@ -186,6 +186,62 @@ describe('RICOCHETE — inverte dano de ponta a ponta (resolveCounterTraps proce
   });
 });
 
+describe('TROCAR (SINGLE_CARD_TRADE) x RICOCHETE — RICOCHETE cai no fallback (Fase 4, Achado 2)', () => {
+  it('RICOCHETE armada primeiro: dispara e SÓ ANULA (sem inverter) — TROCAR nunca abre pendingInteraction, ANTIMAGIA continua armada', () => {
+    useGameStore.setState({
+      turn: 'MACHINE',
+      machineEnergy: 3,
+      machineHand: [
+        { uid: 't', cardId: 'SINGLE_CARD_TRADE' },
+        { uid: 'o', cardId: 'HEAL_SELF' },
+      ],
+      playerHand: [{ uid: 'p1', cardId: 'DIRECT_DAMAGE' }],
+      // FIFO: RICOCHETE é a mais antiga (índice 0) — dispara primeiro.
+      playerTraps: [
+        { uid: 'r', cardId: 'REFLECT_TRAP' },
+        { uid: 'a', cardId: 'ANTI_SPELL_TRAP' },
+      ],
+    });
+
+    expect(useGameStore.getState().playMachineCard('t')).toBe(true);
+
+    const state = useGameStore.getState();
+    // RICOCHETE disparou e se consumiu; ANTIMAGIA nunca chegou a ser consultada.
+    expect(state.playerTraps).toEqual([{ uid: 'a', cardId: 'ANTI_SPELL_TRAP' }]);
+    // TROCAR foi vetada antes do passo 1 — nenhuma interação chegou a abrir.
+    expect(state.pendingInteraction).toBeNull();
+    // Sem inversão (Achado 2, sem entrada em RICOCHET_INVERSIONS): as mãos
+    // não trocaram nada — só a própria TROCAR foi consumida.
+    expect(state.machineHand).toEqual([{ uid: 'o', cardId: 'HEAL_SELF' }]);
+    expect(state.playerHand).toEqual([{ uid: 'p1', cardId: 'DIRECT_DAMAGE' }]);
+  });
+
+  it('ANTIMAGIA armada primeiro: dispara ela — RICOCHETE continua armada intacta para o próximo gatilho', () => {
+    useGameStore.setState({
+      turn: 'MACHINE',
+      machineEnergy: 3,
+      machineHand: [
+        { uid: 't', cardId: 'SINGLE_CARD_TRADE' },
+        { uid: 'o', cardId: 'HEAL_SELF' },
+      ],
+      playerHand: [{ uid: 'p1', cardId: 'DIRECT_DAMAGE' }],
+      // FIFO: ANTIMAGIA é a mais antiga desta vez — dispara primeiro.
+      playerTraps: [
+        { uid: 'a', cardId: 'ANTI_SPELL_TRAP' },
+        { uid: 'r', cardId: 'REFLECT_TRAP' },
+      ],
+    });
+
+    expect(useGameStore.getState().playMachineCard('t')).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.playerTraps).toEqual([{ uid: 'r', cardId: 'REFLECT_TRAP' }]);
+    expect(state.pendingInteraction).toBeNull();
+    expect(state.machineHand).toEqual([{ uid: 'o', cardId: 'HEAL_SELF' }]);
+    expect(state.playerHand).toEqual([{ uid: 'p1', cardId: 'DIRECT_DAMAGE' }]);
+  });
+});
+
 describe('forcedVanish não atravessa troca de rodada (bug encontrado limpando código morto na Fase 2)', () => {
   it('startNextRound limpa forcedVanish, igual ao antigo doomedCell', () => {
     useGameStore.setState({

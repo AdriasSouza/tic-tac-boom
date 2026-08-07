@@ -133,6 +133,8 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
       return `saque :: ${who} roubou ${cardName(entry.value)} ${whose === 'sua' ? 'de você' : whose}`;
     case 'CARD_RAID_FAILED':
       return `saque :: a tentativa de ${who} contra ${whose === 'sua' ? 'você' : whose} falhou`;
+    case 'CARD_RAID_DESTROYED':
+      return `saque :: a tentativa de ${who} contra ${whose === 'sua' ? 'você' : whose} falhou e destruiu ${cardName(entry.value)} ${whose === 'sua' ? 'de você' : whose}`;
     case 'CARD_CLEANSE':
       return `limpar :: ${who} liberou a casa ${cellLabel(entry.value)}`;
     case 'CARD_CLEANSE_ALL':
@@ -155,6 +157,12 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
       return `espionagem :: ${who} descobriu e descartou ${cardName(entry.value)} ${whose === 'sua' ? 'de você' : whose}`;
     case 'CARD_INTEL_HAND':
       return `visão absoluta :: ${who} leu uma mão inteira de ${entry.value} carta(s)`;
+    case 'CARD_INTEL_REVEAL':
+      return `espionagem :: ${who} revelou ${entry.value} carta(s) ${whose === 'sua' ? 'de você' : whose}, sem descartar`;
+    case 'CARD_SINGLE_TRADE':
+      return `trocar :: ${who} trocou uma carta com ${whose === 'sua' ? 'você' : whose} e recebeu ${cardName(entry.value)}`;
+    case 'CARD_DRAFT_PICK':
+      return `procrastinar :: ${who} escolheu ${cardName(entry.value)} entre as opções reveladas`;
     case 'CARD_CHAOS_ROULETTE':
       return `tic tac boom :: ${who} girou a roleta do caos`;
     case 'CARD_ALTAR_OPENED':
@@ -202,6 +210,12 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
       return `${who} DESCARTOU: ${cardName(entry.value)}`;
     case 'CARD_INTEL_HAND':
       return `${who} LEU A MÃO INTEIRA`;
+    case 'CARD_RAID_DESTROYED':
+      return `${who} DESTRUIU: ${cardName(entry.value)}`;
+    case 'CARD_SINGLE_TRADE':
+      return `${who} RECEBEU: ${cardName(entry.value)}`;
+    case 'CARD_DRAFT_PICK':
+      return `${who} ESCOLHEU: ${cardName(entry.value)}`;
     default:
       return formatLogEntry(entry, p).toUpperCase();
   }

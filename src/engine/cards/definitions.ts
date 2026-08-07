@@ -47,7 +47,12 @@ export type CardId =
   | 'QUEUE_SHUFFLE'
   | 'ANTI_SPELL_TRAP'
   | 'REFLECT_TRAP'
-  | 'REBOBINAR';
+  | 'REBOBINAR'
+  | 'HAND_RAID_II'
+  | 'SINGLE_CARD_TRADE'
+  | 'INTEL_REVEAL'
+  | 'CARD_DRAFT'
+  | 'CARD_DRAFT_TIERED';
 
 /**
  * - `ACTION`  — resolve imediatamente ao ser jogada.

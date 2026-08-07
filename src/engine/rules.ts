@@ -81,14 +81,22 @@ export interface HandCard {
 /**
  * Uma escolha do jogador respondendo a um passo de `PendingInteraction`.
  *
- * Zero dependência de `definitions.ts` de propósito (só primitivos) — é por
- * isso que mora aqui e `definitions.ts` importa daqui, nunca o contrário.
+ * Quase zero dependência de `definitions.ts` de propósito (só primitivos) — é
+ * por isso que mora aqui e `definitions.ts` importa daqui, nunca o contrário.
+ * Única exceção: `PICK_ONE_REVEALED` carrega `CardId` diretamente (Fase 4) —
+ * a UI/rede já sabem a identidade de cada opção (renderizam `pending.options[i]`
+ * pra desenhar a carta), então resolvem na ORIGEM em vez de mandar um `index`
+ * que o `effect()` não teria como traduzir de volta ao `CardId` no passo final
+ * (`resolveInteraction` não repassa `pending.options` pro `effect`, só
+ * `{selection, priorSelections}` — ver `CardEffectContext.interaction` em
+ * `definitions.ts`). Mesmo import type-only já usado no restante do arquivo
+ * (`CardId` em `PendingInteractionBase.cardId`), sem ciclo novo.
  */
 export type InteractionSelection =
   | { kind: 'BOARD_TARGET'; index: number }
   | { kind: 'PICK_ONE_FROM_HAND'; uid: string }
   | { kind: 'PICK_MANY_FROM_HAND'; uids: readonly string[] }
-  | { kind: 'PICK_ONE_REVEALED'; index: number }
+  | { kind: 'PICK_ONE_REVEALED'; cardId: CardId }
   | { kind: 'SACRIFICE_DRAG'; uids: readonly [string, string] };
 
 interface PendingInteractionBase {
