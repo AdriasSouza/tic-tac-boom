@@ -192,20 +192,6 @@ export interface GameActions {
    */
   forfeitMatch: (winner: Combatant) => void;
 
-  /**
-   * Remove as `uids` da mão de `caster` — o sacrifício do ALTAR DE
-   * SACRIFÍCIO, confirmado pelo `<AltarModal />`.
-   *
-   * **Iteração atual**: só remove e registra no console. A invocação em troca
-   * (qual carta nasce da oferenda) fica para uma etapa futura — de propósito,
-   * é a mesma "matemática ainda por vir" que a descrição da carta já avisa.
-   *
-   * @returns quantas das `uids` de fato estavam na mão e foram removidas —
-   * o `syncBridge` usa isso para detectar dessincronia, do mesmo jeito que
-   * `playCard`/`placeMark` já fazem para as próprias ações.
-   */
-  sacrificeCards: (caster: Combatant, uids: readonly [string, string]) => number;
-
   /** Aumenta o HP do alvo. Faz clamp em `INITIAL_HP` — cura não excede o teto. */
   healTarget: (target: Combatant, amount: number) => void;
 
@@ -384,6 +370,7 @@ const createInitialState = (): GameState => ({
   playerPlacementBlocked: false,
   machinePlacementBlocked: false,
   highlightedOldestFor: null,
+  fullIntelRevealFor: null,
   playerHand: [],
   nextCardUid: 0,
   pendingInteraction: null,
@@ -404,8 +391,6 @@ const createInitialState = (): GameState => ({
   nextExtraTurnId: 0,
   lastNotice: null,
   nextNoticeId: 0,
-  lastAltarPrompt: null,
-  nextAltarPromptId: 0,
   isPaused: false,
   isOnline: false,
   terminalLog: [],
@@ -654,12 +639,12 @@ export const useGameStore = create<GameStore>()((set, get) => {
    * Aplica um `CardEffectResult` FINAL (nunca `.interaction` — quem chama já
    * confirmou que não tem) — recheca `findWinner`, avança o turno se
    * `consumesTurn`, e processa `log`/`notice`/`damage`/`heal`/`draw`/
-   * `triggersChaosGlitch`/`opensAltar`/`acknowledge`.
+   * `triggersChaosGlitch`/`acknowledge`.
    *
    * Único caminho para os TRÊS consumidores de `CardEffectResult`
    * (`resolveCardPlay`, `resolveInteraction`, `resolveCounterTraps`) — antes
    * da Fase 3, `resolveCounterTraps` duplicava um SUBCONJUNTO desta lista à
-   * mão (sem recheck de `findWinner`, sem `consumesTurn`/`opensAltar`/
+   * mão (sem recheck de `findWinner`, sem `consumesTurn`/
    * `triggersChaosGlitch` — lacuna documentada em `docs/NOTAS_TECNICAS.md`).
    * Unificado agora que um TERCEIRO consumidor ia duplicar de novo.
    *
@@ -729,15 +714,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // `activeRule`, publica seu próprio log/aviso da REGRA sorteada), por
     // isso a carta só sinaliza a intenção e o store decide chamá-la.
     if (result.triggersChaosGlitch) get().triggerTerminalGlitch();
-
-    // ALTAR DE SACRIFÍCIO: publica o fato efêmero que o `<AltarModal />`
-    // observa. `id` monotônico pelo mesmo motivo de `lastExtraTurn` — jogar a
-    // carta duas vezes seguidas com o mesmo `caster` precisa reabrir o modal
-    // as duas vezes, e comparar só `caster` não distinguiria isso.
-    if (result.opensAltar) {
-      const id = get().nextAltarPromptId;
-      set({ lastAltarPrompt: { caster, id }, nextAltarPromptId: id + 1 });
-    }
 
     // Cartas de espionagem (ESPIONAGEM, VISÃO ABSOLUTA): a revelação já
     // aconteceu (é o que `card.effect` acabou de calcular), isto só pausa o
@@ -1183,6 +1159,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
         // mesmo padrão de `forcedVanish` acima.
         highlightedOldestFor:
           state.highlightedOldestFor?.caster === owner ? null : state.highlightedOldestFor,
+        // VISÃO ABSOLUTA: mesmo raciocínio de VIDENTE acima — a rodada de
+        // `owner` termina aqui, a revelação dele não sobrevive.
+        fullIntelRevealFor: state.fullIntelRevealFor === owner ? null : state.fullIntelRevealFor,
       });
 
       // Quem perdeu a rodada leva dano. takeDamage cuida do fim de partida.
@@ -1229,6 +1208,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
         !keepsTurn && state.highlightedOldestFor?.caster === owner
           ? null
           : state.highlightedOldestFor,
+      // VISÃO ABSOLUTA: mesma exceção de TURNO_EXTRA que VIDENTE já usa acima.
+      fullIntelRevealFor:
+        !keepsTurn && state.fullIntelRevealFor === owner ? null : state.fullIntelRevealFor,
     });
 
     /* Toda jogada de tabuleiro entra no log, de QUALQUER combatente.
@@ -1287,22 +1269,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // `pendingInteraction` por higiene: `MATCH_OVER` já bloqueia tudo sozinho
     // (nenhum reembolso pendente importa mais), mas não custa deixar limpo.
     set({ status: 'MATCH_OVER', matchWinner: winner, matchOverReason: 'FORFEIT', pendingInteraction: null });
-  },
-
-  sacrificeCards: (caster, uids) => {
-    // Partida encerrada por outro caminho enquanto o Altar estava aberto
-    // (janela teórica, mas o guard é de graça e espelha `forfeitMatch`).
-    if (get().status !== 'PLAYING') return 0;
-
-    const handKey = handKeyFor(caster);
-    const before = get()[handKey];
-    const removedCount = before.filter((c) => uids.includes(c.uid)).length;
-
-    set({ [handKey]: before.filter((c) => !uids.includes(c.uid)) });
-
-    console.log('[altar] sacrifício confirmado — cartas removidas:', uids, '(invocação: próxima iteração)');
-
-    return removedCount;
   },
 
   healTarget: (target, amount) => {
@@ -1428,6 +1394,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
         // VIDENTE: referencia um índice do tabuleiro da rodada anterior —
         // sem sentido no tabuleiro novo, mesma classe de `forcedVanish` acima.
         highlightedOldestFor: null,
+        // VISÃO ABSOLUTA: pertence ao turno da rodada que acabou de fechar —
+        // mesma classe de limpeza incondicional que os campos acima.
+        fullIntelRevealFor: null,
       };
     });
   },
@@ -1464,6 +1433,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // não terminou — passar a vez é exatamente isso terminando.
       highlightedOldestFor:
         state.highlightedOldestFor?.caster === combatant ? null : state.highlightedOldestFor,
+      // VISÃO ABSOLUTA: mesmo raciocínio de VIDENTE acima.
+      fullIntelRevealFor: state.fullIntelRevealFor === combatant ? null : state.fullIntelRevealFor,
     });
 
     get().pushLog({ code: 'TURN_PASSED', subject: combatant });
@@ -1611,6 +1582,14 @@ export const useGameStore = create<GameStore>()((set, get) => {
         const armed = defender === 'PLAYER' ? get().playerTraps : get().machineTraps;
         if (armed.length === 0) continue;
 
+        // FIFO exclusivo (Fase 5, mesma regra de `resolveCounterTraps`): a
+        // mais antiga que casar a condição dispara SOZINHA para este evento —
+        // o `break` abaixo garante isso. Antes da Fase 5 este loop nunca
+        // parava (deixava qualquer trap cujo `triggerCondition` também
+        // batesse disparar também), inofensivo só porque MINA é a única trap
+        // reativa a `PIECE_PLACED` hoje — "Regra de Ouro 1" (armadilha mais
+        // antiga primeiro) vale IGUAL aqui, não só para o veto síncrono de
+        // `resolveCounterTraps` (ver `docs/CARTAS.md`).
         for (const trap of armed) {
           // Releitura por iteração: uma armadilha anterior pode ter alterado o
           // tabuleiro, e a condição da próxima deve ver o estado já atualizado.
@@ -1657,6 +1636,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
               if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
             },
           );
+
+          break; // exclusivo — nenhuma outra trap do MESMO defensor avalia este evento
         }
       }
     } finally {
@@ -1789,6 +1770,8 @@ export const selectIsPaused = (s: GameStore) => s.isPaused;
  */
 export const selectHighlightedOldest = (s: GameStore) =>
   s.highlightedOldestFor && isHighlightedOldestValid(s) ? s.highlightedOldestFor : null;
+/** Quem tem VISÃO ABSOLUTA ativa agora (vendo a mão inteira do oponente), ou `null`. */
+export const selectFullIntelRevealFor = (s: GameStore) => s.fullIntelRevealFor;
 export const selectMachineHand = (s: GameStore) => s.machineHand;
 export const selectLastDamageEvent = (s: GameStore) => s.lastDamageEvent;
 /** Aviso efêmero mais recente — alimenta o toast sobre o tabuleiro. */
@@ -1800,9 +1783,6 @@ export const selectLastNotice = (s: GameStore) => s.lastNotice;
  * logo abaixo da store.
  */
 export const selectLastExtraTurn = (s: GameStore) => s.lastExtraTurn;
-
-/** Abertura mais recente do Altar de Sacrifício, com `id` monotônico. Alimenta o `<AltarModal />`. */
-export const selectLastAltarPrompt = (s: GameStore) => s.lastAltarPrompt;
 
 /** Turnos globais restantes até a regra caótica atual expirar. `null` se não houver prazo. */
 export const selectRuleTurnsLeft = (s: GameStore) =>

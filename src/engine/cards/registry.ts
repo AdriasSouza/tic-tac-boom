@@ -12,9 +12,10 @@ import {
   placementBlockedKeyFor,
   revealedKeyFor,
 } from '@/engine/rules';
-import { RARITY_DRAW_WEIGHT } from './definitions';
+import { fuseRarity, RARITY_DRAW_WEIGHT } from './definitions';
 import type { Rng } from '@/engine/rng';
-import type { Combatant, GameState, HandCard } from '@/engine/rules';
+import { createEmptyBoard } from '@/engine/rules';
+import type { Board, Combatant, GameState, HandCard, Piece } from '@/engine/rules';
 import type { CardDefinition, CardEffectResult, CardId, CardRarity } from './definitions';
 
 /* -------------------------------------------------------------------------- */
@@ -402,7 +403,9 @@ const HAND_RAID: CardDefinition = {
  * via `isImmuneToTraps` nos gatilhos delas; de propósito NÃO marcada com
  * `readsOrRemovesFromHand`/`targetsOpponentResource` aqui — a imunidade por
  * raridade já a protege, e marcar a tag além disso sugeriria que a categoria
- * é que decide, quando na verdade é a raridade.
+ * é que decide, quando na verdade é a raridade. Contraste com `FULL_INTEL`
+ * (abaixo): ela TEM `readsOrRemovesFromHand`, apesar de também ser Lendária —
+ * ver o comentário lá para o porquê da assimetria (Fase 5, auditoria).
  */
 const CARD_TRADE: CardDefinition = {
   id: 'HAND_SWAP',
@@ -1035,6 +1038,18 @@ const EXTRA_TURN: CardDefinition = {
   }),
 };
 
+/**
+ * `readsOrRemovesFromHand: true` (Fase 5, auditoria) — diferente de
+ * `HAND_SWAP` (acima), que omite a flag de propósito porque a imunidade de
+ * raridade já a protege inteiramente. Aqui a flag É a categoria correta
+ * (a carta LÊ a mão inteira do oponente) mesmo sendo Lendária — marcá-la não
+ * MUDA nenhum comportamento observável hoje (o `triggerCondition` de
+ * PROTEÇÃO checa a categoria E `!isImmuneToTraps`; a raridade barra o veto de
+ * qualquer forma), mas é a categoria HONESTA: se um rebalanceamento futuro
+ * baixar `FULL_INTEL` pra uma raridade não-imune, PROTEÇÃO já cobre sem
+ * precisar lembrar de voltar aqui e adicionar a flag esquecida. Testado em
+ * `gameStore.test.ts` ("categoria bate, raridade vence").
+ */
 const FULL_INTEL: CardDefinition = {
   id: 'FULL_INTEL',
   name: 'VISÃO ABSOLUTA',
@@ -1044,6 +1059,7 @@ const FULL_INTEL: CardDefinition = {
   rarity: 'LEGENDARY',
   weight: 3,
   cost: 3,
+  readsOrRemovesFromHand: true,
 
   canPlay: ({ state, caster }) => state[handKeyFor(opponentOf(caster))].length > 0,
 
@@ -1061,14 +1077,22 @@ const FULL_INTEL: CardDefinition = {
       value: opponentHand.length,
     } as const;
 
+    // Revelação com prazo — expira no fim do turno de `caster` (`placeMark`/
+    // `endTurn`/`startNextRound`, ver `fullIntelRevealFor` em `rules.ts`).
+    // Vale para os dois ramos: a IA não vê modal, mas o `<HandTracker />` do
+    // HUMANO do outro lado precisa saber que a própria mão está exposta.
+    const patch = { fullIntelRevealFor: caster };
+
     if (isAIController(state, caster)) {
-      return { log: intel, notice: intel };
+      return { patch, log: intel, notice: intel };
     }
 
     return {
+      patch,
       log: intel,
-      // Sem embaralhar, ao contrário da ESPIONAGEM: aqui TODAS podem ser
-      // viradas, então não há posição privilegiada a proteger.
+      // Sem embaralhar, ao contrário da ESPIONAGEM: todas já vêm reveladas
+      // (kind `INTEL_FLIP`, `AcknowledgementModal.tsx`) — não há seleção nem
+      // posição privilegiada a proteger, é exibição, não interação.
       acknowledge: {
         code: 'HAND_REVEALED',
         kind: 'INTEL_FLIP',
@@ -1286,51 +1310,154 @@ const REFLECT_TRAP: CardDefinition = {
 /*                          CUSTO 0 — CAOS                                      */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Reforma completa (Fase 6a) — sistema SEPARADO do surto automático do
+ * relógio global: a carta não dispara mais `triggersChaosGlitch`
+ * (`triggerTerminalGlitch` continua sendo só o mecanismo periódico,
+ * `docs/CARTAS.md`). Em vez disso, embaralha as posições das peças JÁ
+ * EXISTENTES no tabuleiro — sorteia uma ordem para as 9 células
+ * (`rng.shuffle`) e distribui: as primeiras `countX` recebem as peças X, as
+ * próximas `countO` recebem as peças O, o resto fica vazio. Reshuffle TOTAL,
+ * não permutação só entre células já ocupadas — é o que faz a carta valer a
+ * pena mesmo com 1-2 peças no tabuleiro (uma peça isolada pode ir para
+ * qualquer uma das 9 células, inclusive uma que estava vazia).
+ *
+ * `turnPlaced` NÃO é recalculado — cada peça é o MESMO objeto `Piece`
+ * (`owner`/`mark`/`turnPlaced` intactos), só muda de índice no array
+ * `board`. A regra do "infinito" (`getOldestPieceIndex`/`getVanishingIndex`)
+ * nunca olhou índice, só `turnPlaced`+`owner` — preservando o objeto, a peça
+ * que era "a mais antiga" antes do sorteio continua sendo depois, onde quer
+ * que caia.
+ *
+ * Efeito colateral já coberto de graça, sem código novo: se `forcedVanish`
+ * (ANOMALIA/OBSOLESCÊNCIA) apontava uma peça por índice+`turnPlaced` e o
+ * reshuffle move essa peça pra outro índice, a auto-invalidação por
+ * identidade que `getVanishingIndex` já faz invalida a marca sozinha (o
+ * índice antigo não bate mais) — 3ª ocorrência do mesmo padrão nesta Parte
+ * B (1ª: DEMOLIR removendo uma peça marcada; 2ª: ANOMALIA/OBSOLESCÊNCIA
+ * sobrescrevendo a marca uma da outra). Reconhecer o padrão aqui evita
+ * reinventar a checagem numa 4ª carta futura.
+ *
+ * Limite de 3 por símbolo garantido por CONSTRUÇÃO, não por checagem
+ * posterior: `countX`/`countO` vêm do tabuleiro ATUAL, que já nunca excede
+ * 3 por símbolo (regra do "infinito" em vigor há muito) — o sorteio nunca
+ * CRIA peça nova, só realoca as que já existem, então não há como o
+ * resultado ultrapassar o limite.
+ *
+ * `findWinner` pode fechar linha para os DOIS símbolos ao mesmo tempo (ex:
+ * X em `[0,1,2]`, O em `[3,4,5]` — geometricamente possível, 6 das 9
+ * células, dentro do limite) — a primeira carta a tornar isso possível,
+ * já que normalmente só 1 peça é colocada por vez. Decisão: `findWinner`
+ * já escaneia `WIN_LINES` em ordem fixa e devolve a PRIMEIRA que casar —
+ * aceito como desempate oficial, sem mudar `findWinner`/
+ * `applyCardEffectResult` só por este caso raro. Ver `docs/NOTAS_TECNICAS.md`.
+ *
+ * Sem reroll se o sorteio produzir um board idêntico (ou equivalente) ao
+ * anterior — raro, mas um resultado HONESTO da "roleta" (mesma textura de
+ * SAQUE às vezes não fazer nada no 50/50); forçar reroll quebraria o
+ * consumo fixo de RNG que o resto do motor favorece por um ganho marginal.
+ */
 const CHAOS_ROULETTE: CardDefinition = {
   id: 'CHAOS_ROULETTE',
   name: 'TIC TAC BOOM!',
   type: 'ACTION',
-  description: 'Dispara um surto de caos imediato — a mesma roleta do relógio global.',
+  description: 'Embaralha as peças do tabuleiro em novas posições, respeitando o limite de 3 por símbolo.',
   targeting: 'NONE',
   rarity: 'BOOM',
   weight: 1,
   cost: 0,
 
-  // Sem `canPlay`: `triggerTerminalGlitch` é sempre seguro de chamar, em
-  // qualquer regra ativa (inclusive já dentro de um surto — ela troca para
-  // outra regra caótica, nunca repete a atual).
-  effect: ({ caster }) => ({
-    triggersChaosGlitch: true,
-    log: { code: 'CARD_CHAOS_ROULETTE', subject: caster },
-  }),
+  // Sem `canPlay`: sempre jogável, em qualquer estado de tabuleiro — o
+  // próprio sorteio respeita o limite de 3 peças por símbolo por construção.
+  effect: ({ state, caster, rng }) => {
+    const xPieces: Piece[] = [];
+    const oPieces: Piece[] = [];
+    for (const cell of state.board) {
+      if (!cell) continue;
+      (cell.mark === 'X' ? xPieces : oPieces).push(cell);
+    }
+
+    const cellOrder = rng.shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    const board: Board = createEmptyBoard();
+    cellOrder.slice(0, xPieces.length).forEach((index, i) => {
+      board[index] = xPieces[i];
+    });
+    cellOrder.slice(xPieces.length, xPieces.length + oPieces.length).forEach((index, i) => {
+      board[index] = oPieces[i];
+    });
+
+    return {
+      patch: { board },
+      log: { code: 'CARD_CHAOS_ROULETTE', subject: caster },
+    };
+  },
 };
 
 /**
- * O efeito só ABRE o modal (`opensAltar: true`) — a escolha das 2 cartas, a
- * remoção delas e (numa iteração futura) a invocação em troca acontecem fora
- * daqui, no `<AltarModal />` e na action `sacrificeCards`. Não dá para o
- * `effect` fazer isso sozinho: ele é puro e roda num único instante, e a
- * escolha do jogador ainda nem existe nesse momento.
+ * Fase 6b: migrado para `SACRIFICE_DRAG` (`pendingInteraction`) — era o
+ * último dos 5 `kind`s nunca exercitado por uma carta real (só fixture
+ * sintética da Fase 3). `resolveInteraction` já tratava o `kind`
+ * genericamente desde então; faltava só esta carta o usar de verdade.
+ *
+ * Fecha de graça a 5ª ocorrência do padrão "regra de domínio só respeitada
+ * porque a UI não oferece o caminho" (`AGENTS.md`): o mecanismo antigo
+ * (`lastAltarPrompt`) não era checado por NENHUMA guarda do motor, só pelo
+ * `<Modal>` nativo do `<AltarModal />` bloqueando toque. `pendingInteraction`
+ * já é recusado por `canPlaceAt`/`resolveCardPlay` como qualquer outra
+ * interação pendente. Bônus: `cancelInteraction` sempre devolve a carta —
+ * corrige de graça um `handleCancel` que hoje nunca reembolsa o Altar.
+ *
+ * 1º passo (`!ctx.interaction`): abre a interação com as `uid`s elegíveis
+ * (mão menos o próprio Altar). 2º passo: funde as 2 raridades sacrificadas
+ * (`fuseRarity`, `CLAUDE.md` #5) e sorteia (canal `CARDS`, mesma primitiva de
+ * `drawCardId`) uma carta dentro da raridade resultante para entregar na mão.
  */
 const ALTAR_OF_SACRIFICE: CardDefinition = {
   id: 'ALTAR_OF_SACRIFICE',
   name: 'ALTAR DE SACRIFÍCIO',
   type: 'ACTION',
-  description: 'Escolha 2 cartas da mão para sacrificar. O que nasce da oferenda ainda será revelado.',
+  description: 'Arraste 2 cartas da mão para o altar. A oferenda funde as raridades e invoca uma carta nova.',
   targeting: 'NONE',
   rarity: 'BOOM',
   weight: 1,
   cost: 0,
 
-  // Precisa de 2 OUTRAS cartas na mão além do próprio Altar — senão o modal
-  // abriria para um ritual impossível de completar.
+  // Precisa de 2 OUTRAS cartas na mão além do próprio Altar — senão a
+  // interação abriria para um ritual impossível de completar.
   canPlay: ({ state, caster, uid }) =>
     state[handKeyFor(caster)].filter((c) => c.uid !== uid).length >= 2,
 
-  effect: ({ caster }) => ({
-    opensAltar: true,
-    log: { code: 'CARD_ALTAR_OPENED', subject: caster },
-  }),
+  effect: (ctx) => {
+    const { state, caster, uid, rng } = ctx;
+
+    if (!ctx.interaction) {
+      const eligibleUids = state[handKeyFor(caster)].filter((c) => c.uid !== uid).map((c) => c.uid);
+      return { interaction: { kind: 'SACRIFICE_DRAG', eligibleUids, count: 2 } };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'SACRIFICE_DRAG') return null;
+
+    const handKey = handKeyFor(caster);
+    const hand = state[handKey];
+    const [uidA, uidB] = selection.uids;
+    const cardA = hand.find((c) => c.uid === uidA);
+    const cardB = hand.find((c) => c.uid === uidB);
+    if (!cardA || !cardB || cardA.uid === cardB.uid) return null;
+
+    const resultRarity = fuseRarity(getCard(cardA.cardId).rarity, getCard(cardB.cardId).rarity);
+    const invokedId = rng.pick(IDS_BY_RARITY[resultRarity]);
+    const invoked = { uid: `${invokedId}#${state.nextCardUid}`, cardId: invokedId };
+
+    return {
+      patch: {
+        [handKey]: [...hand.filter((c) => c.uid !== uidA && c.uid !== uidB), invoked],
+        nextCardUid: state.nextCardUid + 1,
+      },
+      log: { code: 'CARD_ALTAR_INVOKED', subject: caster, value: invokedId },
+      notice: { code: 'CARD_ALTAR_INVOKED', subject: caster, value: invokedId },
+    };
+  },
 };
 
 /**

@@ -125,12 +125,11 @@ export interface RoomRecord {
  *                    a ação fica no log e é entregue normalmente quando ele
  *                    reconectar — nenhum mecanismo novo de entrega, o mesmo
  *                    que já resolve `PLACE_MARK`/`PLAY_CARD` atrasados.
- * - `SACRIFICE_CARDS` ➜ `sacrificeCards(caster, uids)` — a escolha de QUAIS
- *                    duas cartas sacrificar acontece inteiramente em estado
- *                    local do `AltarModal` (nunca publicada card a card); só
- *                    a decisão FINAL, no clique de "Confirmar Sacrifício",
- *                    vira uma ação — pelo mesmo motivo de `PLACE_MARK`/
- *                    `PLAY_CARD`: só os inputs trafegam, nunca o estado.
+ *
+ * ALTAR DE SACRIFÍCIO (Fase 6b): migrado de uma ação própria (`SACRIFICE_CARDS`)
+ * para `RESOLVE_INTERACTION`/`CANCEL_INTERACTION` — a escolha das 2 cartas
+ * agora é só mais uma `InteractionSelection` (`kind: 'SACRIFICE_DRAG'`), sem
+ * tipo de ação dedicado.
  */
 export type MultiplayerAction =
   | MultiplayerActionBase & { type: 'PLACE_MARK'; index: number }
@@ -148,8 +147,7 @@ export type MultiplayerAction =
   | MultiplayerActionBase & { type: 'RESOLVE_INTERACTION'; selection: InteractionSelection }
   | MultiplayerActionBase & { type: 'CANCEL_INTERACTION' }
   | MultiplayerActionBase & { type: 'ACKNOWLEDGE' }
-  | MultiplayerActionBase & { type: 'FORFEIT' }
-  | MultiplayerActionBase & { type: 'SACRIFICE_CARDS'; uids: [string, string] };
+  | MultiplayerActionBase & { type: 'FORFEIT' };
 
 interface MultiplayerActionBase {
   /** Quem produziu o input. O outro cliente usa isto para ignorar o eco do próprio envio. */

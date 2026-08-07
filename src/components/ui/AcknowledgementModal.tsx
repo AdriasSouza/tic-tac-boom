@@ -182,7 +182,13 @@ export function AcknowledgementModal() {
                   <FlipCard
                     key={`${cardId}-${index}`}
                     cardId={cardId}
-                    revealed={flipped.includes(index)}
+                    // VISÃO ABSOLUTA (`INTEL_FLIP`): decisão da Fase 3 — exibição
+                    // automática, sem seleção. Todas já vêm viradas pra cima ao
+                    // abrir; `handleFlip`/`onPress` seguem existindo (não afetam
+                    // este `kind`) pela mesma razão que a Fase 3 decidiu não vale
+                    // a complexidade de desligar uma prop sem consumidor real
+                    // (ver `isSelected` em `docs/NOTAS_TECNICAS.md`).
+                    revealed={pending.kind === 'INTEL_FLIP' || flipped.includes(index)}
                     // Espionagem: depois da escolha, as outras congelam.
                     disabled={isSpyPick && flipped.length > 0 && !flipped.includes(index)}
                     onPress={() => handleFlip(index)}

@@ -164,9 +164,9 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
     case 'CARD_DRAFT_PICK':
       return `procrastinar :: ${who} escolheu ${cardName(entry.value)} entre as opções reveladas`;
     case 'CARD_CHAOS_ROULETTE':
-      return `tic tac boom :: ${who} girou a roleta do caos`;
-    case 'CARD_ALTAR_OPENED':
-      return `altar :: ${who} está escolhendo uma oferenda`;
+      return `tic tac boom :: ${who} embaralhou as peças do tabuleiro`;
+    case 'CARD_ALTAR_INVOKED':
+      return `altar :: ${who} sacrificou a oferenda e invocou ${cardName(entry.value)}`;
   }
 }
 

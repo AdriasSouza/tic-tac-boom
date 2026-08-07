@@ -330,20 +330,6 @@ export function netForfeit(): void {
   broadcast((by) => ({ type: 'FORFEIT', by, at: Date.now() }));
 }
 
-/**
- * Confirma o sacrifício do Altar e replica.
- *
- * Único ponto de contato do `<AltarModal />` com a rede — tudo antes disto
- * (arrastar cartas para os slots, tocar para trocar a seleção) é estado local
- * do modal, que este arquivo nunca vê. Só o clique em "Confirmar Sacrifício"
- * vira uma ação, exatamente como uma jogada de tabuleiro ou de carta.
- */
-export function netSacrificeCards(uid1: string, uid2: string): void {
-  const caster = getLocalCombatant();
-  useGameStore.getState().sacrificeCards(caster, [uid1, uid2]);
-  broadcast((by) => ({ type: 'SACRIFICE_CARDS', by, at: Date.now(), uids: [uid1, uid2] }));
-}
-
 /* -------------------------------------------------------------------------- */
 /*                      ENTRADA: REDE ➜ LOCAL                                  */
 /* -------------------------------------------------------------------------- */
@@ -438,20 +424,6 @@ function applyRemoteAction(action: StoredAction): void {
     case 'FORFEIT':
       game.forfeitMatch(combatant);
       break;
-
-    case 'SACRIFICE_CARDS': {
-      const removed = game.sacrificeCards(combatant, action.uids);
-      if (removed !== action.uids.length) {
-        console.error(
-          '[syncBridge] DESSINCRONIA: o sacrifício remoto removeu',
-          removed,
-          'de',
-          action.uids.length,
-          'cartas esperadas.',
-        );
-      }
-      break;
-    }
   }
 }
 

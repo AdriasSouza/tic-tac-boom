@@ -626,18 +626,21 @@
     - **Menos de 2 outras cartas na mão** (além do próprio Altar): indisponível para jogar — o
       modal não abre para um ritual impossível de completar.
     - Mão do oponente vazia / tabuleiro — não se aplicam (afeta só a própria mão).
-  - **Nota de migração:** EFEITO ALTERADO. Hoje o modal abre e `sacrificeCards` remove as 2 cartas
-    escolhidas, mas a invocação da carta fundida em troca AINDA NÃO EXISTE — falta implementar
-    a geração (sorteio pelo canal `CARDS`, dentro da raridade calculada) e a entrega ao jogador.
-  - **Migração para `pendingInteraction` (Fase 3 → Fase 6):** a Fase 3 introduziu o `kind`
-    `SACRIFICE_DRAG` na union de `PendingInteraction` (drag-and-drop entre 2 slots, sem modal de
-    confirmação por carta), mas deliberadamente NÃO migrou o Altar para ele — `lastAltarPrompt`/
-    `AltarModal` continuam exatamente como estão, cobertos só no tipo e em teste de mecanismo
-    (fixture sintética, `SACRIFICE_DRAG` nunca aberto por `getCard`/`effect` de verdade ainda). A
-    migração de fato — `ALTAR_OF_SACRIFICE.effect` passando a devolver `{ interaction: { kind:
-    'SACRIFICE_DRAG', ... } }` em vez de popular `lastAltarPrompt` diretamente — acontece na Fase
-    6, junto da invocação da carta fundida (o item acima, "AINDA NÃO EXISTE"): as duas mudanças
-    tocam o mesmo `effect()` e fazem mais sentido como uma entrega só.
+  - **Nota de migração (Fase 6b, concluída):** EFEITO IMPLEMENTADO por completo. A invocação da
+    carta fundida (sorteio pelo canal `CARDS`, dentro da raridade calculada por `fuseRarity`, e
+    entrega na mão de quem sacrificou) está em vigor — `ALTAR_OF_SACRIFICE.effect` devolve
+    `{ interaction: { kind: 'SACRIFICE_DRAG', ... } }` no 1º passo e o `patch`/`log`/`notice`
+    (`CARD_ALTAR_INVOKED`) da carta invocada no 2º. O mecanismo antigo (`lastAltarPrompt`,
+    `sacrificeCards`, `netSacrificeCards`, `SACRIFICE_CARDS`) foi removido por inteiro, sem deixar
+    cruft — era redundante com `pendingInteraction`, que já cobria o mesmo caso desde a Fase 3.
+  - **Migração para `pendingInteraction` (Fase 3 → Fase 6b, concluída):** a Fase 3 introduziu o
+    `kind` `SACRIFICE_DRAG` na union de `PendingInteraction` (drag-and-drop entre 2 slots, sem
+    modal de confirmação por carta) mas deliberadamente adiou a migração do Altar, cobrindo o
+    mecanismo só por fixture sintética até então. A Fase 6b fez a migração de fato: `<AltarModal />`
+    agora lê `pendingInteraction`/chama `netResolveInteraction`/`netCancelInteraction` em vez do
+    mecanismo próprio — o que fecha de graça a 5ª ocorrência do padrão "regra de domínio só
+    respeitada porque a UI não oferece o caminho" (ver `AGENTS.md`) e corrige, como efeito
+    colateral, um `handleCancel` que antes nunca devolvia a carta ao cancelar.
 
   ---
 
@@ -689,6 +692,18 @@
   `playerTraps`/`machineTraps` (`[...traps, nova]`) e o loop de disparo (`resolveCounterTraps`)
   percorre o array em ordem — a mais antiga (índice 0) é sempre checada primeiro. Nenhuma mudança
   necessária.
+
+  **Extensão explícita (Fase 5, auditoria): a mesma exclusividade vale para traps REATIVAS, não
+  só para o veto síncrono de `resolveCounterTraps`.** PROTEÇÃO/ANTIMAGIA/RICOCHETE reagem a
+  `CARD_ABOUT_TO_RESOLVE` e sempre foram exclusivas (`resolveCounterTraps` para na primeira que
+  casar). MINA reage a `PIECE_PLACED` por um caminho DIFERENTE — o loop genérico de
+  `dispatchEvent` (`gameStore.ts`) — que, até a Fase 5, NÃO parava no primeiro match: deixava
+  qualquer outra trap do mesmo defensor cujo `triggerCondition` também batesse disparar também
+  pro mesmo evento. Inofensivo até aqui só porque MINA é a única trap reativa a `PIECE_PLACED`
+  hoje. Decisão: a Regra de Ouro 1 vale IGUAL pra esse grupo — a mais antiga que casar dispara
+  sozinha, as outras nem são avaliadas para aquele evento. Implementado com um `break` no loop de
+  `dispatchEvent`; testado com fixtures sintéticas (duas traps reagindo ao mesmo `PIECE_PLACED`)
+  em `gameStore.test.ts`.
 
   ### Custo de armar vs. ativar
   PDF, Regra de Ouro 3: o custo de uma armadilha é para ARMÁ-LA, nunca para a ativação. **Já

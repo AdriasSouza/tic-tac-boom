@@ -124,8 +124,8 @@ export type LogCode =
   | 'CARD_DRAFT_PICK'
   /** `subject` disparou a roleta do caos. */
   | 'CARD_CHAOS_ROULETTE'
-  /** `subject` abriu o Altar de Sacrifício (a escolha das cartas acontece depois, fora do motor). */
-  | 'CARD_ALTAR_OPENED';
+  /** `subject` invocou uma carta nova no Altar de Sacrifício. `value` = `CardId` invocada. */
+  | 'CARD_ALTAR_INVOKED';
 
 /**
  * O fato, sem identidade. É o que os produtores (store, cartas) emitem.

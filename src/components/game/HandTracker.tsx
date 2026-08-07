@@ -11,6 +11,8 @@ import Animated, {
 import { getCard } from '@/engine/cards/registry';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import {
+  opponentOf,
+  selectFullIntelRevealFor,
   selectHandOf,
   selectRevealedUids,
   useGameStore,
@@ -98,6 +100,11 @@ interface DisplayCard {
 export function HandTracker({ owner, revealed = false, style }: HandTrackerProps) {
   const hand = useGameStore(useMemo(() => selectHandOf(owner), [owner]));
   const revealedUids = useGameStore(useMemo(() => selectRevealedUids(owner), [owner]));
+  const fullIntelRevealFor = useGameStore(selectFullIntelRevealFor);
+  // VISÃO ABSOLUTA: campo PRÓPRIO, com prazo — deliberadamente separado de
+  // `revealedUids` (ESPIADA/ESPIONAGEM, sem prazo, por `uid`). `true` quando
+  // ALGUÉM revelou a mão DESTE `owner` e essa janela ainda está aberta.
+  const fullIntelActive = fullIntelRevealFor !== null && opponentOf(fullIntelRevealFor) === owner;
   const { miniCardWidth, miniCardHeight, handTrackerRowHeight } = useResponsiveLayout();
 
   const [displayList, setDisplayList] = useState<DisplayCard[]>(() =>
@@ -118,8 +125,8 @@ export function HandTracker({ owner, revealed = false, style }: HandTrackerProps
           ...entry,
           exiting: true,
           snapshot: {
-            faceUp: revealed || revealedUids.includes(entry.uid),
-            exposed: revealed && revealedUids.includes(entry.uid),
+            faceUp: revealed || revealedUids.includes(entry.uid) || fullIntelActive,
+            exposed: revealed && (revealedUids.includes(entry.uid) || fullIntelActive),
           },
         };
       });
@@ -131,7 +138,7 @@ export function HandTracker({ owner, revealed = false, style }: HandTrackerProps
       if (added.length === 0 && reconciled.every((entry, i) => entry === prev[i])) return prev;
       return [...reconciled, ...added];
     });
-  }, [hand, revealedUids, revealed]);
+  }, [hand, revealedUids, revealed, fullIntelActive]);
 
   const handleExited = useCallback((uid: string) => {
     setDisplayList((prev) => prev.filter((c) => c.uid !== uid));
@@ -151,8 +158,8 @@ export function HandTracker({ owner, revealed = false, style }: HandTrackerProps
         // ao vivo (reage na hora a uma Espiada nova); uma vez "saindo", usa o
         // que foi congelado — nunca as duas fontes ao mesmo tempo.
         const live = {
-          faceUp: revealed || revealedUids.includes(entry.uid),
-          exposed: revealed && revealedUids.includes(entry.uid),
+          faceUp: revealed || revealedUids.includes(entry.uid) || fullIntelActive,
+          exposed: revealed && (revealedUids.includes(entry.uid) || fullIntelActive),
         };
         const { faceUp, exposed } = entry.exiting ? entry.snapshot! : live;
 

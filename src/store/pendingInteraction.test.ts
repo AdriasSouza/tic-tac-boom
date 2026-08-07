@@ -12,11 +12,14 @@ import { useGameStore } from '@/store/gameStore';
  * `BOARD_TARGET` é testado de ponta a ponta com cartas REAIS (`BREAK_PIECE`/
  * `LOCK_CELL`) — a migração não muda o corpo delas, então cobertura real já
  * existe. Os outros 4 `kind`s (`PICK_ONE_FROM_HAND`, `PICK_MANY_FROM_HAND`,
- * `PICK_ONE_REVEALED`, `SACRIFICE_DRAG`) ainda não têm carta nenhuma que os
- * produza — cobertos aqui só por FIXTURE SINTÉTICA, via `vi.spyOn(getCard)`,
- * escopado por teste (`vi.restoreAllMocks()` no `afterEach`). Primeira vez que
- * esta suíte usa mock; decisão explícita da Fase 3 — a alternativa (testar
- * "o campo muda quando eu mudo o campo") não provaria fiação nenhuma.
+ * `PICK_ONE_REVEALED`, `SACRIFICE_DRAG`) não tinham carta nenhuma que os
+ * produzisse na Fase 3 — cobertos aqui só por FIXTURE SINTÉTICA, via
+ * `vi.spyOn(getCard)`, escopado por teste (`vi.restoreAllMocks()` no
+ * `afterEach`). Primeira vez que esta suíte usa mock; decisão explícita da
+ * Fase 3 — a alternativa (testar "o campo muda quando eu mudo o campo") não
+ * provaria fiação nenhuma. Os 4 ganharam cobertura com carta real nas Fases
+ * 4/6b (ver "cobertura com carta real" mais abaixo) — `SACRIFICE_DRAG`
+ * (ALTAR_OF_SACRIFICE) foi o último, fechando o placar 5/5.
  */
 
 const realGetCard = registry.getCard;
@@ -110,26 +113,6 @@ const fixtureRevealedDef: CardDefinition = {
   },
 };
 
-const FIXTURE_SACRIFICE = 'FIXTURE_SACRIFICE' as CardId;
-const fixtureSacrificeDef: CardDefinition = {
-  id: FIXTURE_SACRIFICE,
-  name: 'Fixture Sacrifice',
-  type: 'ACTION',
-  description: 'fixture de mecanismo — SACRIFICE_DRAG só existe no tipo até a Fase 6',
-  targeting: 'NONE',
-  rarity: 'COMMON',
-  weight: 1,
-  cost: 0,
-  effect: (ctx) => {
-    if (!ctx.interaction) {
-      return { interaction: { kind: 'SACRIFICE_DRAG', eligibleUids: ['s1', 's2', 's3'], count: 2 } };
-    }
-    const sel = ctx.interaction.selection;
-    if (sel.kind !== 'SACRIFICE_DRAG') return null;
-    return { log: { code: 'CARD_ALTAR_OPENED', subject: ctx.caster } };
-  },
-};
-
 /** TROCAR-shaped: 1 carta da PRÓPRIA mão (passo 1) + 1 da mão OCULTA do oponente (passo 2). */
 const FIXTURE_CHAIN = 'FIXTURE_CHAIN' as CardId;
 const fixtureChainDef: CardDefinition = {
@@ -184,13 +167,13 @@ const fixtureCounterTrapDef: CardDefinition = {
   id: FIXTURE_COUNTER_TRAP,
   name: 'Fixture Counter Trap',
   type: 'TRAP',
-  description: 'fixture — prova que resolveCounterTraps aplica consumesTurn/opensAltar via applyCardEffectResult',
+  description: 'fixture — prova que resolveCounterTraps aplica consumesTurn/heal via applyCardEffectResult',
   targeting: 'NONE',
   rarity: 'COMMON',
   weight: 1,
   cost: 0,
   triggerCondition: () => true,
-  effect: () => ({ cancelsAction: true, consumesTurn: true, opensAltar: true }),
+  effect: () => ({ cancelsAction: true, consumesTurn: true, heal: { target: 'PLAYER', amount: 1 } }),
 };
 
 const FIXTURE_WIN_TRAP = 'FIXTURE_WIN_TRAP' as CardId;
@@ -410,30 +393,6 @@ describe('pendingInteraction — fluxo completo por kind', () => {
     expect(state.pendingInteraction).toBeNull();
     expect(state.terminalLog.at(-1)).toMatchObject({ code: 'CARD_DRAW', value: 'DIRECT_DAMAGE' });
   });
-
-  it('SACRIFICE_DRAG (fixture — só mecanismo; Altar migra para isto na Fase 6): abre, resolve com 2 uids, aplica', () => {
-    installFixtures({ [FIXTURE_SACRIFICE]: fixtureSacrificeDef });
-    useGameStore.setState({
-      turn: 'PLAYER',
-      playerEnergy: 3,
-      playerHand: [{ uid: 'p', cardId: FIXTURE_SACRIFICE }],
-    });
-
-    expect(useGameStore.getState().playCard('p')).toBe(true);
-    expect(useGameStore.getState().pendingInteraction).toMatchObject({
-      kind: 'SACRIFICE_DRAG',
-      eligibleUids: ['s1', 's2', 's3'],
-      count: 2,
-    });
-
-    expect(
-      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'SACRIFICE_DRAG', uids: ['s1', 's2'] }),
-    ).toBe(true);
-
-    const state = useGameStore.getState();
-    expect(state.pendingInteraction).toBeNull();
-    expect(state.terminalLog.at(-1)).toMatchObject({ code: 'CARD_ALTAR_OPENED' });
-  });
 });
 
 describe('cancelamento devolve carta e energia (todo kind, inclusive no meio de uma cadeia)', () => {
@@ -615,12 +574,13 @@ describe('pendingInteraction não sobrevive a turno/rodada', () => {
 });
 
 describe('resolveCounterTraps — regressão via applyCardEffectResult (Fase 3)', () => {
-  it('uma armadilha reativa aplica consumesTurn e opensAltar de graça, não só patch/log/damage', () => {
+  it('uma armadilha reativa aplica consumesTurn e heal de graça, não só patch/log/damage', () => {
     installFixtures({ [FIXTURE_COUNTER_TRAP]: fixtureCounterTrapDef });
     useGameStore.setState({
       turn: 'MACHINE',
       machineEnergy: 3,
       machineHp: 3, // HEAL_SELF.canPlay exige HP abaixo do teto
+      playerHp: 3, // abaixo do teto — torna o heal do defensor visível
       machineHand: [{ uid: 'h', cardId: 'HEAL_SELF' }],
       playerTraps: [{ uid: 't', cardId: FIXTURE_COUNTER_TRAP }],
     });
@@ -634,10 +594,10 @@ describe('resolveCounterTraps — regressão via applyCardEffectResult (Fase 3)'
     // A armadilha vetou — HEAL_SELF nunca curou a MACHINE.
     expect(state.machineHp).toBe(hpBefore);
     expect(state.playerTraps).toEqual([]); // a armadilha se consumiu
-    // opensAltar: applyCardEffectResult publicou o prompt para o DONO da
-    // armadilha (defender = PLAYER) — antes da unificação, resolveCounterTraps
-    // não processava este campo.
-    expect(state.lastAltarPrompt).toEqual({ caster: 'PLAYER', id: 0 });
+    // heal: applyCardEffectResult curou o DONO da armadilha (defender =
+    // PLAYER) — antes da unificação, resolveCounterTraps não processava este
+    // campo (só um SUBCONJUNTO do que `applyCardEffectResult` trata).
+    expect(state.playerHp).toBe(4);
     // consumesTurn: turnCount avançou mesmo a carta do ATOR (MACHINE) nunca
     // tendo resolvido — antes da unificação, resolveCounterTraps não mexia em
     // turnCount/turn.
@@ -784,5 +744,76 @@ describe('Fase 4 — cobertura com carta real (fecha a lacuna dos kinds só-fixt
     expect(state.pendingInteraction).toBeNull();
     expect(state.playerHand).toEqual([{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }]);
     expect(state.machineHand).toEqual([{ uid: 'o', cardId: 'HEAL_SELF' }]);
+  });
+
+  it('SACRIFICE_DRAG: ALTAR DE SACRIFÍCIO (carta real, Fase 6b) abre, resolve e invoca a carta fundida', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      playerHand: [
+        { uid: 'altar', cardId: 'ALTAR_OF_SACRIFICE' },
+        { uid: 'o1', cardId: 'CLEAR_BLOCK' },
+        { uid: 'o2', cardId: 'LOCK_CELL' },
+      ],
+    });
+
+    expect(useGameStore.getState().playCard('altar')).toBe(true);
+    expect(useGameStore.getState().playerHand).toEqual([
+      { uid: 'o1', cardId: 'CLEAR_BLOCK' },
+      { uid: 'o2', cardId: 'LOCK_CELL' },
+    ]); // o Altar já saiu ao abrir a interação
+    expect(useGameStore.getState().pendingInteraction).toMatchObject({
+      kind: 'SACRIFICE_DRAG',
+      eligibleUids: ['o1', 'o2'],
+      count: 2,
+    });
+
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'SACRIFICE_DRAG', uids: ['o1', 'o2'] }),
+    ).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.pendingInteraction).toBeNull();
+    expect(state.playerHand).toHaveLength(1); // as 2 sacrificadas saem, 1 invocada entra
+    expect(registry.getCard(state.playerHand[0].cardId).rarity).toBe('RARE'); // COMMON+COMMON -> RARE
+    expect(state.terminalLog.at(-1)).toMatchObject({
+      code: 'CARD_ALTAR_INVOKED',
+      subject: 'PLAYER',
+      value: state.playerHand[0].cardId,
+    });
+  });
+
+  it('SACRIFICE_DRAG: mão cheia (5, incluindo o Altar) nunca esbarra em HAND_LIMIT — líquido é sempre -2', () => {
+    // Mão cheia de propósito (`HAND_LIMIT` = 5): prova pelo STORE de verdade
+    // (`playCard`/`resolveInteraction`), não por um `card.effect()` chamado à
+    // mão com um `state` construído que já pressuponha a resposta — só assim
+    // a ORDEM real das operações (Altar sai ao abrir, ANTES da resolução
+    // final montar o patch) é exercitada, não só a aritmética isolada.
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      playerHand: [
+        { uid: 'altar', cardId: 'ALTAR_OF_SACRIFICE' },
+        { uid: 'o1', cardId: 'CLEAR_BLOCK' },
+        { uid: 'o2', cardId: 'LOCK_CELL' },
+        { uid: 'o3', cardId: 'HEAL_SELF' },
+        { uid: 'o4', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+
+    expect(useGameStore.getState().playCard('altar')).toBe(true);
+    expect(useGameStore.getState().playerHand).toHaveLength(4); // 5 - Altar
+
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'SACRIFICE_DRAG', uids: ['o1', 'o2'] }),
+    ).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.pendingInteraction).toBeNull();
+    // 5 (Altar incluso) -> -1 (Altar sai) -> -2 (sacrifício) -> +1 (invocação) = 3.
+    expect(state.playerHand).toHaveLength(3);
+    expect(state.playerHand.map((c) => c.uid)).toEqual(
+      expect.arrayContaining(['o3', 'o4']), // as não-sacrificadas continuam intactas
+    );
   });
 });

@@ -190,11 +190,13 @@ export type {
  * - `SPY_PICK`   — mostra `revealedCards` viradas para BAIXO e o jogador
  *                  escolhe UMA para virar (ESPIONAGEM). A escolha é dele, não
  *                  do RNG: decidir onde gastar a informação É a jogada.
- * - `INTEL_FLIP` — todas viradas para baixo, e o jogador vira/desvira quantas
- *                  quiser (VISÃO ABSOLUTA).
+ * - `INTEL_FLIP` — todas já vêm viradas pra CIMA ao abrir (VISÃO ABSOLUTA) —
+ *                  leitura automática, sem seleção (decisão da Fase 3: é
+ *                  exibição, não interação — por isso nunca passou por
+ *                  `pendingInteraction`).
  *
- * `SPY_PICK`/`INTEL_FLIP` existem porque "receber uma lista pronta de nomes"
- * não se parece com espionagem — virar a carta com o próprio dedo, sim.
+ * `SPY_PICK` existe porque "receber uma lista pronta de nomes" não se parece
+ * com espionagem — virar a carta com o próprio dedo, sim.
  */
 export type AcknowledgementKind = 'INFO' | 'SPY_PICK' | 'INTEL_FLIP';
 
@@ -365,6 +367,27 @@ export interface GameState {
   highlightedOldestFor: HighlightedOldest | null;
 
   /**
+   * `Combatant` que jogou VISÃO ABSOLUTA e está enxergando a mão inteira do
+   * oponente agora — `null` fora dessa janela. Mesma classe de
+   * `highlightedOldestFor`: campo TRANSITÓRIO, único (não par-por-combatente)
+   * apesar de qualificar um combatente específico, seguro por exclusividade
+   * TEMPORAL — só quem tem a vez pode ter revelado a mão do oponente agora
+   * (a carta só é jogável no próprio turno), e nunca há dois turnos em curso
+   * ao mesmo tempo, logo nunca duas revelações vivas simultâneas. Expira
+   * exatamente quando o turno de quem jogou termina — mesmos 4 pontos de
+   * limpeza de `highlightedOldestFor` (vitória de rodada, ramo normal de
+   * `placeMark`, `endTurn`, `startNextRound`), mesma exceção de sobreviver à
+   * 2ª colocação de TURNO_EXTRA (é o MESMO turno ainda). `startNextRound`
+   * limpa incondicionalmente — sobreviveria a uma rodada que já não é mais a
+   * atual.
+   *
+   * Deliberadamente SEPARADO de `playerRevealedUids`/`machineRevealedUids`
+   * (ESPIADA/ESPIONAGEM): aquele é por-`uid`, sem prazo, cobre carta a carta;
+   * este é por-mão-inteira, com prazo de turno. Ver `docs/NOTAS_TECNICAS.md`.
+   */
+  fullIntelRevealFor: Combatant | null;
+
+  /**
    * Mão do jogador. Os dados da carta (nome, efeito, arte) vêm do
    * `CARD_REGISTRY`, então o estado fica leve e serializável.
    */
@@ -471,22 +494,6 @@ export interface GameState {
   /** Aviso mais recente. Efêmero — alimenta o toast sobre o tabuleiro. */
   lastNotice: Notice | null;
   nextNoticeId: number;
-
-  /**
-   * ALTAR DE SACRIFÍCIO acabou de resolver — mesmo padrão efêmero de
-   * `lastExtraTurn`/`lastNotice`, com `id` monotônico para o `id` disparar o
-   * `useEffect` do `<AltarModal />` mesmo se o MESMO combatente jogar a carta
-   * duas vezes seguidas (dois valores idênticos de `caster` não mudariam nada
-   * para uma comparação sem `id`).
-   *
-   * `caster` é quem deve VER o modal — nos dois clientes de uma partida
-   * online este fato chega idêntico, mas só o lado cujo `caster` bate com o
-   * `localCombatant` de fato abre o modal (ver `useMatchPerspective`); o outro
-   * lado só recebe o anúncio genérico de "carta jogada" que qualquer carta já
-   * emite.
-   */
-  lastAltarPrompt: { caster: Combatant; id: number } | null;
-  nextAltarPromptId: number;
 
   /**
    * Partida pausada pelo menu de pause.

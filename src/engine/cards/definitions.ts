@@ -120,6 +120,28 @@ export const RARITY_LABEL: Record<CardRarity, string> = {
   BOOM: 'BOOM!',
 };
 
+/** Escada de fusão do Altar de Sacrifício (`CLAUDE.md`, item 5) — ordem crescente. */
+const RARITY_LADDER: readonly CardRarity[] = ['COMMON', 'RARE', 'EPIC', 'LEGENDARY', 'BOOM'];
+
+/**
+ * Raridade resultante de fundir duas cartas no Altar de Sacrifício: raridades
+ * iguais sobem 1 grau; raridades diferentes nivelam pela MENOR e sobem 1 grau
+ * (`min(a,b) + 1`). Os dois casos de borda já documentados (`docs/CARTAS.md`)
+ * caem dentro desta MESMA fórmula, sem `if` especial:
+ * - Lendária + Lendária → Boom: `min(3,3)+1 = 4` = `BOOM`. Não é exceção —
+ *   Lendária é o penúltimo degrau da escada, +1 É Boom por construção.
+ * - Boom + Boom → Boom: `min(4,4)+1 = 5`, fora do array — é aqui que o
+ *   `Math.min(..., length - 1)` satura no topo de propósito. Omitir Boom da
+ *   `RARITY_LADDER` (tratá-la só como faixa de sorteio, não como degrau da
+ *   escada) seria o jeito mais provável de alguém reintroduzir este bug.
+ */
+export function fuseRarity(a: CardRarity, b: CardRarity): CardRarity {
+  const rankA = RARITY_LADDER.indexOf(a);
+  const rankB = RARITY_LADDER.indexOf(b);
+  const nextRank = Math.min(Math.min(rankA, rankB) + 1, RARITY_LADDER.length - 1);
+  return RARITY_LADDER[nextRank];
+}
+
 /** O que a carta exige como alvo antes de poder ser jogada. */
 export type CardTargeting =
   /** Sem alvo — joga direto. */
@@ -224,19 +246,6 @@ export interface CardEffectResult {
    * função pura), então só sinaliza a intenção e o store decide quando/como.
    */
   triggersChaosGlitch?: boolean;
-  /**
-   * `true` abre o `<AltarModal />` para o CASTER escolher 2 cartas a
-   * sacrificar. Mesma razão declarativa de `triggersChaosGlitch`: abrir um
-   * modal é decisão de apresentação, e o efeito só sinaliza a intenção — quem
-   * decide QUANDO/COMO mostrar é o store (`lastAltarPrompt`) e a UI que o
-   * observa.
-   *
-   * O sacrifício em si (`sacrificeCards`) é uma ação PRÓPRIA, publicada só no
-   * clique de "Confirmar" — nunca parte do resultado desta carta, porque a
-   * escolha de quais cartas ainda não existe no instante em que o efeito
-   * roda.
-   */
-  opensAltar?: boolean;
   /**
    * Fato a registrar no log de combate.
    *

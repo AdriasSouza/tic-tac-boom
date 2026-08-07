@@ -20,9 +20,9 @@ import { colors } from '@/theme/colors';
  *
  * - `BOARD_TARGET` — UI própria já existe (overlay do `<Board />`/`<Cell />`
  *   + banner do `<CardHand />`); mira não é modal, é o tabuleiro.
- * - `SACRIFICE_DRAG` — Altar de Sacrifício continua com `AltarModal`/
- *   `lastAltarPrompt` nesta fase; a migração para este mecanismo é da Fase 6,
- *   junto da invocação da carta fundida (ver `docs/CARTAS.md`).
+ * - `SACRIFICE_DRAG` — Altar de Sacrifício tem UI própria (`<AltarModal />`,
+ *   arrastar/tocar em vez de grade), mesmo já usando `pendingInteraction`
+ *   (Fase 6b) por baixo.
  *
  * Sempre montado no root (como `AcknowledgementModal`/`AltarModal`), decide
  * sozinho se tem algo para mostrar. `controlledCombatants` (`useMatchPerspective`,

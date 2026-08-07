@@ -18,8 +18,8 @@ import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
 import { getCard } from '@/engine/cards/registry';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
-import { netSacrificeCards } from '@/services/syncBridge';
-import { selectHandOf, selectLastAltarPrompt, useGameStore, type HandCard } from '@/store/gameStore';
+import { netCancelInteraction, netResolveInteraction } from '@/services/syncBridge';
+import { selectHandOf, selectPendingInteraction, useGameStore, type HandCard } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 import { RARITY_COLOR } from '@/theme/rarity';
 
@@ -29,10 +29,17 @@ import { RARITY_COLOR } from '@/theme/rarity';
  * **Estado inteiramente local até o clique em "Confirmar".** `selection`
  * (quais uids ocupam os 2 slots) mora em `useState` deste componente — nunca
  * no `gameStore`, nunca na rede — enquanto o jogador arrasta, toca, troca de
- * ideia. A ÚNICA escrita que sai daqui é `netSacrificeCards(uid1, uid2)`, e só
- * no clique do botão. É a mesma garantia que já vale para o resto do jogo
- * ("só os inputs trafegam"), aplicada a uma escolha que agora acontece em
- * várias interações de UI em vez de um único toque.
+ * ideia. A ÚNICA escrita que sai daqui é
+ * `netResolveInteraction({ kind: 'SACRIFICE_DRAG', uids })`, e só no clique do
+ * botão. É a mesma garantia que já vale para o resto do jogo ("só os inputs
+ * trafegam"), aplicada a uma escolha que agora acontece em várias interações
+ * de UI em vez de um único toque.
+ *
+ * Fase 6b: migrado do mecanismo próprio (`lastAltarPrompt`/`sacrificeCards`)
+ * para `pendingInteraction` (`kind: 'SACRIFICE_DRAG'`) — mesma UI de
+ * arrastar/tocar, só a fonte dos dados e o destino das ações mudaram. Como
+ * bônus, "Cancelar" agora devolve a carta de verdade (`netCancelInteraction`
+ * já reembolsa), o que o mecanismo antigo nunca fazia.
  *
  * **Duas formas de preencher um slot, sem colidirem:**
  * - **Arrastar**: cada carta da mão tem seu próprio `Gesture.Pan()`, e o
@@ -272,7 +279,7 @@ interface AltarSelection {
 const EMPTY_SELECTION: AltarSelection = { slots: [null, null], armed: null };
 
 export function AltarModal() {
-  const lastAltarPrompt = useGameStore(selectLastAltarPrompt);
+  const pending = useGameStore(selectPendingInteraction);
   const { localCombatant } = useMatchPerspective();
   const hand = useGameStore(useMemo(() => selectHandOf(localCombatant), [localCombatant]));
 
@@ -282,19 +289,20 @@ export function AltarModal() {
   const slot0Rect = useSharedValue<Rect>(EMPTY_RECT);
   const slot1Rect = useSharedValue<Rect>(EMPTY_RECT);
 
-  /* Abre só para quem JOGOU a carta — ver o campo `caster` em `lastAltarPrompt`.
-     Do outro lado (ou no offline, ninguém) o fato só passa pelo anúncio
+  const isAltarPrompt = pending?.kind === 'SACRIFICE_DRAG';
+
+  /* Abre só para quem JOGOU a carta — ver o campo `caster` de `pending`. Do
+     outro lado (ou no offline, ninguém) o fato só passa pelo anúncio
      genérico "carta jogada" que qualquer carta já dispara.
-     Reage a `promptId` (não a `lastAltarPrompt` inteiro): os dois nascem do
-     MESMO `set()` em `gameStore`, então já chegam sincronizados no mesmo
-     render — jogar a carta duas vezes seguidas com o mesmo `caster` ainda
-     reabre o modal, porque é o `id` que muda, não o `caster`. */
-  const promptId = lastAltarPrompt?.id ?? null;
+     Reage a `pending?.cardUid` (identidade da interação, não o objeto
+     inteiro): jogar a carta duas vezes seguidas com o mesmo `caster` ainda
+     reabre o modal, porque é o `cardUid` da nova interação que muda. */
+  const cardUid = isAltarPrompt ? pending.cardUid : null;
   useEffect(() => {
-    if (lastAltarPrompt === null || lastAltarPrompt.caster !== localCombatant) return;
+    if (!isAltarPrompt || pending.caster !== localCombatant) return;
     setSelection(EMPTY_SELECTION);
     setVisible(true);
-  }, [promptId, lastAltarPrompt, localCombatant]);
+  }, [cardUid, isAltarPrompt, pending, localCombatant]);
 
   const handleMeasured = useCallback(
     (index: 0 | 1, rect: Rect) => {
@@ -351,18 +359,19 @@ export function AltarModal() {
   const canConfirm = selection.slots[0] !== null && selection.slots[1] !== null;
 
   const handleConfirm = useCallback(() => {
-    if (selection.slots[0] === null || selection.slots[1] === null) return;
+    const [uidA, uidB] = selection.slots;
+    if (uidA === null || uidB === null) return;
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     // Único ponto de contato com a rede — ver o JSDoc do componente.
-    netSacrificeCards(selection.slots[0], selection.slots[1]);
+    netResolveInteraction({ kind: 'SACRIFICE_DRAG', uids: [uidA, uidB] });
     setVisible(false);
   }, [selection.slots]);
 
   const handleCancel = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
-    // Nada foi publicado ainda — cancelar é só fechar. O Altar já foi
-    // consumido ao ser jogado; as 2 cartas escolhidas aqui nunca chegaram
-    // a sair da mão.
+    // `netCancelInteraction` devolve o Altar para a mão e a energia gasta —
+    // diferente do mecanismo antigo, que perdia a carta pra sempre ao cancelar.
+    netCancelInteraction();
     setVisible(false);
   }, []);
 

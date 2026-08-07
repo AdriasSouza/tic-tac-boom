@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CENTER_INDEX } from '@/engine/events';
 import { createRng, type Rng } from '@/engine/rng';
+import { findWinner, getOldestPieceIndex } from '@/engine/rules';
 import type { Board, Piece } from '@/engine/rules';
 import { createTestState } from '@/engine/testHelpers';
 import { getCard } from '@/engine/cards/registry';
@@ -839,6 +840,167 @@ describe('TROCAR (SINGLE_CARD_TRADE) — encadeamento de 2 passos com carta real
   });
 });
 
+describe('ALTAR DE SACRIFÍCIO (ALTAR_OF_SACRIFICE) — SACRIFICE_DRAG, fusão de raridade + invocação (Fase 6b)', () => {
+  const card = getCard('ALTAR_OF_SACRIFICE');
+
+  it('canPlay: indisponível com menos de 2 outras cartas na mão', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'altar', cardId: 'ALTAR_OF_SACRIFICE' },
+        { uid: 'o1', cardId: 'HEAL_SELF' },
+      ],
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'altar' })).toBe(false);
+  });
+
+  it('canPlay: disponível com exatamente 2 outras cartas na mão', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'altar', cardId: 'ALTAR_OF_SACRIFICE' },
+        { uid: 'o1', cardId: 'HEAL_SELF' },
+        { uid: 'o2', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'altar' })).toBe(true);
+  });
+
+  it('abre SACRIFICE_DRAG com as uids da mão menos o próprio Altar, count 2', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'altar', cardId: 'ALTAR_OF_SACRIFICE' },
+        { uid: 'o1', cardId: 'HEAL_SELF' },
+        { uid: 'o2', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'altar', rng });
+    expect(result?.interaction).toEqual({
+      kind: 'SACRIFICE_DRAG',
+      eligibleUids: ['o1', 'o2'],
+      count: 2,
+    });
+  });
+
+  it('resolve: funde 2 cartas da MESMA raridade (COMMON+COMMON -> RARE), remove as 2 e o Altar não sobra', () => {
+    // O Altar já saiu da mão ao ABRIR a interação (timing unificado da Fase
+    // 3) — por isso não aparece aqui, igual ao passo 2/3 de TROCAR acima.
+    const state = createTestState({
+      playerHand: [
+        { uid: 'o1', cardId: 'CLEAR_BLOCK' }, // COMMON
+        { uid: 'o2', cardId: 'LOCK_CELL' }, // COMMON
+      ],
+      nextCardUid: 5,
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'altar',
+      rng,
+      interaction: { selection: { kind: 'SACRIFICE_DRAG', uids: ['o1', 'o2'] }, priorSelections: [] },
+    });
+
+    expect(result?.patch?.nextCardUid).toBe(6);
+    const hand = result?.patch?.playerHand as { uid: string; cardId: string }[];
+    expect(hand).toHaveLength(1);
+    expect(hand[0].uid).toBe(`${hand[0].cardId}#5`);
+    expect(getCard(hand[0].cardId as Parameters<typeof getCard>[0]).rarity).toBe('RARE');
+    expect(result?.log).toMatchObject({ code: 'CARD_ALTAR_INVOKED', value: hand[0].cardId });
+    expect(result?.notice).toMatchObject({ code: 'CARD_ALTAR_INVOKED', value: hand[0].cardId });
+  });
+
+  it('resolve: funde 2 raridades diferentes (COMMON+LEGENDARY -> min(COMMON,LEGENDARY)+1 = RARE)', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'o1', cardId: 'CLEAR_BLOCK' }, // COMMON
+        { uid: 'o2', cardId: 'FULL_INTEL' }, // LEGENDARY
+      ],
+      nextCardUid: 0,
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'altar',
+      rng,
+      interaction: { selection: { kind: 'SACRIFICE_DRAG', uids: ['o1', 'o2'] }, priorSelections: [] },
+    });
+
+    const hand = result?.patch?.playerHand as { uid: string; cardId: string }[];
+    expect(getCard(hand[0].cardId as Parameters<typeof getCard>[0]).rarity).toBe('RARE');
+  });
+
+  it('resolve: funde LEGENDARY + LEGENDARY -> BOOM (caso de borda nomeado em CLAUDE.md #5)', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'o1', cardId: 'FULL_INTEL' }, // LEGENDARY
+        { uid: 'o2', cardId: 'HAND_SWAP' }, // LEGENDARY
+      ],
+      nextCardUid: 0,
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'altar',
+      rng,
+      interaction: { selection: { kind: 'SACRIFICE_DRAG', uids: ['o1', 'o2'] }, priorSelections: [] },
+    });
+
+    const hand = result?.patch?.playerHand as { uid: string; cardId: string }[];
+    expect(getCard(hand[0].cardId as Parameters<typeof getCard>[0]).rarity).toBe('BOOM');
+  });
+
+  it('resolve: uid inexistente devolve null (mesma defesa de TROCAR)', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'o1', cardId: 'HEAL_SELF' },
+        { uid: 'o2', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'altar',
+      rng,
+      interaction: { selection: { kind: 'SACRIFICE_DRAG', uids: ['o1', 'fantasma'] }, priorSelections: [] },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('resolve: as 2 uids da seleção iguais devolve null (não pode sacrificar a mesma carta 2x)', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'o1', cardId: 'HEAL_SELF' },
+        { uid: 'o2', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'altar',
+      rng,
+      interaction: { selection: { kind: 'SACRIFICE_DRAG', uids: ['o1', 'o1'] }, priorSelections: [] },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('determinismo: a mesma seed sorteia a mesma carta invocada', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'o1', cardId: 'CLEAR_BLOCK' },
+        { uid: 'o2', cardId: 'LOCK_CELL' },
+      ],
+      nextCardUid: 0,
+    });
+    const interaction = {
+      selection: { kind: 'SACRIFICE_DRAG' as const, uids: ['o1', 'o2'] as const },
+      priorSelections: [],
+    };
+
+    const resultA = card.effect({ state, caster: 'PLAYER', uid: 'altar', rng: createRng(42), interaction });
+    const resultB = card.effect({ state, caster: 'PLAYER', uid: 'altar', rng: createRng(42), interaction });
+
+    expect(resultA?.log).toEqual(resultB?.log);
+  });
+});
+
 describe('ESPIONAGEM (INTEL_REVEAL) — revela sem descartar; count sempre 2 (clamp é do store)', () => {
   const card = getCard('INTEL_REVEAL');
 
@@ -953,5 +1115,142 @@ describe('PROCRASTINAR II (CARD_DRAFT_TIERED) — distribuição garantida 2 com
       nextCardUid: 1,
     });
     expect(result?.log).toMatchObject({ code: 'CARD_DRAFT_PICK', value: 'HAND_SWAP' });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                               VISÃO ABSOLUTA                                */
+/* -------------------------------------------------------------------------- */
+
+describe('VISÃO ABSOLUTA (FULL_INTEL) — revelação automática com prazo (fecha a carta)', () => {
+  const card = getCard('FULL_INTEL');
+
+  it('canPlay: indisponível com a mão do oponente vazia', () => {
+    const state = createTestState();
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('ramo humano: patch marca fullIntelRevealFor, além do acknowledge de sempre', () => {
+    const state = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.patch).toEqual({ fullIntelRevealFor: 'PLAYER' });
+    expect(result?.acknowledge).toMatchObject({ code: 'HAND_REVEALED', kind: 'INTEL_FLIP' });
+  });
+
+  it('ramo IA (offline): patch marca fullIntelRevealFor também, sem acknowledge', () => {
+    const state = createTestState({ playerHand: [{ uid: 'p1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({ state, caster: 'MACHINE', uid: 'x', rng });
+    expect(result?.patch).toEqual({ fullIntelRevealFor: 'MACHINE' });
+    expect(result?.acknowledge).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                               TIC TAC BOOM!                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('TIC TAC BOOM! (CHAOS_ROULETTE) — reshuffle total das peças existentes (Fase 6a)', () => {
+  const card = getCard('CHAOS_ROULETTE');
+
+  it('preserva a contagem exata de X e O — nunca cria nem perde peça', () => {
+    const board = boardWith({
+      0: piece('PLAYER', 1),
+      4: piece('MACHINE', 2),
+      8: piece('MACHINE', 3),
+    });
+    const state = createTestState({ board });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    const newBoard = result?.patch?.board as Board;
+
+    expect(newBoard.filter((c) => c?.mark === 'X')).toHaveLength(1);
+    expect(newBoard.filter((c) => c?.mark === 'O')).toHaveLength(2);
+    expect(newBoard.filter((c) => c !== null)).toHaveLength(3);
+  });
+
+  it('usa células antes vazias — reshuffle TOTAL, não permutação só entre células ocupadas', () => {
+    // Só a célula 0 tem peça. Um `shuffle` controlado manda essa peça pra
+    // célula 5, que estava vazia — prova que o mecanismo não está restrito
+    // a reorganizar dentro do conjunto de células já ocupadas.
+    const board = boardWith({ 0: piece('PLAYER', 1) });
+    const state = createTestState({ board });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng: fixedRng({
+        shuffle: (<T,>(_items: readonly T[]) => [5, 0, 1, 2, 3, 4, 6, 7, 8] as unknown as T[]),
+      }),
+    });
+    const newBoard = result?.patch?.board as Board;
+
+    expect(newBoard[5]).toEqual(piece('PLAYER', 1));
+    expect(newBoard[0]).toBeNull();
+  });
+
+  it('turnPlaced é preservado (não recalculado) — "mais antiga" continua correta na nova posição', () => {
+    const board = boardWith({
+      0: piece('PLAYER', 5),
+      3: piece('PLAYER', 1), // a mais antiga
+      6: piece('PLAYER', 9),
+    });
+    const state = createTestState({ board });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng: createRng(7) });
+    const newBoard = result?.patch?.board as Board;
+
+    const turnPlacedValues = newBoard
+      .filter((c): c is Piece => c !== null)
+      .map((c) => c.turnPlaced)
+      .sort((a, b) => a - b);
+    expect(turnPlacedValues).toEqual([1, 5, 9]);
+
+    // A peça de turnPlaced 1 continua sendo "a mais antiga", onde quer que
+    // tenha caído — getOldestPieceIndex não conhece célula, só turnPlaced.
+    const oldestIndex = getOldestPieceIndex(newBoard, 'PLAYER');
+    expect(oldestIndex).not.toBeNull();
+    expect(newBoard[oldestIndex!]?.turnPlaced).toBe(1);
+  });
+
+  it('determinístico por seed — mesma seed produz o mesmo board', () => {
+    const board = boardWith({
+      1: piece('PLAYER', 1),
+      4: piece('MACHINE', 2),
+      7: piece('PLAYER', 3),
+    });
+    const state = createTestState({ board });
+    const resultA = card.effect({ state, caster: 'PLAYER', uid: 'x', rng: createRng(42) });
+    const resultB = card.effect({ state, caster: 'PLAYER', uid: 'x', rng: createRng(42) });
+
+    expect(resultA?.patch?.board).toEqual(resultB?.patch?.board);
+  });
+
+  it('fechamento duplo: a CONTAGEM decide o destino, não a posição de origem (board de entrada invertido do resultado esperado)', () => {
+    // X começa em 6,7,8; O começa em 0,1,2 — o OPOSTO de onde cada símbolo
+    // vai terminar. Se o teste passasse por coincidência de ordem de
+    // iteração, essa inversão o quebraria.
+    const board = boardWith({
+      6: piece('PLAYER', 1),
+      7: piece('PLAYER', 2),
+      8: piece('PLAYER', 3),
+      0: piece('MACHINE', 4),
+      1: piece('MACHINE', 5),
+      2: piece('MACHINE', 6),
+    });
+    const state = createTestState({ board });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng: fixedRng({ shuffle: (items) => [...items] }), // identidade — sem embaralhar de verdade
+    });
+    const newBoard = result?.patch?.board as Board;
+
+    expect([0, 1, 2].every((i) => newBoard[i]?.mark === 'X')).toBe(true);
+    expect([3, 4, 5].every((i) => newBoard[i]?.mark === 'O')).toBe(true);
+    expect(newBoard.slice(6, 9)).toEqual([null, null, null]);
+
+    // As duas linhas fecham ao mesmo tempo — findWinner pega a PRIMEIRA de
+    // WIN_LINES ([0,1,2]), o desempate oficial decidido em
+    // docs/NOTAS_TECNICAS.md. Cobertura ponta a ponta em gameStore.test.ts.
+    expect(findWinner(newBoard)).toMatchObject({ winner: 'PLAYER', line: [0, 1, 2] });
   });
 });
