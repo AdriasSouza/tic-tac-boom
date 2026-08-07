@@ -317,3 +317,195 @@ mudar o contrato — `applyCardEffectResult`/`finishInteractionStep` precisariam
 uma mudança de `rules.ts`/`definitions.ts`/`gameStore.ts` (o "pare e avise" que já vale para
 essa camada) — não decidir isso sem registrar a razão de precisar, exatamente como a Fase 3
 pediu para os `kind`s do contrato original.
+
+## Cláusula `!isImmuneToTraps` de RICOCHETE — estruturalmente inalcançável hoje (Fase 5)
+
+**Contexto:** o `triggerCondition` de `REFLECT_TRAP` (RICOCHETE, `registry.ts`) é
+`event.type === 'CARD_ABOUT_TO_RESOLVE' && getCard(event.cardId).targetsOpponentResource ===
+true && !isImmuneToTraps(getCard(event.cardId).rarity)`. A auditoria da Fase 5 notou: hoje
+NENHUMA carta tem `targetsOpponentResource: true` E raridade Lendária/Boom ao mesmo tempo —
+`HAND_SWAP` (a única Lendária que tecnicamente "ataca" a mão do oponente) omite a flag DE
+PROPÓSITO (comentário no código já explica: a imunidade por raridade já a protege, marcar a
+flag sugeriria que a categoria decide quando é a raridade). Ou seja, toda vez que a primeira
+metade da condição (`targetsOpponentResource === true`) é verdadeira hoje, a carta É não-imune
+— a cláusula `!isImmuneToTraps(...)` nunca chega a REJEITAR nada; ela é sempre `true` quando
+avaliada.
+
+**Mesma classe do `isSelected` morto da Fase 3** (`CardItem.tsx`): código correto, sem
+consumidor real que o exercite, deixado como está — não é bug, não justifica um teste forçando
+um cenário artificial sem carta por trás só para cobrir uma linha. Diferente de `doomedCell`
+(Fase 2): não há risco de reativação silenciosa por engano, é só uma cláusula defensiva
+esperando a carta que a torne relevante.
+
+**Revisitar** quando uma carta futura combinar `targetsOpponentResource: true` com raridade
+Lendária ou Boom — nesse momento a cláusula passa a ter um caso real pra testar, e vale
+adicionar o teste e2e junto da carta nova, não antes.
+
+## `findWinner` com fechamento duplo — TIC TAC BOOM! é a primeira carta a tornar isso possível (Fase 6a)
+
+**Contexto:** `findWinner` (`rules.ts`) escaneia `WIN_LINES` em ordem fixa (as 3 linhas
+primeiro, depois colunas, depois diagonais) e devolve a PRIMEIRA combinação que casar. Isso
+nunca importou até agora porque só 1 peça é colocada por vez em jogo normal — um fechamento
+duplo (as 3 peças de X E as 3 de O completando linhas ao mesmo tempo) é estruturalmente
+impossível nesse regime.
+
+**TIC TAC BOOM! (`CHAOS_ROULETTE`, `registry.ts`) muda isso.** A carta reposiciona TODAS as
+peças do tabuleiro de uma vez (reshuffle total, ver comentário no `effect`), e duas linhas
+disjuntas de `WIN_LINES` (ex: `[0,1,2]` e `[3,4,5]`) cabem nas 6 células que 3 X + 3 O
+ocupam, dentro do limite de 3 por símbolo — geometricamente possível e válido. Depois desta
+carta, um fechamento duplo É alcançável em jogo real, não só teoricamente.
+
+**Decisão: não mudar `findWinner`/`applyCardEffectResult` para tratar esse caso.** A ordem
+fixa de `WIN_LINES` já produz um resultado determinístico e reproduzível por seed — vira o
+desempate OFICIAL por decisão, não por acidente de quem escreveu o array primeiro. Mudar o
+contrato de `findWinner` (que `resolveCardPlay`/`resolveInteraction`/`resolveCounterTraps`
+compartilham via `applyCardEffectResult`) seria uma mudança de escopo do MOTOR inteiro para
+resolver um caso que hoje só uma carta produz — desproporcional. Testado em
+`registry.effects.test.ts` (o `board` exato que o reshuffle produz) e em
+`gameStore.test.ts` (ponta a ponta: `roundWinner` sai o dono da linha `[0,1,2]`, primeira
+de `WIN_LINES`).
+
+**Revisitar** se uma carta futura também puder mexer em múltiplas peças de uma vez e o
+desempate por ordem de `WIN_LINES` deixar de parecer proporcional — nesse ponto vale
+decidir uma regra explícita (ex: nenhum dos dois vence, ou os dois vencem) em vez de
+continuar dependendo da ordem do array.
+
+## Cobertura de `chooseCpuCardPlay` pelas 29 cartas (Fase 7a)
+
+**Diagnóstico, sem mudança de comportamento** — `chooseCpuCardPlay`/`chooseCpuMove`/
+`playCPUTurn` (`src/engine/ai/cpu.ts`) não foram alterados nesta sessão. A tabela abaixo é
+o mapa de cobertura que a próxima fase (ajuste de heurística) usa como ponto de partida.
+
+`chooseCpuCardPlay` tem uma lista de prioridade fixa, primeira condição que casa vence.
+Nenhuma carta hoje é "avaliada mas nunca vence prioridade" — toda carta marcada como "Não"
+abaixo é porque `find(id)` nem existe pra ela na função (nunca chega a ser avaliada).
+
+| Carta (id) | Considerada? | Condição / motivo |
+|---|---|---|
+| LIMPAR (`CLEAR_BLOCK`) | Sim | Prioridade 3 — `activeRule === 'BLOCKED_CELL'` e a célula bloqueada é conhecida. |
+| PURIFICAR (`CLEANSE`) | Sim | Prioridade 3 — alvo é `blockedCell` ou `lockedCell`, o que estiver ativo. |
+| TRAVAR (`LOCK_CELL`) | Sim | Prioridade 8 — trava uma célula vazia aleatória (disrupção de baixo custo). |
+| DEMOLIR (`BREAK_PIECE`) | Sim | Prioridade 6 — só dispara quando o HUMANO já tem 3 peças no tabuleiro (`getOldestPieceIndex` exige `>= MAX_PIECES_PER_PLAYER`; com menos de 3, a condição nunca fecha). |
+| ESPIADA (`PEEK_RANDOM`) | Sim | Prioridade 12 — só se a mão do humano não estiver vazia; sem chance/condição além disso. |
+| ESTUDAR (`STUDY`) | Sim | Prioridade 11 — mão não cheia; verificada DEPOIS de ESTUDAR II. |
+| SAQUE (`HAND_RAID`) | Sim | Prioridade 7 — mão do humano não vazia E `rng.chance(0.5)` (probabilística, não garantida mesmo com condição satisfeita). |
+| PERMUTA CAÓTICA (`HAND_SWAP`) | Sim | Prioridade 13 — `rng.chance(0.15)`, sem outra condição (alto risco, propositalmente raro). |
+| OBSOLESCÊNCIA (`OBSOLESCENCE`) | Sim | Prioridade 9 — mira a peça mais NOVA do humano (`getPieceIndexes(...).at(-1)`); dispara sempre que ele tiver >=1 peça. **Achado:** o comentário da prioridade 9 ainda diz "VIDENTE agora DESTRÓI a peça marcada" — nome antigo, pré-Fase 2; o `find('OBSOLESCENCE')` está correto, só o comentário ficou desatualizado. |
+| SABOTAGEM (`SABOTAGE`) | Sim | Prioridade 7 — mesma forma de SAQUE: mão do humano não vazia E `rng.chance(0.5)`. |
+| ESTUDAR II (`STUDY_II`) | Sim | Prioridade 11 — mão não cheia; checada ANTES de ESTUDAR (prioridade "mais cartas primeiro"). |
+| VIDENTE (`HIGHLIGHT_OLDEST`) | **Não** | Nunca referenciada. Fase 2 (redesenho — virou leitura pura, sem efeito mecânico) — a lista de prioridade nunca ganhou uma entrada pra ela. |
+| ANOMALIA (`QUEUE_SHUFFLE`) | **Não** | Nunca referenciada. Fase 2 (carta nova). |
+| TROCAR (`SINGLE_CARD_TRADE`) | **Não** | Nunca referenciada. Fase 2 (carta nova). |
+| ESPIONAGEM (`INTEL_REVEAL`) | **Não** | Nunca referenciada. Fase 2/rebalanceada (Fase C) — mesmo depois do ajuste de raridade/custo, segue invisível pra CPU. |
+| PROCRASTINAR (`CARD_DRAFT`) | **Não** | Nunca referenciada. Fase 2 (carta nova). |
+| ATAQUE (`DIRECT_DAMAGE`) | Sim | Prioridade 2 — abate garantido: `hpOf(HUMAN) <= 2`. |
+| SAQUE II (`HAND_RAID_II`) | **Não** | Nunca referenciada — só a versão I (`HAND_RAID`) está na lista. Fase 2 (carta nova). |
+| PROCRASTINAR II (`CARD_DRAFT_TIERED`) | **Não** | Nunca referenciada. Fase 2 (carta nova). |
+| CURA (`HEAL_SELF`) | Sim | Prioridade 1 (crítica, `hpOf(CPU) <= 2`) e prioridade 10 (não-crítica, joga se sobrar na mão). |
+| TURNO EXTRA (`TURNO_EXTRA`) | Sim | Prioridade 4 — sempre boa, sem alvo; só verifica `extraTurnPending !== CPU` (não duplicar concessão). |
+| VISÃO ABSOLUTA (`FULL_INTEL`) | Sim | Prioridade 12 — só se a mão do humano não estiver vazia; puramente informativa. |
+| MINA (`BOMB_TRAP`) | Sim (genérico) | Prioridade 5 — `TRAP_CARD_IDS.includes(...)`, arma a PRIMEIRA armadilha da mão nessa ordem; nenhuma preferência pelo tipo (Lendária ou não). |
+| PROTEÇÃO (`SHIELD_TRAP`) | Sim (genérico) | Mesma prioridade 5, mesma falta de diferenciação por tipo. |
+| ANTIMAGIA (`ANTI_SPELL_TRAP`) | Sim (genérico) | Mesma prioridade 5. |
+| RICOCHETE (`REFLECT_TRAP`) | Sim (genérico) | Mesma prioridade 5. |
+| TIC TAC BOOM! (`CHAOS_ROULETTE`) | Sim | Prioridade 14 — `rng.chance(0.2)`, sem condição além do custo 0. |
+| ALTAR DE SACRIFÍCIO (`ALTAR_OF_SACRIFICE`) | **Não** | Nunca referenciada. Fase 6b (carta mais recente do baralho). |
+| REBOBINAR (`REBOBINAR`) | **Não** (jogar) / Sim (respeitar) | A CPU nunca ESCOLHE jogar REBOBINAR — mas `chooseCpuMove` RESPEITA corretamente a punição quando o HUMANO a joga contra ela (`state.machinePlacementBlocked`, checado antes de qualquer simulação de jogada). "Jogar a carta" e "respeitar o efeito dela" são coisas diferentes; só a primeira está zerada aqui. |
+
+**Resumo:** 9 das 29 cartas nunca são consideradas para jogo pela CPU —
+`HIGHLIGHT_OLDEST`, `QUEUE_SHUFFLE`, `SINGLE_CARD_TRADE`, `INTEL_REVEAL`, `CARD_DRAFT`,
+`HAND_RAID_II`, `CARD_DRAFT_TIERED`, `ALTAR_OF_SACRIFICE`, `REBOBINAR` — todas cartas das
+Fases 2/4/6, exatamente como suspeitado: a lista de prioridade foi escrita antes delas
+existirem. As 4 armadilhas são "consideradas" só genericamente (primeira da mão, sem
+diferenciação por raridade/efeito). Confirmado empiricamente pelo harness de auto-jogo (ver
+próxima seção): nas 300 partidas rodadas, nenhuma das 9 cartas nunca-referenciadas aparece
+na tabela de frequência — zero jogadas, dos dois lados, o lote inteiro.
+
+## Harness de auto-jogo determinístico CPU x CPU (Fase 7a)
+
+**Achado que definiu o desenho:** `chooseCpuCardPlay`/`chooseCpuMove` não recebem
+`combatant` como parâmetro — são hardcoded pra decidir por `MACHINE` (`const CPU: Combatant
+= 'MACHINE'` no topo de `cpu.ts`). `playCPUTurn` é genérico só na INTERFACE de ações
+(`CpuActions`), por dentro ainda compara `fresh.turn !== CPU`. Rodar CPU-contra-CPU exigiu
+decidir como fazer o `PLAYER` usar a MESMA heurística sem parametrizar `cpu.ts` (mudaria
+comportamento de produção, fora do escopo de uma fase de diagnóstico).
+
+**Solução: espelhar o `GameState`, não a lógica.** `mirrorForDecision`
+(`src/engine/ai/cpuMirror.ts`) devolve uma cópia do estado real com os dois lados
+trocados (mão, energia, HP, armadilhas, tabuleiro — dono E símbolo da peça juntos —,
+bloqueio de posicionamento, `extraTurnPending`, `pendingInteraction.caster`/`.source`).
+Quando é a vez do `PLAYER`, o harness alimenta `chooseCpuCardPlay`/`chooseCpuMove`/
+`playCPUTurn` com essa cópia — a heurística "pensa" que decide por `MACHINE`, mas os dados
+são do `PLAYER` real. O resultado (uid/cardId/índice de tabuleiro) nunca precisa de
+tradução de volta — nenhum dos dois é combatant-específico — só as AÇÕES aplicadas ao
+estado real usam `combatant` explícito (`placeMark`/`endTurn`/`resolveInteraction`, que já
+aceitam isso; só `playCard`/`playMachineCard` são pré-vinculadas por lado).
+
+**Assimetria conhecida, documentada, não escondida:** `machineCardTurn` não tem par do lado
+`PLAYER` no `GameState` (existe só pra evitar a CPU jogar 2 cartas no mesmo turno depois de
+um re-entry assíncrono pós-modal — o humano nunca teve esse problema). `mirrorForDecision`
+NÃO troca esse campo — inventar um valor sem correspondente real quebraria a propriedade de
+involução que o teste da função verifica (`mirrorForDecision(mirrorForDecision(s)) === s`).
+Seguro porque `turnCount` avança a cada meio-turno e o harness nunca chama
+`chooseCpuCardPlay`/`playCPUTurn` mais de uma vez por turno por lado — a guarda nunca
+precisaria bloquear nada de qualquer forma.
+
+**Testado isoladamente** (`src/engine/ai/cpuMirror.test.ts`, sem depender do harness de
+partidas): involução com estado variado e com campos nulos, e conferência célula-a-célula
+de um tabuleiro parcialmente preenchido — o caso de maior risco (inverter só o dono sem
+inverter o símbolo faria `findWinner`/`simulate` de `cpu.ts` decidirem errado sem exception
+nenhuma, e o sintoma seria só uma taxa de vitória enviesada, invisível sem esse teste).
+
+**Onde mora:** `src/store/cpuSelfPlay.harness.test.ts` (não em `src/engine/ai/` — o
+harness precisa de `useGameStore`, e nenhum arquivo hoje sob `src/engine/` importa de
+`@/store`, confirmado por grep; `mirrorForDecision` em si é pura e mora em `src/engine/ai/`
+junto de `cpu.ts`). Fora do CI sem tocar `vitest.config.mts`: o arquivo casa com o glob
+padrão de testes, mas o `describe` só roda com `RUN_CPU_HARNESS=1` — em qualquer rodada
+comum aparece como "skipped".
+
+**Linha de base coletada (300 partidas, seeds 1000–1299, baralho pós-rebalanceamento):**
+0 travamentos; vitórias PLAYER 133 (44,3%) vs. MACHINE 167 (55,7%). Números brutos, sem
+interpretação — fica pra próxima fase decidir se o viés de ~11 pontos percentuais é da
+ordem de jogada (MACHINE sempre decide depois de ver o tabuleiro) ou de alguma assimetria
+da heurística.
+
+**Zero travamentos em 300 partidas reais é evidência que vale mais que os testes unitários
+isolados que motivaram cada correção.** É a primeira confirmação EMPÍRICA, sob combinação
+real de cartas/regras/interações (não cenários isolados construídos à mão), de que as
+guardas de domínio corrigidas ao longo da Parte B (`AGENTS.md`, "Invariantes de domínio" —
+`placeMark` sem dono do turno, `resolveCardPlay` sem checagem de interação pendente, o
+mecanismo do Altar sem guarda de motor, entre outras) seguram — nenhuma delas reapareceu
+como soft-lock quando exercitada por 300 sequências de jogo distintas e determinísticas.
+
+**Pendência aberta antes de fechar a fase (investigação, sem mudar comportamento):** a
+diferença de vitória rodando a MESMA heurística nos dois lados precisa de causa isolada
+antes da próxima fase usar a tabela de "vitória condicionada por carta" — se for viés
+estrutural de quem começa, toda essa tabela está confundida com ele (uma carta que o
+MACHINE jogue mais parece "melhor" só por isso). Achados da investigação:
+1. **Quem começa é FIXO, não depende da seed:** `createInitialState()` crava
+   `turn: 'PLAYER'` — todo match começa com o PLAYER jogando primeiro na 1ª rodada, nas 300
+   sementes. Rodadas seguintes DENTRO do mesmo match alternam por quem perdeu a rodada
+   anterior (`startNextRound`: `nextTurn = roundWinner === 'PLAYER' ? 'MACHINE' : 'PLAYER'`
+   — o perdedor começa a próxima), mas a 1ª rodada de TODO match é sempre PLAYER-primeiro.
+   Assimetria estrutural real, confirmada por leitura, não por amostra.
+2. **O espelhamento (`mirrorForDecision`) não consome RNG e não abre nenhum caminho de
+   código exclusivo de estado espelhado ou real** — é a MESMA `chooseCpuCardPlay`/
+   `chooseCpuMove`, mesmo canal `AI`, para os dois lados. Único desvio real encontrado:
+   `isAIController`/`announcesCardPlay` (`registry.ts`/`gameStore.ts`) tratam
+   `caster === 'MACHINE'` como "pula o modal" e `PLAYER` (mesmo sendo o harness a decidir
+   por ele) como "sempre pausa para confirmação" — mas o `patch` aplicado por cartas como
+   VISÃO ABSOLUTA é IDÊNTICO nos dois ramos; a diferença é só ciclo de pausa/confirmação
+   (que o harness já resolve), não resultado de jogo. Nenhuma fonte de viés de OUTCOME
+   encontrada no espelhamento em si.
+3. **133 a 167 em 300 está bem perto da fronteira de ruído puro, não muito além dela.**
+   Sob a hipótese de moeda justa (p=0,5), erro padrão da proporção em n=300 é
+   `sqrt(0,5·0,5/300) ≈ 2,9 p.p.`; o desvio observado (55,7% − 50% = 5,7 p.p.) é
+   ≈ 1,96 erro-padrão — bem na fronteira convencional de "improvável só por acaso" (~5%),
+   não uma discrepância gritante muitos desvios-padrão acima do ruído. Não dá pra descartar
+   coincidência de amostra sozinho, mas combinado com o Achado 1 (assimetria estrutural
+   real e conhecida), o mais provável é que pelo menos PARTE da diferença venha de quem
+   começa, não de um bug na heurística ou no harness.
+
+**Não corrigido nesta sessão** (fora de escopo — sessão é diagnóstico). Encaminhado pra
+próxima fase: rodar metade das seeds com os papéis de "quem começa" invertidos antes de
+confiar na tabela de vitória condicionada por carta.
