@@ -278,7 +278,7 @@ describe('BOARD_TARGET — timing unificado (arma cobra energia+mão na hora; ca
     expect(useGameStore.getState().playCard('break')).toBe(true);
 
     const armed = useGameStore.getState();
-    expect(armed.playerEnergy).toBe(2); // 3 - custo 1 de BREAK_PIECE
+    expect(armed.playerEnergy).toBe(1); // 3 - custo 2 de BREAK_PIECE (rebalanceamento: COMMON/1 -> RARE/2)
     expect(armed.playerHand).toEqual([
       { uid: 'x1', cardId: 'HEAL_SELF' },
       { uid: 'x2', cardId: 'HEAL_SELF' },

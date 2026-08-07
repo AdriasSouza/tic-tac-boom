@@ -64,16 +64,43 @@
     - Mão do oponente vazia / mão cheia — não se aplicam.
     - Tabuleiro sem alvo válido (nenhuma célula vazia e destravada) — indisponível para jogar.
 
-  ### DEMOLIR (`BREAK_PIECE`)
-  - **Custo:** 1⚡ · **Categoria (PDF):** Feitiço · **Tipo (motor):** `ACTION`
-  - **Efeito exato:** Escolhe qualquer peça no tabuleiro (própria ou do oponente) e a destrói. Não
-    afeta a fila do "infinito" — só apaga a peça, a célula volta a ficar vazia. É a ferramenta de
-    destruição IMEDIATA do baralho — ver OBSOLESCÊNCIA (épica) para a variante lenta/forçada.
-  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim — 1 célula ocupada, de qualquer dono.
-  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
+  ### VIDENTE (`HIGHLIGHT_OLDEST`, novo)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Destaca visualmente, só para o jogador que a jogou, qual é a peça "mais
+    velha" do oponente (a próxima que sumiria sozinha pela regra do infinito, ao ele colocar a 4ª
+    peça). Não altera a fila do "infinito" nem destrói nada — é leitura pura; o destaque em si É
+    estado efêmero (`highlightedOldestFor`, `src/engine/rules.ts`), consultado só pela
+    apresentação, nunca por outra regra do motor. Expira quando o turno de quem jogou termina, ou
+    antes disso se a peça destacada sair do tabuleiro por outro caminho (auto-invalidação por
+    identidade — mesma ideia do `forcedVanish`/OBSOLESCÊNCIA). Implementado na Fase 2.6 (a Fase 2
+    só devolvia `log`/`notice`, sem nada acender no tabuleiro — regressão do glow removido junto
+    de `doomedCell`, corrigida aqui com mecanismo próprio).
+  - **Abre modal:** Não (destaque na própria tela do tabuleiro). **Exige alvo no tabuleiro:** Não.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Não coberta por
+    PROTEÇÃO (não lê/retira mão) nem por RICOCHETE (não é um efeito direcionado a você — é leitura
+    do estado do TABULEIRO do oponente, não um ataque aos seus recursos).
   - **Casos de borda:**
+    - **Tabuleiro sem alvo válido** (oponente sem nenhuma peça no tabuleiro): carta indisponível
+      para jogar.
     - Mão do oponente vazia / mão cheia — não se aplicam.
-    - Tabuleiro sem alvo válido (nenhuma célula ocupada) — indisponível para jogar.
+  - **Nota de migração:** carta NOVA — o `REVEAL_OLDEST` atual já não faz mais isto (marca e
+    destrói de verdade — ver OBSOLESCÊNCIA, agora nas Raras, sua sucessora direta).
+  - **Rebalanceamento (análise de mesa, pós-Fase 2):** RARA/2⚡ → COMUM/1⚡. Depois do redesenho
+    da Fase 2 (virou informação pura, sem destruir nada), o preço de rara ficou caro demais pelo
+    que a carta entrega — nivelada para comum, junto com o ajuste de DEMOLIR/OBSOLESCÊNCIA/
+    ANTIMAGIA/RICOCHETE/ESPIONAGEM na mesma rodada.
+  - **Decisão confirmada na Fase 2:** "a peça mais antiga" é lida como
+    `getPieceIndexes(board, oponente)[0]` — a mais antiga que EXISTIR, exigindo só >=1 peça (é
+    exatamente o que o caso de borda acima já diz: "sem NENHUMA peça", não "menos de 3"). Isto é
+    DIFERENTE do conceito de "peça mais velha" que a regra do infinito usa em outro lugar do motor
+    (`getOldestPieceIndex`, que só responde depois de 3 peças) — com 1-2 peças no tabuleiro, VIDENTE
+    destaca a mais antiga mesmo que a regra do infinito ainda não valha para ela.
+    **Motivo de manter >=1, não 3:** com menos de 3 peças a informação já é ÓBVIA de graça olhando
+    o tabuleiro — não tem mistério nenhum qual peça é a mais antiga quando só existe uma ou duas.
+    Jogar VIDENTE nessa hora é uma decisão RUIM do jogador (gastou energia por uma informação que
+    já tinha de graça), não um estado inválido que a carta precise recusar — e `canPlay` não existe
+    para proteger o jogador de decisões ruins, só de jogadas sem sentido (sem NENHUMA peça, não há
+    o que destacar). Testado em `registry.effects.test.ts` como regra confirmada.
 
   ---
 
@@ -192,45 +219,26 @@
     em `RICOCHET_INVERSIONS`, `SINGLE_CARD_TRADE` só é vetada, nunca invertida. Ver
     `docs/NOTAS_TECNICAS.md`.
 
-  ### VIDENTE (`HIGHLIGHT_OLDEST`, novo)
-  - **Custo:** 2⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
-  - **Efeito exato:** Destaca visualmente, só para o jogador que a jogou, qual é a peça "mais
-    velha" do oponente (a próxima que sumiria sozinha pela regra do infinito, ao ele colocar a 4ª
-    peça). Não altera a fila do "infinito" nem destrói nada — é leitura pura; o destaque em si É
-    estado efêmero (`highlightedOldestFor`, `src/engine/rules.ts`), consultado só pela
-    apresentação, nunca por outra regra do motor. Expira quando o turno de quem jogou termina, ou
-    antes disso se a peça destacada sair do tabuleiro por outro caminho (auto-invalidação por
-    identidade — mesma ideia do `forcedVanish`/OBSOLESCÊNCIA). Implementado na Fase 2.6 (a Fase 2
-    só devolvia `log`/`notice`, sem nada acender no tabuleiro — regressão do glow removido junto
-    de `doomedCell`, corrigida aqui com mecanismo próprio).
-  - **Abre modal:** Não (destaque na própria tela do tabuleiro). **Exige alvo no tabuleiro:** Não.
-  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Não coberta por
-    PROTEÇÃO (não lê/retira mão) nem por RICOCHETE (não é um efeito direcionado a você — é leitura
-    do estado do TABULEIRO do oponente, não um ataque aos seus recursos).
+  ### DEMOLIR (`BREAK_PIECE`)
+  - **Custo:** 2⚡ · **Categoria (PDF):** Feitiço · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Escolhe qualquer peça no tabuleiro (própria ou do oponente) e a destrói. Não
+    afeta a fila do "infinito" — só apaga a peça, a célula volta a ficar vazia. É a ferramenta de
+    destruição IMEDIATA do baralho — ver OBSOLESCÊNCIA (rara) para a variante lenta/forçada.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim — 1 célula ocupada, de qualquer dono.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
   - **Casos de borda:**
-    - **Tabuleiro sem alvo válido** (oponente sem nenhuma peça no tabuleiro): carta indisponível
-      para jogar.
     - Mão do oponente vazia / mão cheia — não se aplicam.
-  - **Nota de migração:** carta NOVA — o `REVEAL_OLDEST` atual já não faz mais isto (marca e
-    destrói de verdade — ver OBSOLESCÊNCIA, nas Épicas, sua sucessora direta).
-  - **Decisão confirmada na Fase 2:** "a peça mais antiga" é lida como
-    `getPieceIndexes(board, oponente)[0]` — a mais antiga que EXISTIR, exigindo só >=1 peça (é
-    exatamente o que o caso de borda acima já diz: "sem NENHUMA peça", não "menos de 3"). Isto é
-    DIFERENTE do conceito de "peça mais velha" que a regra do infinito usa em outro lugar do motor
-    (`getOldestPieceIndex`, que só responde depois de 3 peças) — com 1-2 peças no tabuleiro, VIDENTE
-    destaca a mais antiga mesmo que a regra do infinito ainda não valha para ela.
-    **Motivo de manter >=1, não 3:** com menos de 3 peças a informação já é ÓBVIA de graça olhando
-    o tabuleiro — não tem mistério nenhum qual peça é a mais antiga quando só existe uma ou duas.
-    Jogar VIDENTE nessa hora é uma decisão RUIM do jogador (gastou 2⚡ por uma informação que já
-    tinha de graça), não um estado inválido que a carta precise recusar — e `canPlay` não existe
-    para proteger o jogador de decisões ruins, só de jogadas sem sentido (sem NENHUMA peça, não há
-    o que destacar). Testado em `registry.effects.test.ts` como regra confirmada.
+    - Tabuleiro sem alvo válido (nenhuma célula ocupada) — indisponível para jogar.
+  - **Rebalanceamento (análise de mesa):** COMUM/1⚡ → RARA/2⚡. Diferente de LIMPAR/TRAVAR (que
+    impedem jogada mas têm contraresposta — o oponente pode limpar, travar de volta, ou o caos
+    travar a célula por acidente), DEMOLIR converte uma peça bloqueada diretamente em vitória sem
+    resposta possível depois de resolvida — categoria diferente, cara demais pra comum de 1⚡.
 
   ### ANOMALIA (`QUEUE_SHUFFLE`, novo)
   - **Custo:** 2⚡ · **Categoria (PDF):** Tabuleiro · **Tipo (motor):** `ACTION`
   - **Efeito exato:** Altera a fila de peças do oponente — a próxima peça dele a sumir (ao colocar
     a 4ª) passa a ser escolhida aleatoriamente pelo sistema, em vez da mais velha por ordem de
-    colocação. Forma uma família coerente com OBSOLESCÊNCIA (épica): ANOMALIA aleatoriza a fila
+    colocação. Forma uma família coerente com OBSOLESCÊNCIA (rara): ANOMALIA aleatoriza a fila
     inteira sem escolher nada; OBSOLESCÊNCIA força uma peça ESPECÍFICA escolhida pelo jogador. Uma
     é caos, a outra é precisão — mantenha essa distinção na implementação (mesmo helper de "força
     a próxima da fila", parametrizado por índice aleatório vs. índice escolhido).
@@ -247,8 +255,34 @@
     - Mão do oponente vazia / mão cheia — não se aplicam.
   - **Nota de migração:** carta NOVA — sem equivalente hoje.
 
+  ### OBSOLESCÊNCIA (`OBSOLESCENCE` — hoje `REVEAL_OLDEST`)
+  - **Custo:** 2⚡ · **Categoria (PDF):** Tabuleiro · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** O jogador seleciona 1 peça do oponente. O sistema marca essa peça como "a
+    mais velha" da fila — ela só sumirá quando o dono colocar a peça que estoura o limite de 3,
+    pela regra normal do infinito. NÃO é destruição imediata: é mais lenta e mais fraca que a
+    versão atual, DE PROPÓSITO — destruição imediata de 1 peça já existe e custa 2⚡ (DEMOLIR).
+    Forma família com ANOMALIA (rara) — ver a nota lá.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim — 1 célula ocupada pelo oponente.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Por RICOCHETE: sim, mas
+    só ANULA — o oponente já escolheu uma peça seguinte SUA, e não há uma peça "sua" equivalente
+    óbvia pra inverter o alvo (ver a regra de fallback em "Regras transversais").
+  - **Casos de borda:**
+    - **Tabuleiro sem alvo válido** (oponente sem peças no tabuleiro): indisponível para jogar.
+    - Mão do oponente vazia / mão cheia — não se aplicam.
+  - **Nota de migração:** RENOMEADA + EFEITO ALTERADO. Sucessora direta do `REVEAL_OLDEST` atual
+    ("VIDENTE" hoje, que marca-e-destrói de verdade via `doomedCell` no início do turno seguinte)
+    — muda nome exibido E id técnico (`REVEAL_OLDEST` → `OBSOLESCENCE`), E o mecanismo de
+    destruição precisa migrar de "matar direto" para "forçar a posição na fila do infinito" — são
+    coisas DIFERENTES no motor atual, isto não é só trocar rótulo. Mudança de raridade/custo
+    também: RARA/2⚡ → ÉPICA/3⚡ nessa migração original. O nome "VIDENTE" passa a ser outra carta,
+    pura informação (Comuns).
+  - **Rebalanceamento (análise de mesa):** ÉPICA/3⚡ → RARA/2⚡. Depois do redesenho acima (parou
+    de matar direto, virou "força posição na fila"), ficou fraca para o preço de épica que ainda
+    ocupava — nivelada de volta para rara, junto com VIDENTE/DEMOLIR/ANTIMAGIA/RICOCHETE/
+    ESPIONAGEM na mesma rodada.
+
   ### ANTIMAGIA (`ANTI_SPELL_TRAP`, novo)
-  - **Custo:** 1⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
+  - **Custo:** 2⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
   - **Efeito exato:** Virada na mesa. Anula a PRÓXIMA carta jogada pelo oponente que NÃO seja
     Lendária nem Boom — cobertura UNIVERSAL por exclusão de raridade, não por categoria de carta
     (a leitura "só Feitiço" foi descartada: deixaria a armadilha cobrindo 4 cartas de 1-2⚡, uma
@@ -262,9 +296,12 @@
     própria Rara, não-lendária/Boom) — ver "Regras transversais" sobre o helper de imunidade.
   - **Casos de borda:** reativa, sem edge case de mão/tabuleiro próprio.
   - **Nota de migração:** carta NOVA.
+  - **Rebalanceamento (análise de mesa):** RARA/1⚡ → RARA/2⚡. Responder a quase qualquer efeito
+    do oponente por 1⚡ destoava do resto do tier — mesmo ajuste aplicado a RICOCHETE, sua
+    contraparte reativa.
 
   ### RICOCHETE (`REFLECT_TRAP`, novo)
-  - **Custo:** 1⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
+  - **Custo:** 2⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
   - **Efeito exato:** Virada na mesa. Dispara contra QUALQUER efeito do oponente direcionado a
     você ou aos seus recursos (categoria, não a lista de 3 exemplos do PDF — que era exaustiva só
     enquanto o baralho era pequeno). Ver a regra de fallback (inverte quando bem definido, anula
@@ -273,12 +310,8 @@
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal, no momento de armar).
   - **Casos de borda:** reativa, sem edge case de mão/tabuleiro próprio.
   - **Nota de migração:** carta NOVA.
-
-  ---
-
-  ## Épicas — 15%
-
-  Impacto direto: dano, cura, punições severas, informação pesada.
+  - **Rebalanceamento (análise de mesa):** RARA/1⚡ → RARA/2⚡. Mesma razão de ANTIMAGIA — resposta
+    a quase qualquer efeito por 1⚡ destoava do resto do tier.
 
   ### ESPIONAGEM (`INTEL_REVEAL`, novo)
   - **Custo:** 2⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
@@ -296,6 +329,15 @@
     - Mão cheia (do caster) / tabuleiro — não se aplicam.
   - **Nota de migração:** carta NOVA — o `SPY_CARD` atual ("ESPIONAGEM" hoje) já não faz isto (ele
     revela E descarta) e virou SABOTAGEM.
+  - **Rebalanceamento (análise de mesa):** ÉPICA/2⚡ → RARA/2⚡ (custo mantido, só o tier muda).
+    Revelar 2 cartas sem descartar nada destoava do resto das épicas (dano, cura, punições
+    severas) — nivelada para o tier de informação/manipulação onde ESPIADA e SAQUE já estão.
+
+  ---
+
+  ## Épicas — 15%
+
+  Impacto direto: dano, cura, punições severas, informação pesada.
 
   ### PURIFICAR (`CLEANSE`)
   - **Custo:** 2⚡ · **Categoria (PDF):** Feitiço · **Tipo (motor):** `ACTION`
@@ -423,27 +465,6 @@
     o problema. A Fase 1 precisa de um caminho que conceda a segunda colocação SEM passar pelo
     refil (ver nota na seção "Energia", abaixo — é a mesma tarefa de reescrever `refillEnergy` para
     a regra nova, não uma tarefa separada).
-
-  ### OBSOLESCÊNCIA (`OBSOLESCENCE` — hoje `REVEAL_OLDEST`)
-  - **Custo:** 3⚡ · **Categoria (PDF):** Tabuleiro · **Tipo (motor):** `ACTION`
-  - **Efeito exato:** O jogador seleciona 1 peça do oponente. O sistema marca essa peça como "a
-    mais velha" da fila — ela só sumirá quando o dono colocar a peça que estoura o limite de 3,
-    pela regra normal do infinito. NÃO é destruição imediata: é mais lenta e mais fraca que a
-    versão atual, DE PROPÓSITO — destruição imediata de 1 peça já existe e custa só 1⚡ (DEMOLIR).
-    Forma família com ANOMALIA (rara) — ver a nota lá.
-  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim — 1 célula ocupada pelo oponente.
-  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Por RICOCHETE: sim, mas
-    só ANULA — o oponente já escolheu uma peça seguinte SUA, e não há uma peça "sua" equivalente
-    óbvia pra inverter o alvo (ver a regra de fallback em "Regras transversais").
-  - **Casos de borda:**
-    - **Tabuleiro sem alvo válido** (oponente sem peças no tabuleiro): indisponível para jogar.
-    - Mão do oponente vazia / mão cheia — não se aplicam.
-  - **Nota de migração:** RENOMEADA + EFEITO ALTERADO. Sucessora direta do `REVEAL_OLDEST` atual
-    ("VIDENTE" hoje, que marca-e-destrói de verdade via `doomedCell` no início do turno seguinte)
-    — muda nome exibido E id técnico (`REVEAL_OLDEST` → `OBSOLESCENCE`), E o mecanismo de
-    destruição precisa migrar de "matar direto" para "forçar a posição na fila do infinito" — são
-    coisas DIFERENTES no motor atual, isto não é só trocar rótulo. Mudança de raridade/custo
-    também: RARA/2⚡ → ÉPICA/3⚡. O nome "VIDENTE" passa a ser outra carta, pura informação (Raras).
 
   ### ATAQUE (`DIRECT_DAMAGE`)
   - **Custo:** 3⚡ · **Categoria (PDF):** Combate · **Tipo (motor):** `ACTION`

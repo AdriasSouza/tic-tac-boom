@@ -163,9 +163,9 @@ const BREAK_PIECE: CardDefinition = {
   type: 'ACTION',
   description: 'Escolha uma peça no tabuleiro e destrua.',
   targeting: 'OCCUPIED_CELL',
-  rarity: 'COMMON',
+  rarity: 'RARE',
   weight: 3,
-  cost: 1,
+  cost: 2,
 
   requiresTarget: true,
 
@@ -451,9 +451,9 @@ const MARK_DOOMED: CardDefinition = {
   type: 'ACTION',
   description: 'Marca uma peça do oponente para ser a próxima a sumir da fila do "infinito" dele.',
   targeting: 'OCCUPIED_CELL',
-  rarity: 'EPIC',
+  rarity: 'RARE',
   weight: 3,
-  cost: 3,
+  cost: 2,
   targetsOpponentResource: true,
 
   requiresTarget: true,
@@ -598,9 +598,9 @@ const HIGHLIGHT_OLDEST: CardDefinition = {
   type: 'ACTION',
   description: 'Destaca a peça mais antiga do oponente no tabuleiro.',
   targeting: 'NONE',
-  rarity: 'RARE',
+  rarity: 'COMMON',
   weight: 2,
-  cost: 2,
+  cost: 1,
 
   canPlay: ({ state, caster }) => occupiedIndexes(state, opponentOf(caster)).length > 0,
 
@@ -753,7 +753,7 @@ const INTEL_REVEAL: CardDefinition = {
   type: 'ACTION',
   description: 'Abra a mão oculta do oponente e revele até 2 cartas, sem descartar.',
   targeting: 'NONE',
-  rarity: 'EPIC',
+  rarity: 'RARE',
   weight: 2,
   cost: 2,
   readsOrRemovesFromHand: true,
@@ -1174,7 +1174,7 @@ const ANTI_SPELL_TRAP: CardDefinition = {
   targeting: 'NONE',
   rarity: 'RARE',
   weight: 2,
-  cost: 1,
+  cost: 2,
 
   triggerCondition: (event) =>
     event.type === 'CARD_ABOUT_TO_RESOLVE' && !isImmuneToTraps(getCard(event.cardId).rarity),
@@ -1262,7 +1262,7 @@ const REFLECT_TRAP: CardDefinition = {
   targeting: 'NONE',
   rarity: 'RARE',
   weight: 2,
-  cost: 1,
+  cost: 2,
 
   triggerCondition: (event) =>
     event.type === 'CARD_ABOUT_TO_RESOLVE' &&

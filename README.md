@@ -61,7 +61,7 @@ em [`docs/CARTAS.md`](docs/CARTAS.md).
 | **LIMPAR** (`CLEAR_BLOCK`) | Comum | 1⚡ | `ACTION` | Modo mira: libera a célula interditada pelo caos |
 | **PURIFICAR** (`CLEANSE`) | Comum | 1⚡ | `ACTION` | Modo mira: libera uma célula de qualquer efeito persistente — bloqueio do caos ou lacre da TRAVAR |
 | **TRAVAR** (`LOCK_CELL`) | Comum | 1⚡ | `ACTION` | Modo mira: lacra uma célula vazia por 2 turnos globais |
-| **DEMOLIR** (`BREAK_PIECE`) | Comum | 1⚡ | `ACTION` | Modo mira: destrói uma peça do tabuleiro, inclusive as suas |
+| **DEMOLIR** (`BREAK_PIECE`) | Rara | 2⚡ | `ACTION` | Modo mira: destrói uma peça do tabuleiro, inclusive as suas |
 | **ESPIADA** (`PEEK_RANDOM`) | Rara | 1⚡ | `ACTION` | Revela uma carta aleatória da mão do oponente |
 | **PROTEÇÃO** (`SHIELD_TRAP`) | Rara | 1⚡ | `TRAP` | Vira na mesa. Anula o SAQUE ou a ESPIONAGEM do oponente contra você, destruindo a armadilha |
 | **PROCRASTINAR** (`DRAW_CARD`) | Rara | 2⚡ | `ACTION` | Compra 2 cartas novas |
