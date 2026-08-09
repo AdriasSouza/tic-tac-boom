@@ -14,6 +14,13 @@ export interface CardFocusModalProps {
   cardId: CardId;
   /** Se o botão de confirmar deve estar habilitado (turno, fase, `canPlay` da carta, espaço na mesa). */
   canConfirm: boolean;
+  /**
+   * Motivo do botão estar desabilitado, já resolvido por `<CardHand />`
+   * (turno ➜ giro de TIC TAC BOOM ➜ energia ➜ condição específica da carta).
+   * `null` quando `canConfirm` é `true` — antes disto o botão só esmaecia
+   * sem dizer por quê.
+   */
+  disabledReason: string | null;
   onCancel: () => void;
   onConfirm: () => void;
 }
@@ -31,7 +38,13 @@ export interface CardFocusModalProps {
  *   acontece a seguir é o `<CardHand />` (arma `pendingAction` e devolve o
  *   tabuleiro ao modo mira); TRAPs sempre armam direto.
  */
-function CardFocusModalComponent({ cardId, canConfirm, onCancel, onConfirm }: CardFocusModalProps) {
+function CardFocusModalComponent({
+  cardId,
+  canConfirm,
+  disabledReason,
+  onCancel,
+  onConfirm,
+}: CardFocusModalProps) {
   const card = getCard(cardId);
   const accent = card.type === 'ACTION' ? colors.markX : colors.markO;
   const confirmLabel = card.type === 'TRAP' ? 'ARMAR' : 'USAR';
@@ -95,6 +108,13 @@ function CardFocusModalComponent({ cardId, canConfirm, onCancel, onConfirm }: Ca
             </View>
 
             <Text style={styles.description}>{card.description}</Text>
+
+            {/* Só aparece junto do botão desabilitado — antes disto o
+                jogador só via a opacidade reduzida, sem saber se era energia,
+                turno, ou outra coisa bloqueando. */}
+            {!canConfirm && disabledReason && (
+              <Text style={styles.disabledReason}>{disabledReason}</Text>
+            )}
 
             <View style={styles.actions}>
               <PixelButton
@@ -187,6 +207,14 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     textAlign: 'center',
     opacity: 0.85,
+  },
+  disabledReason: {
+    marginTop: 10,
+    color: colors.danger,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    textAlign: 'center',
   },
   actions: {
     alignSelf: 'stretch',

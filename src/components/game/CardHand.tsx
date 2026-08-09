@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  BackHandler,
   Pressable,
   StyleSheet,
   Text,
@@ -86,7 +87,9 @@ export function CardHand({ style }: CardHandProps) {
   // `useCanPlayCardsNow` no lugar de `selectCanPlayCards`: o seletor original
   // testa `turn === 'PLAYER'`, o que travaria permanentemente quem entrou
   // como `player2` numa sala online (do lado dele o combatente local é
-  // `MACHINE`). Fora do online os dois são equivalentes.
+  // `MACHINE`). Fora do online os dois são equivalentes de verdade —
+  // `useIsLocalTurn` consulta `controlledCombatants` (hot-seat controla os
+  // dois lados, CPU só `PLAYER`), não mais um `true` incondicional.
   const canPlayCards = useCanPlayCardsNow();
   const isLocalTurn = useIsLocalTurn();
   const isOnline = useMultiplayerStore(selectMultiplayerStatus) === 'MATCH_STARTED';
@@ -117,6 +120,23 @@ export function CardHand({ style }: CardHandProps) {
   const canConfirmFocused = useGameStore(
     useMemo(() => selectCanUseCard(focusedUid ?? ''), [focusedUid]),
   );
+
+  /**
+   * Motivo mais provável do botão "USAR"/"ARMAR" estar desabilitado,
+   * reconstituído na camada de apresentação a partir dos MESMOS sinais que já
+   * travam o arrasto (`canDrag`, ver o `.map()` mais abaixo) — sem mudar
+   * `selectCanUseCard`/a store, só explica pro jogador qual condição é a
+   * culpada, na mesma ordem em que a guarda de fato checa (turno ➜ giro ➜
+   * energia ➜ condição específica da carta, ex.: slot de armadilha cheio).
+   * Sem isto o botão só ficava esmaecido, igual à mão, sem dizer por quê.
+   */
+  const focusDisabledReason = useMemo(() => {
+    if (canConfirmFocused || !focusedEntry) return null;
+    if (!canPlayCards) return 'NÃO É SUA VEZ';
+    if (isChaosRouletteSpinning) return 'AGUARDE O GIRO TERMINAR';
+    if (getCard(focusedEntry.cardId).cost > currentEnergy) return 'ENERGIA INSUFICIENTE';
+    return 'CONDIÇÃO DA CARTA NÃO ATENDIDA';
+  }, [canConfirmFocused, focusedEntry, canPlayCards, isChaosRouletteSpinning, currentEnergy]);
 
   const handleFocusCard = useCallback(
     (uid: string) => {
@@ -229,6 +249,25 @@ export function CardHand({ style }: CardHandProps) {
   }, []);
 
   /**
+   * Botão físico de voltar (Android) cancela a mira, mesma paridade que os
+   * outros 4 `kind`s de `pendingInteraction` já têm via `onRequestClose` do
+   * `<Modal>` nativo (`InteractionModal`/`AltarModal`). `BOARD_TARGET` não é
+   * um `Modal` — é o tabuleiro + a faixa de instrução abaixo — então precisa
+   * do próprio listener; sem isto, "voltar" durante a mira saía da tela do
+   * jogo em vez de só cancelar a carta.
+   */
+  useEffect(() => {
+    if (!isTargeting) return;
+
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleCancelTargeting();
+      return true; // consome o evento — não deixa o Android navegar pra trás
+    });
+
+    return () => subscription.remove();
+  }, [isTargeting, handleCancelTargeting]);
+
+  /**
    * Geometria pré-calculada: recomputa quando a mão ou a tela mudam.
    *
    * O espaçamento tem DOIS tetos, e vence o menor:
@@ -265,7 +304,10 @@ export function CardHand({ style }: CardHandProps) {
     <View style={[styles.root, style]}>
       {/* Vez do oponente: sem um aviso, a mão simplesmente para de responder e
           o jogador não tem como saber se travou ou se é a vez do outro. Só
-          aparece no online — nos modos local/CPU `isLocalTurn` é sempre true. */}
+          aparece no online — em hot-seat `isLocalTurn` é sempre true (os dois
+          lados são o mesmo humano); em CPU ele reflete a vez de verdade (ver
+          `useIsLocalTurn`), mas a dimmed da mão já basta lá, sem precisar
+          deste banner especificamente online. */}
       {isOnline && !isLocalTurn && (
         <Animated.View
           entering={FadeIn.duration(160)}
@@ -288,7 +330,13 @@ export function CardHand({ style }: CardHandProps) {
             <Text style={styles.targetBannerText}>
               ◎ ESCOLHA UM ALVO · {getCard(pendingInteraction.cardId).name}
             </Text>
-            <Text style={styles.targetBannerCancel}>TOQUE AQUI PARA CANCELAR</Text>
+            {/* Selo próprio, separado da linha de instrução acima — reforça
+                que ESTA parte específica é a ação de cancelar, no mesmo
+                idioma visual (borda chapada) dos botões "CANCELAR" que os
+                outros 4 `kind`s de `pendingInteraction` já mostram em modal. */}
+            <View style={styles.targetBannerCancelChip}>
+              <Text style={styles.targetBannerCancel}>TOQUE AQUI PARA CANCELAR</Text>
+            </View>
           </Pressable>
         </Animated.View>
       )}
@@ -301,11 +349,13 @@ export function CardHand({ style }: CardHandProps) {
             const { baseX, baseY, baseRotation } = layout[index];
             const isSelected =
               pendingInteraction?.kind === 'BOARD_TARGET' && pendingInteraction.cardUid === uid;
-            // Energia insuficiente trava a carta pelo MESMO mecanismo visual
-            // de "não é sua vez"/"mira ativa": `canDrag={false}` já esmaece
-            // via `cardDisabled` no `<CardItem />` (opacidade reduzida) e
-            // desliga o gesto de arrastar — nenhum estilo novo precisou ser
-            // criado, só mais uma condição na mesma trava.
+            // Energia insuficiente trava o ARRASTO pelo MESMO mecanismo de
+            // "não é sua vez"/"mira ativa" (entra no `canDrag` abaixo), mas
+            // também vai sozinha pro `<CardItem />` como `canAfford`: dos
+            // motivos que esmaecem a carta, só este o jogador resolve sozinho
+            // esperando energia, e por isso ganha um sinal PRÓPRIO (selo de
+            // custo vermelho) em vez de se perder na mesma opacidade reduzida
+            // de "fora da vez"/"interação pendente".
             const canAfford = getCard(cardId).cost <= currentEnergy;
 
             return (
@@ -333,6 +383,7 @@ export function CardHand({ style }: CardHandProps) {
                   !isChaosRouletteSpinning &&
                   canAfford
                 }
+                canAfford={canAfford}
                 isSelected={isSelected}
                 isDragging={draggingIndex === index}
                 // Destaque de cursor: independente de `canDrag`. Uma carta que
@@ -356,6 +407,7 @@ export function CardHand({ style }: CardHandProps) {
         <CardFocusModal
           cardId={focusedEntry.cardId}
           canConfirm={canConfirmFocused}
+          disabledReason={focusDisabledReason}
           onCancel={handleCancelFocus}
           onConfirm={handleConfirmFocus}
         />
@@ -412,11 +464,17 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 2,
   },
+  targetBannerCancelChip: {
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: colors.textDim,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
   targetBannerCancel: {
     color: colors.textDim,
     fontSize: 7,
     letterSpacing: 2,
-    marginTop: 2,
   },
   empty: {
     color: colors.textDim,

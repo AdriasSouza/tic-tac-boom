@@ -16,6 +16,7 @@ import Animated, {
 
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
+import { RARITY_LABEL, fuseRarity } from '@/engine/cards/definitions';
 import { getCard } from '@/engine/cards/registry';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { netCancelInteraction, netResolveInteraction } from '@/services/syncBridge';
@@ -358,6 +359,21 @@ export function AltarModal() {
 
   const canConfirm = selection.slots[0] !== null && selection.slots[1] !== null;
 
+  /**
+   * Piso de raridade da fusão, assim que os 2 slots preenchem — `fuseRarity`
+   * é pura e barata (`definitions.ts`), só nunca tinha sido chamada antes do
+   * `effect()` da carta resolver de verdade. Mostrar isto não estraga a
+   * surpresa que o design documentado protege (a carta ESPECÍFICA sorteada
+   * dentro da raridade continua oculta até confirmar) — só antecipa algo já
+   * determinístico que o jogador poderia calcular sozinho olhando as duas
+   * raridades nos slots.
+   */
+  const resultRarity = useMemo(() => {
+    const [cardA, cardB] = slotCards;
+    if (!cardA || !cardB) return null;
+    return fuseRarity(getCard(cardA.cardId).rarity, getCard(cardB.cardId).rarity);
+  }, [slotCards]);
+
   const handleConfirm = useCallback(() => {
     const [uidA, uidB] = selection.slots;
     if (uidA === null || uidB === null) return;
@@ -430,6 +446,14 @@ export function AltarModal() {
                 ))
               )}
             </View>
+
+            {resultRarity && (
+              <View style={[styles.resultTag, { borderColor: RARITY_COLOR[resultRarity] }]}>
+                <Text style={[styles.resultTagText, { color: RARITY_COLOR[resultRarity] }]}>
+                  RESULTADO: {RARITY_LABEL[resultRarity]}
+                </Text>
+              </View>
+            )}
 
             <PixelButton
               label="CONFIRMAR SACRIFÍCIO"
@@ -589,6 +613,19 @@ const styles = StyleSheet.create({
     color: colors.winGlow,
     fontSize: 9,
     fontWeight: '900',
+  },
+  resultTag: {
+    marginTop: 16,
+    borderWidth: 2,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    alignSelf: 'stretch',
+    alignItems: 'center',
+  },
+  resultTagText: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 2,
   },
   action: {
     alignSelf: 'stretch',

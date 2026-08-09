@@ -1,4 +1,5 @@
 import { COMBATANT_BY_SLOT } from '@/services/syncBridge';
+import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { selectStatus, selectTurn, useGameStore } from '@/store/gameStore';
 import {
   selectMultiplayerStatus,
@@ -16,16 +17,25 @@ import {
  * imperativa não dispara isso — a UI ficaria travada até algum outro estado
  * mudar por acaso.
  *
- * Fora do modo online devolve `true`: os modos local e CPU não têm "vez do
- * outro aparelho", e quem decide o que é jogável continua sendo o
- * `canPlaceAt`/`selectCanPlayCards` de sempre.
+ * Fora do modo online, usa `controlledCombatants` (`useMatchPerspective`) em
+ * vez de devolver `true` incondicionalmente — hot-seat (`/game/local`)
+ * controla os dois lados, então QUALQUER turno é "meu" (`includes` sempre
+ * `true`, comportamento inalterado); CPU controla só `PLAYER`, então a vez de
+ * `MACHINE` agora corretamente devolve `false`. Antes disto, durante o
+ * "pensamento" da CPU a mão continuava brilhando e arrastável, e o botão de
+ * passar a vez continuava tocável — a jogada era recusada em silêncio pela
+ * guarda do motor (`state.turn !== caster`), mas a UI mentia sobre o que
+ * estava disponível.
  */
 export function useIsLocalTurn(): boolean {
   const turn = useGameStore(selectTurn);
   const multiplayerStatus = useMultiplayerStore(selectMultiplayerStatus);
   const playerId = useMultiplayerStore(selectPlayerId);
+  const { controlledCombatants } = useMatchPerspective();
 
-  if (multiplayerStatus !== 'MATCH_STARTED' || playerId === null) return true;
+  if (multiplayerStatus !== 'MATCH_STARTED' || playerId === null) {
+    return controlledCombatants.includes(turn);
+  }
   return turn === COMBATANT_BY_SLOT[playerId];
 }
 

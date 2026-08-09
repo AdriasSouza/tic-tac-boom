@@ -91,6 +91,15 @@ export interface CardItemProps {
   playZoneBottom: number;
   /** Gate reativo: turno do jogador, partida em andamento e sem mira ativa. */
   canDrag: boolean;
+  /**
+   * Energia atual cobre o custo desta carta? Independente de `canDrag` —
+   * `canDrag` funde vários motivos de bloqueio (energia, turno, interação
+   * pendente, giro de TIC TAC BOOM) na mesma opacidade reduzida, e dos
+   * quatro só energia é algo que o jogador resolve sozinho esperando. O
+   * selo de custo usa isto para virar vermelho SÓ nesse caso, sem duplicar
+   * a trava inteira.
+   */
+  canAfford: boolean;
   /** Esta é a carta em modo mira? */
   isSelected: boolean;
   /** z-index elevado enquanto arrasta. */
@@ -142,6 +151,7 @@ function CardItemComponent({
   baseRotation,
   playZoneBottom,
   canDrag,
+  canAfford,
   isSelected,
   isDragging,
   isHovered,
@@ -434,16 +444,24 @@ function CardItemComponent({
               style={[
                 styles.costTag,
                 {
-                  borderColor: colors.winGlow,
+                  borderColor: canAfford ? colors.winGlow : colors.danger,
                   paddingHorizontal: Math.round(4 * s),
                   paddingVertical: Math.round(1 * s),
                 },
               ]}
             >
               <Text
-                style={[styles.costTagText, { fontSize: Math.max(6, Math.round(8 * s)) }]}
+                style={[
+                  styles.costTagText,
+                  { color: canAfford ? colors.winGlow : colors.danger, fontSize: Math.max(6, Math.round(8 * s)) },
+                ]}
                 numberOfLines={1}
               >
+                {/* Em `compact` a linha de tipo (única outra pista de "precisa de
+                    alvo") some — ver comentário acima. Repetir o glifo aqui evita
+                    que o jogador só descubra depois de já ter soltado a carta.
+                    Em `regular`/`wide` a linha de tipo já mostra, então não repete. */}
+                {layoutMode === 'compact' && requiresTarget ? '◎ ' : ''}
                 {card.cost}⚡
               </Text>
             </View>
@@ -460,6 +478,11 @@ function CardItemComponent({
             style={[styles.name, { fontSize: Math.max(7, Math.round(9 * s)) }]}
             numberOfLines={2}
           >
+            {/* "▼" avisa, em QUALQUER layout mode (a linha de tipo por extenso
+                some em compact), que esta carta vira pra baixo no tabuleiro em
+                vez de resolver na hora — hoje só TRAP, `COUNTER` ainda não tem
+                carta registrada. */}
+            {card.type === 'TRAP' ? '▼ ' : ''}
             {card.name}
           </Text>
         </Animated.View>
