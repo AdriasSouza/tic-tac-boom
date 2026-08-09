@@ -62,6 +62,30 @@ import type { GameEvent } from '@/engine/events';
 const ROUND_TRANSITION_DELAY_MS = 1300;
 
 /**
+ * Cronograma do giro de TIC TAC BOOM! (CHAOS_ROULETTE), em ms desde a
+ * resolução da carta. Índice = coluna do grid (`index % 3`): 0 esquerda,
+ * 1 meio, 2 direita. FONTE ÚNICA — `<Cell />` usa para saber quando travar o
+ * próprio glifo, `<ChaosRouletteBanner />` usa para cronometrar "TIC"/"TAC"/
+ * "BOOM!", e este arquivo usa o ÚLTIMO valor para saber quando
+ * `chaosRouletteSpinning` volta a `false`. Mudar aqui move as três coisas
+ * juntas — nunca duplicar estes números em outro arquivo.
+ */
+export const CHAOS_ROULETTE_COLUMN_STOP_MS: readonly [number, number, number] = [900, 1700, 2500];
+
+/** Intervalo entre trocas de glifo enquanto uma célula ainda gira. */
+export const CHAOS_ROULETTE_FLICKER_MS = 90;
+
+/** Fade de entrada/saída do destaque laranja por célula. */
+export const CHAOS_ROULETTE_FADE_MS = 120;
+
+/**
+ * Quanto "BOOM!" fica na tela após a coluna final travar — cosmético só;
+ * NÃO estende `chaosRouletteSpinning`, que já desliga em
+ * `CHAOS_ROULETTE_COLUMN_STOP_MS[2]`.
+ */
+export const CHAOS_ROULETTE_BANNER_HOLD_MS = 500;
+
+/**
  * Tudo que precisa acontecer quando um combatente PASSA a jogar agora: regen
  * de energia (por padrão).
  *
@@ -389,6 +413,9 @@ const createInitialState = (): GameState => ({
   nextDamageEventId: 0,
   lastExtraTurn: null,
   nextExtraTurnId: 0,
+  lastChaosRoulette: null,
+  nextChaosRouletteId: 0,
+  chaosRouletteSpinning: false,
   lastNotice: null,
   nextNoticeId: 0,
   isPaused: false,
@@ -446,6 +473,27 @@ function clearRoundTransition(): void {
 }
 
 /* -------------------------------------------------------------------------- */
+/*                    GIRO DE TIC TAC BOOM! (CHAOS_ROULETTE)                  */
+/* -------------------------------------------------------------------------- */
+/* Mesmo racional da seção acima: maquinário de agendamento, fora do Zustand. */
+
+let chaosRouletteLockTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Cancela o desbloqueio agendado, se houver.
+ *
+ * Chamado por `startMatch`/`startNextRound` — mesmo racional de
+ * `clearRoundTransition`: evita um timer órfão de uma partida/rodada
+ * anterior desbloquear (ou, pior, cortar pela metade) o giro de uma NOVA.
+ */
+function clearChaosRouletteLock(): void {
+  if (chaosRouletteLockTimer !== null) {
+    clearTimeout(chaosRouletteLockTimer);
+    chaosRouletteLockTimer = null;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /*                       FILA DE CONFIRMAÇÃO MANUAL (acknowledge)             */
 /* -------------------------------------------------------------------------- */
 /* Mesmo racional das duas seções acima: maquinário de agendamento, fora do
@@ -488,7 +536,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
    * mover o agendamento para dentro da própria action, o avanço de rodada
    * deixa de depender de qualquer componente estar montado.
    */
-  function scheduleRoundTransition(): void {
+  function scheduleRoundTransition(delayMs: number = ROUND_TRANSITION_DELAY_MS): void {
     clearRoundTransition();
     roundTransitionTimer = setTimeout(() => {
       roundTransitionTimer = null;
@@ -496,7 +544,19 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // meio-tempo, o status não é mais ROUND_OVER e isto vira um no-op —
       // sem precisar de um token/epoch adicional para invalidar o timer.
       if (get().status === 'ROUND_OVER') get().startNextRound();
-    }, ROUND_TRANSITION_DELAY_MS);
+    }, delayMs);
+  }
+
+  /**
+   * Agenda o fim da trava de UI do giro de TIC TAC BOOM!, no último stop do
+   * cronograma (`CHAOS_ROULETTE_COLUMN_STOP_MS[2]`).
+   */
+  function scheduleChaosRouletteUnlock(): void {
+    clearChaosRouletteLock();
+    chaosRouletteLockTimer = setTimeout(() => {
+      chaosRouletteLockTimer = null;
+      set({ chaosRouletteSpinning: false });
+    }, CHAOS_ROULETTE_COLUMN_STOP_MS[2]);
   }
 
   /**
@@ -677,15 +737,51 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
     const patch: Partial<GameState> = { ...basePatch, ...safePatch };
 
+    /**
+     * TIC TAC BOOM! (CHAOS_ROULETTE): montado ANTES do `findWinner` abaixo,
+     * de propósito — colocado depois do `return` do ramo de vitória (como
+     * `triggersChaosGlitch` mais abaixo) o giro NUNCA rodaria quando o
+     * embaralhamento também fecha linha na hora, e esse é um caso real e
+     * testado ("fechamento duplo ponta a ponta", mais abaixo neste arquivo).
+     * `id` monotônico: mesmo padrão de `lastExtraTurn`/`lastDamageEvent`,
+     * garante replay mesmo quando o board resultante é idêntico ao de uma
+     * jogada anterior.
+     */
+    let chaosRoulettePatch: Partial<GameState> | null = null;
+    if (cardId === 'CHAOS_ROULETTE') {
+      const id = get().nextChaosRouletteId;
+      chaosRoulettePatch = {
+        lastChaosRoulette: { caster, id },
+        nextChaosRouletteId: id + 1,
+        chaosRouletteSpinning: true,
+      };
+      scheduleChaosRouletteUnlock();
+    }
+
     // Cartas podem mover/remover peças, então revalidamos a linha vencedora
     // — é exatamente o recheck que faltava em `resolveCounterTraps`.
     const outcome = findWinner(safePatch.board ?? get().board);
 
     if (outcome) {
-      set({ ...patch, status: 'ROUND_OVER', roundWinner: outcome.winner, winningLine: outcome.line });
+      set({
+        ...patch,
+        ...chaosRoulettePatch,
+        status: 'ROUND_OVER',
+        roundWinner: outcome.winner,
+        winningLine: outcome.line,
+      });
       get().pushLog({ code: 'ROUND_WIN', subject: outcome.winner });
       get().takeDamage(outcome.winner === 'PLAYER' ? 'MACHINE' : 'PLAYER', ROUND_DAMAGE);
-      if (get().status !== 'MATCH_OVER') scheduleRoundTransition();
+      if (get().status !== 'MATCH_OVER') {
+        // Giro em andamento: a transição de rodada espera o giro (+ hold do
+        // banner) terminar — senão `startNextRound` limpa o tabuleiro por
+        // baixo de uma animação que ainda não acabou.
+        scheduleRoundTransition(
+          chaosRoulettePatch
+            ? Math.max(ROUND_TRANSITION_DELAY_MS, CHAOS_ROULETTE_COLUMN_STOP_MS[2] + CHAOS_ROULETTE_BANNER_HOLD_MS)
+            : undefined,
+        );
+      }
       return;
     }
 
@@ -699,6 +795,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
     set({
       ...patch,
+      ...chaosRoulettePatch,
       ...(nextTurnInfo
         ? { turn: opponentOf(caster), turnCount: get().turnCount + 1, ...nextTurnInfo.patch }
         : null),
@@ -1309,6 +1406,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     const usedSeed = seedMatch(seed);
     resetEventBus(); // eventos da partida anterior não vazam para a nova
     clearRoundTransition();
+    clearChaosRouletteLock();
     clearAcknowledgementQueue(); // confirmação pendente de uma partida abandonada não sobrevive
     /**
      * `{ ...createInitialState() }` é uma substituição TOTAL do estado — e é
@@ -1334,6 +1432,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
   startNextRound: () => {
     clearRoundTransition();
+    clearChaosRouletteLock();
     set((state) => {
       // Quem perdeu a rodada joga primeiro na próxima — e "jogar primeiro"
       // é início de turno como qualquer outro para fins de ⚡.
@@ -1397,6 +1496,13 @@ export const useGameStore = create<GameStore>()((set, get) => {
         // VISÃO ABSOLUTA: pertence ao turno da rodada que acabou de fechar —
         // mesma classe de limpeza incondicional que os campos acima.
         fullIntelRevealFor: null,
+        // Higiene defensiva: por construção o giro (se houver) já terminou
+        // antes desta transição rodar (`scheduleRoundTransition` espera pelo
+        // menos `CHAOS_ROULETTE_COLUMN_STOP_MS[2] + CHAOS_ROULETTE_BANNER_HOLD_MS`
+        // quando `chaosRoulettePatch` está presente), mas nada aqui depende
+        // dessa garantia se sobreviver — mesma classe de reset que os campos
+        // acima.
+        chaosRouletteSpinning: false,
       };
     });
   },
@@ -1783,6 +1889,15 @@ export const selectLastNotice = (s: GameStore) => s.lastNotice;
  * logo abaixo da store.
  */
 export const selectLastExtraTurn = (s: GameStore) => s.lastExtraTurn;
+
+/** Giro de TIC TAC BOOM! mais recente, com `id` monotônico. Alimenta o
+ * cronograma de `<Cell />` e `<ChaosRouletteBanner />`. */
+export const selectLastChaosRoulette = (s: GameStore) => s.lastChaosRoulette;
+
+/** O giro ainda está em cascata? Trava `<Cell />`/`<CardHand />` enquanto a
+ * apresentação não termina (ver comentário de `chaosRouletteSpinning` no
+ * `GameState`). */
+export const selectIsChaosRouletteSpinning = (s: GameStore) => s.chaosRouletteSpinning;
 
 /** Turnos globais restantes até a regra caótica atual expirar. `null` se não houver prazo. */
 export const selectRuleTurnsLeft = (s: GameStore) =>

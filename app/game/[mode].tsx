@@ -15,6 +15,7 @@ import AcknowledgementModal from '@/components/ui/AcknowledgementModal';
 import AltarModal from '@/components/ui/AltarModal';
 import InteractionModal from '@/components/ui/InteractionModal';
 import ExtraTurnBanner from '@/components/ui/ExtraTurnBanner';
+import ChaosRouletteBanner from '@/components/ui/ChaosRouletteBanner';
 import NoticeToast from '@/components/ui/NoticeToast';
 import OpponentDisconnectedModal from '@/components/ui/OpponentDisconnectedModal';
 import OpponentLeftModal from '@/components/ui/OpponentLeftModal';
@@ -240,6 +241,7 @@ export default function GameScreen() {
       <DamageFlashOverlay />
       <NoticeToast />
       <ExtraTurnBanner />
+      <ChaosRouletteBanner />
       <AcknowledgementModal />
       {/* Abre sozinho ao ler `lastAltarPrompt` do store — só para quem jogou
           a carta (`caster === localCombatant`, checado dentro do próprio

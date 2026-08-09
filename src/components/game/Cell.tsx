@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { memo, useCallback, useEffect, useMemo } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import Animated, {
   Easing,
@@ -32,11 +32,16 @@ import {
   selectIsValidTarget,
   selectIsVanishing,
   selectIsWinningCell,
+  selectLastChaosRoulette,
   useGameStore,
+  CHAOS_ROULETTE_COLUMN_STOP_MS,
+  CHAOS_ROULETTE_FADE_MS,
+  CHAOS_ROULETTE_FLICKER_MS,
   type Combatant,
   type Mark,
 } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
+import { RARITY_COLOR } from '@/theme/rarity';
 
 /* -------------------------------------------------------------------------- */
 /*                                  CONSTANTES                                 */
@@ -176,6 +181,51 @@ function CellComponent({ index, size }: CellProps) {
     return () => cancelAnimation(visionGlow);
   }, [isHighlightedByVidente, visionGlow]);
 
+  /** --- Giro de TIC TAC BOOM! (CHAOS_ROULETTE) -----------------------------
+   * Reage ao `id` (não ao payload), mesmo racional de `<ExtraTurnBanner />`:
+   * sobrevive a double-invoke de efeito em dev e refaz mesmo em replay
+   * idêntico. O glifo "verdadeiro" ao travar vem de `piece` (já é o board
+   * PÓS-reshuffle, resolvido de forma síncrona por `applyCardEffectResult`)
+   * — nenhum estado adicional precisa ser lido além do que a célula já
+   * assina. Cada coluna trava no seu próprio horário
+   * (`CHAOS_ROULETTE_COLUMN_STOP_MS[column]`), dando o efeito de "esquerda,
+   * meio, direita" pedido. */
+  const lastChaosRoulette = useGameStore(selectLastChaosRoulette);
+  const column = index % 3; // 0 esquerda, 1 meio, 2 direita
+  const [isSpinning, setIsSpinning] = useState(false);
+  const [spinGlyph, setSpinGlyph] = useState<Mark | null>(null);
+  const chaosGlow = useSharedValue(0); // 0..1 — opacidade do destaque laranja
+
+  useEffect(() => {
+    if (!lastChaosRoulette) return;
+
+    setIsSpinning(true);
+    chaosGlow.value = withTiming(1, { duration: CHAOS_ROULETTE_FADE_MS });
+
+    const flicker = setInterval(() => {
+      // Math.random() de propósito, não o canal do RNG determinístico: é
+      // ruído puramente cosmético — os dois clientes de uma partida online
+      // podem (e vão) "girar" com padrões diferentes, só o glifo TRAVADO
+      // precisa bater, e esse vem do board já sincronizado, não deste timer.
+      setSpinGlyph((['X', 'O', null] as const)[Math.floor(Math.random() * 3)]);
+    }, CHAOS_ROULETTE_FLICKER_MS);
+
+    const stop = setTimeout(() => {
+      clearInterval(flicker);
+      setIsSpinning(false);
+      setSpinGlyph(null);
+      chaosGlow.value = withTiming(0, { duration: CHAOS_ROULETTE_FADE_MS });
+    }, CHAOS_ROULETTE_COLUMN_STOP_MS[column]);
+
+    return () => {
+      clearInterval(flicker);
+      clearTimeout(stop);
+      cancelAnimation(chaosGlow);
+    };
+  }, [lastChaosRoulette?.id, column, chaosGlow]);
+
+  const chaosOverlayStyle = useAnimatedStyle(() => ({ opacity: chaosGlow.value }));
+
   /* --- Entrada da peça ----------------------------------------------------
      Depende de `turnPlaced`, não da existência da peça: assim uma peça que
      some e outra que nasce na mesma célula reanimam corretamente.            */
@@ -232,6 +282,13 @@ function CellComponent({ index, size }: CellProps) {
     // Leitura imperativa do estado fresco: a validação não precisa de
     // assinatura reativa, e evita agir sobre um valor de render antigo.
     const state = useGameStore.getState();
+
+    /* --- Trava do giro de TIC TAC BOOM! ------------------------------------
+       Trava só de UI, não regra de jogo (AGENTS.md "Invariantes de
+       domínio") — o board já é o resultado FINAL desde que a carta
+       resolveu, só a apresentação ainda está em curso. Sem `rejectFeedback`:
+       o tabuleiro já piscando de laranja comunica "espera" sozinho. */
+    if (state.chaosRouletteSpinning) return;
 
     /* --- Trava de turno do multiplayer ------------------------------------
        Fora do online `isLocalTurn()` é sempre `true`, então isto some para
@@ -312,6 +369,7 @@ function CellComponent({ index, size }: CellProps) {
         isVanishing,
         isValidTarget,
         isHighlightedByVidente,
+        isSpinning,
       )}
       style={{ width: size, height: size }}
     >
@@ -335,29 +393,47 @@ function CellComponent({ index, size }: CellProps) {
         <View style={styles.bevelLight} pointerEvents="none" />
         <View style={styles.bevelShadow} pointerEvents="none" />
 
-        {isBlocked && <BlockedGlyph size={size} locked={isCardLocked} />}
+        {/* Destaque de TIC TAC BOOM!: sempre montado (opacidade 0 = invisível
+            e sem custo) para permitir um fade de SAÍDA de verdade em vez de
+            só sumir instantaneamente quando `isSpinning` virar `false`. */}
+        <Animated.View style={[styles.chaosRouletteOverlay, chaosOverlayStyle]} pointerEvents="none" />
 
-        {piece && (
-          <Animated.View style={markStyle}>
-            {/* FORMA pelo símbolo, COR pela aliança.
-                A forma é identidade da peça e tem que bater nos dois
-                aparelhos — trocar X por O deixaria os jogadores descrevendo
-                tabuleiros diferentes um para o outro. Já a cor é linguagem
-                de time: "vermelho é meu, azul é dele" vale para os dois
-                lados, e é o que faz o convidado ler o tabuleiro tão rápido
-                quanto o anfitrião em vez de ter que lembrar que ele é o
-                azul. */}
-            {piece.mark === 'X' ? (
-              <MarkX size={size} color={colorFor(piece.owner)} />
-            ) : (
-              <MarkO size={size} color={colorFor(piece.owner)} />
+        {isSpinning ? (
+          spinGlyph &&
+          (spinGlyph === 'X' ? (
+            <MarkX size={size} color={colors.bgDeep} />
+          ) : (
+            <MarkO size={size} color={colors.bgDeep} />
+          ))
+        ) : (
+          <>
+            {isBlocked && <BlockedGlyph size={size} locked={isCardLocked} />}
+
+            {piece && (
+              <Animated.View style={markStyle}>
+                {/* FORMA pelo símbolo, COR pela aliança.
+                    A forma é identidade da peça e tem que bater nos dois
+                    aparelhos — trocar X por O deixaria os jogadores descrevendo
+                    tabuleiros diferentes um para o outro. Já a cor é linguagem
+                    de time: "vermelho é meu, azul é dele" vale para os dois
+                    lados, e é o que faz o convidado ler o tabuleiro tão rápido
+                    quanto o anfitrião em vez de ter que lembrar que ele é o
+                    azul. */}
+                {piece.mark === 'X' ? (
+                  <MarkX size={size} color={colorFor(piece.owner)} />
+                ) : (
+                  <MarkO size={size} color={colorFor(piece.owner)} />
+                )}
+              </Animated.View>
             )}
-          </Animated.View>
+          </>
         )}
 
         {/* Alvo válido: moldura pulsando. Desenhada por cima da peça para o
-            destaque não competir com o pulso de "vai sumir". */}
-        {isValidTarget && (
+            destaque não competir com o pulso de "vai sumir". Suprimido
+            durante o giro: uma célula mostrando glifo falso não tem alvo
+            real para destacar ainda. */}
+        {!isSpinning && isValidTarget && (
           <Animated.View
             style={[styles.targetOverlay, targetOverlayStyle]}
             pointerEvents="none"
@@ -365,13 +441,13 @@ function CellComponent({ index, size }: CellProps) {
         )}
 
         {/* Alvo inválido durante a mira: escurece para dirigir o olhar. */}
-        {isTargeting && !isValidTarget && (
+        {!isSpinning && isTargeting && !isValidTarget && (
           <View style={styles.targetDimmed} pointerEvents="none" />
         )}
 
         {/* Destaque de VIDENTE: peça mais antiga do oponente, visível só para
             quem jogou a carta (ver `isHighlightedByVidente`). */}
-        {isHighlightedByVidente && (
+        {!isSpinning && isHighlightedByVidente && (
           <Animated.View style={[styles.visionOverlay, visionOverlayStyle]} pointerEvents="none" />
         )}
       </Animated.View>
@@ -488,10 +564,14 @@ function buildA11yLabel(
   isVanishing: boolean,
   isValidTarget: boolean,
   isHighlightedByVidente: boolean,
+  isSpinning: boolean,
 ): string {
   const row = Math.floor(index / 3) + 1;
   const col = (index % 3) + 1;
   const base = `Linha ${row}, coluna ${col}`;
+
+  if (isSpinning) return `${base}, girando`;
+
   const target = isValidTarget ? ', alvo válido para a carta' : '';
   const highlight = isHighlightedByVidente ? ', destacada pela VIDENTE' : '';
 
@@ -512,6 +592,13 @@ const styles = StyleSheet.create({
   },
   surfaceWinning: {
     backgroundColor: colors.winGlow,
+  },
+  // Opaco de propósito: durante o giro, cobre completamente o que estiver
+  // por baixo (inclusive `surfaceWinning`) — ver comentário na Fase de
+  // renderização sobre por que isso resolve a precedência sem branch extra.
+  chaosRouletteOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: RARITY_COLOR.BOOM,
   },
   bevelLight: {
     position: 'absolute',

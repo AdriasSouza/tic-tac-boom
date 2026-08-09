@@ -25,6 +25,7 @@ import {
   selectEnergy,
   selectHandOf,
   selectHasPendingAcknowledgement,
+  selectIsChaosRouletteSpinning,
   selectPendingInteraction,
   selectStatus,
   useGameStore,
@@ -94,6 +95,9 @@ export function CardHand({ style }: CardHandProps) {
   // Uma armadilha revelada ou carta de espionagem pausando o jogo: nem
   // arrastar, nem abrir o modo foco fazem sentido enquanto isso está na tela.
   const hasPendingAcknowledgement = useGameStore(selectHasPendingAcknowledgement);
+  // Giro de TIC TAC BOOM! em andamento: mesma trava de UI de `pendingInteraction`/
+  // `pendingAcknowledgement`, ver `selectIsChaosRouletteSpinning`.
+  const isChaosRouletteSpinning = useGameStore(selectIsChaosRouletteSpinning);
   const { width, height } = useWindowDimensions();
   const { cardWidth, cardHeight, fanSpacing, handAreaHeight } = useResponsiveLayout();
 
@@ -320,8 +324,15 @@ export function CardHand({ style }: CardHandProps) {
                 baseRotation={baseRotation}
                 playZoneBottom={playZoneBottom}
                 // Durante QUALQUER interação pendente ninguém arrasta outra
-                // carta: ou resolve, ou cancela a que já está em curso.
-                canDrag={canPlayCards && !isInteracting && !hasPendingAcknowledgement && canAfford}
+                // carta: ou resolve, ou cancela a que já está em curso. O
+                // giro de TIC TAC BOOM! entra na mesma trava.
+                canDrag={
+                  canPlayCards &&
+                  !isInteracting &&
+                  !hasPendingAcknowledgement &&
+                  !isChaosRouletteSpinning &&
+                  canAfford
+                }
                 isSelected={isSelected}
                 isDragging={draggingIndex === index}
                 // Destaque de cursor: independente de `canDrag`. Uma carta que

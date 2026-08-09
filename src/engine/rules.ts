@@ -491,6 +491,27 @@ export interface GameState {
   lastExtraTurn: { target: Combatant; id: number } | null;
   nextExtraTurnId: number;
 
+  /**
+   * Giro de TIC TAC BOOM! (CHAOS_ROULETTE) mais recente. Efêmero, `id`
+   * monotônico — mesmo padrão de `lastExtraTurn`/`lastDamageEvent`: garante
+   * que `<Cell />`/`<ChaosRouletteBanner />` refaçam a animação mesmo quando
+   * o embaralhamento resultar, por acaso, no MESMO board de uma jogada
+   * anterior. Não confundir com `activeRule` (o surto periódico do relógio
+   * global) — são dois sistemas de "caos" completamente diferentes que só
+   * compartilham o nome.
+   */
+  lastChaosRoulette: { caster: Combatant; id: number } | null;
+  nextChaosRouletteId: number;
+
+  /**
+   * O giro do slot-machine de TIC TAC BOOM! ainda está em cascata pelas 3
+   * colunas? Trava de UI, não regra de domínio (ver AGENTS.md "Invariantes
+   * de domínio"): o board já é o resultado FINAL e correto desde o instante
+   * em que a carta resolveu — isto só evita uma jogada colidir visualmente
+   * com a revelação encenada por cima dele.
+   */
+  chaosRouletteSpinning: boolean;
+
   /** Aviso mais recente. Efêmero — alimenta o toast sobre o tabuleiro. */
   lastNotice: Notice | null;
   nextNoticeId: number;

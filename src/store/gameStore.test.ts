@@ -5,7 +5,12 @@ import * as registry from '@/engine/cards/registry';
 import { CENTER_INDEX } from '@/engine/events';
 import { getChannel } from '@/engine/rng';
 import { createEmptyBoard } from '@/engine/rules';
-import { ENERGY_CAP, selectHighlightedOldest, useGameStore } from '@/store/gameStore';
+import {
+  CHAOS_ROULETTE_COLUMN_STOP_MS,
+  ENERGY_CAP,
+  selectHighlightedOldest,
+  useGameStore,
+} from '@/store/gameStore';
 
 /**
  * Testes de integração direto na store — sem React, só `getState()`/
@@ -1019,5 +1024,55 @@ describe('TIC TAC BOOM! (CHAOS_ROULETTE) — fechamento duplo ponta a ponta (Fas
     // WIN_LINES, o desempate oficial (docs/NOTAS_TECNICAS.md).
     expect(state.roundWinner).toBe('PLAYER');
     expect(state.winningLine).toEqual([0, 1, 2]);
+
+    // Regressão direta do efeito visual (Fase 8): o giro precisa disparar
+    // mesmo neste caso — se `lastChaosRoulette` fosse montado DEPOIS do
+    // `return` do ramo de vitória (como `triggersChaosGlitch`), nunca
+    // rodaria aqui.
+    expect(state.lastChaosRoulette).not.toBeNull();
+    expect(state.chaosRouletteSpinning).toBe(true);
+  });
+});
+
+describe('TIC TAC BOOM! (CHAOS_ROULETTE) — evento de giro (efeito visual, Fase 8)', () => {
+  it('popula lastChaosRoulette com o caster e um id novo, e trava chaosRouletteSpinning até o último stop do cronograma', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerHand: [{ uid: 'ttb', cardId: 'CHAOS_ROULETTE' }],
+    });
+
+    // `applyCardEffectResult` agenda `scheduleChaosRouletteUnlock` (setTimeout
+    // real) — segura com fake timers, mesmo padrão dos testes de `forcedVanish`
+    // e do "fechamento duplo" acima.
+    vi.useFakeTimers();
+    expect(useGameStore.getState().playCard('ttb')).toBe(true);
+
+    expect(useGameStore.getState().lastChaosRoulette).toEqual({ caster: 'PLAYER', id: 0 });
+    expect(useGameStore.getState().chaosRouletteSpinning).toBe(true);
+
+    vi.advanceTimersByTime(CHAOS_ROULETTE_COLUMN_STOP_MS[2] - 1);
+    expect(useGameStore.getState().chaosRouletteSpinning).toBe(true); // ainda não
+
+    vi.advanceTimersByTime(1);
+    expect(useGameStore.getState().chaosRouletteSpinning).toBe(false);
+  });
+
+  it('incrementa o id numa segunda jogada, mesmo sem passar a vez entre elas (CHAOS_ROULETTE não consome turno)', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerHand: [
+        { uid: 'a', cardId: 'CHAOS_ROULETTE' },
+        { uid: 'b', cardId: 'CHAOS_ROULETTE' },
+      ],
+    });
+
+    vi.useFakeTimers();
+    expect(useGameStore.getState().playCard('a')).toBe(true);
+    expect(useGameStore.getState().lastChaosRoulette?.id).toBe(0);
+    // Mesmo caster continua com a vez: CHAOS_ROULETTE não define `consumesTurn`.
+    expect(useGameStore.getState().turn).toBe('PLAYER');
+
+    expect(useGameStore.getState().playCard('b')).toBe(true);
+    expect(useGameStore.getState().lastChaosRoulette?.id).toBe(1);
   });
 });
