@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { CENTER_INDEX } from '@/engine/events';
-import { createRng, type Rng } from '@/engine/rng';
-import { findWinner, getOldestPieceIndex } from '@/engine/rules';
+import { createRng, getChannel, seedMatch, type Rng } from '@/engine/rng';
+import { findWinner, getOldestPieceIndex, getVanishingIndex } from '@/engine/rules';
 import type { Board, Piece } from '@/engine/rules';
 import { createTestState } from '@/engine/testHelpers';
-import { getCard } from '@/engine/cards/registry';
+import { drawCardId, getCard } from '@/engine/cards/registry';
 
 const rng = createRng(1);
 
@@ -98,7 +98,7 @@ describe('DEMOLIR (BREAK_PIECE) — regra confirmada: mantida sem mudança', () 
 /*                                  ESTUDAR                                    */
 /* -------------------------------------------------------------------------- */
 
-describe('ESTUDAR (STUDY) — regra confirmada: renomeada, mecânica idêntica', () => {
+describe('ESTUDAR (STUDY) — mecânica idêntica; raridade subiu para ÉPICA (patch pós-Fase 7a)', () => {
   const card = getCard('STUDY');
 
   it('compra 2 cartas', () => {
@@ -113,13 +113,18 @@ describe('ESTUDAR (STUDY) — regra confirmada: renomeada, mecânica idêntica',
     });
     expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
   });
+
+  it('raridade ÉPICA, custo mantido em 2⚡', () => {
+    expect(card.rarity).toBe('EPIC');
+    expect(card.cost).toBe(2);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
 /*                                ESTUDAR II                                   */
 /* -------------------------------------------------------------------------- */
 
-describe('ESTUDAR II (STUDY_II) — regra confirmada: renomeada, mecânica idêntica', () => {
+describe('ESTUDAR II (STUDY_II) — mecânica idêntica; raridade LENDÁRIA, custo 3 (patch pós-Fase 7a)', () => {
   const card = getCard('STUDY_II');
 
   it('compra 3 cartas', () => {
@@ -133,6 +138,11 @@ describe('ESTUDAR II (STUDY_II) — regra confirmada: renomeada, mecânica idên
       playerHand: Array.from({ length: 5 }, (_, i) => ({ uid: `c${i}`, cardId: 'HEAL_SELF' as const })),
     });
     expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('raridade LENDÁRIA, custo 3⚡', () => {
+    expect(card.rarity).toBe('LEGENDARY');
+    expect(card.cost).toBe(3);
   });
 });
 
@@ -190,7 +200,7 @@ describe('TURNO EXTRA (TURNO_EXTRA) — regra confirmada: renomeada, mecânica i
 /*                                    MINA                                     */
 /* -------------------------------------------------------------------------- */
 
-describe('MINA (BOMB_TRAP) — regra confirmada: mantida sem mudança', () => {
+describe('MINA (BOMB_TRAP) — dano rebaixado de 2 para 1 (patch pós-Fase 7a)', () => {
   const card = getCard('BOMB_TRAP');
 
   it('triggerCondition: dispara quando o oponente ocupa o centro', () => {
@@ -199,10 +209,10 @@ describe('MINA (BOMB_TRAP) — regra confirmada: mantida sem mudança', () => {
     expect(card.triggerCondition?.({ type: 'PIECE_PLACED', player: 'MACHINE', index: 0 }, state)).toBe(false);
   });
 
-  it('effect: 2 de dano no oponente e extraTurnPending pro defensor', () => {
+  it('effect: 1 de dano no oponente e extraTurnPending pro defensor', () => {
     const state = createTestState();
     const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
-    expect(result?.damage).toEqual({ target: 'MACHINE', amount: 2 });
+    expect(result?.damage).toEqual({ target: 'MACHINE', amount: 1 });
     expect(result?.patch).toEqual({ extraTurnPending: 'PLAYER' });
   });
 });
@@ -262,9 +272,16 @@ describe('PROTEÇÃO (SHIELD_TRAP) — regra confirmada: gatilho por categoria, 
     expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'DIRECT_DAMAGE' }, state)).toBe(false);
   });
 
-  it('cancela a carta do oponente ao disparar', () => {
-    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+  it('cancela a carta do oponente ao disparar e nomeia a carta anulada no log (patch pós-Fase 7a)', () => {
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'HAND_RAID' },
+    });
     expect(result?.cancelsAction).toBe(true);
+    expect(result?.log).toMatchObject({ code: 'TRAP_SHIELD', value: 'HAND_RAID' });
   });
 });
 
@@ -296,9 +313,16 @@ describe('ANTIMAGIA (ANTI_SPELL_TRAP) — carta nova: cobertura universal por ex
     expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'CHAOS_ROULETTE' }, state)).toBe(false);
   });
 
-  it('cancela a carta do oponente ao disparar', () => {
-    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+  it('cancela a carta do oponente ao disparar e nomeia a carta anulada no log (patch pós-Fase 7a)', () => {
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'DIRECT_DAMAGE' },
+    });
     expect(result?.cancelsAction).toBe(true);
+    expect(result?.log).toMatchObject({ code: 'TRAP_ANTI_SPELL', value: 'DIRECT_DAMAGE' });
   });
 });
 
@@ -321,7 +345,7 @@ describe('RICOCHETE (REFLECT_TRAP) — carta nova: inverte quando bem definido, 
     expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'STUDY' }, state)).toBe(false);
   });
 
-  it('inverte DIRECT_DAMAGE — dano atinge o próprio atacante', () => {
+  it('inverte DIRECT_DAMAGE — dano atinge o próprio atacante, e nomeia a carta no log (patch pós-Fase 7a)', () => {
     const result = card.effect({
       state,
       caster: 'PLAYER',
@@ -331,6 +355,7 @@ describe('RICOCHETE (REFLECT_TRAP) — carta nova: inverte quando bem definido, 
     });
     expect(result?.cancelsAction).toBe(true);
     expect(result?.damage).toEqual({ target: 'MACHINE', amount: 1 });
+    expect(result?.log).toMatchObject({ code: 'TRAP_RICOCHET', value: 'DIRECT_DAMAGE' });
   });
 
   it('inverte HAND_RAID — rouba 1 carta do atacante para o defensor, sem repetir o RNG da carta original', () => {
@@ -364,28 +389,66 @@ describe('RICOCHETE (REFLECT_TRAP) — carta nova: inverte quando bem definido, 
 /*                                   VIDENTE                                   */
 /* -------------------------------------------------------------------------- */
 
-describe('VIDENTE (HIGHLIGHT_OLDEST) — carta nova: leitura pura, mas o destaque em si é estado efêmero (Fase 2.6)', () => {
+describe('VIDENTE (HIGHLIGHT_OLDEST) — leitura pura; canPlay agora exige >=3 peças do oponente (patch pós-Fase 7a)', () => {
   const card = getCard('HIGHLIGHT_OLDEST');
 
-  it('VIDENTE: destaca a peça mais antiga com só 1 peça no tabuleiro (confirmado — com menos de 3 peças a informação já é óbvia de graça olhando o tabuleiro; jogar a carta ali é decisão ruim do jogador, não estado inválido, e canPlay não existe para proteger de decisão ruim)', () => {
-    const state = createTestState({ board: boardWith({ 2: piece('MACHINE', 0) }) });
-    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
-    expect(result?.patch).toEqual({
-      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 2, turnPlaced: 0 },
+  it('destaca a peça mais antiga (por turnPlaced) entre 3 peças do oponente', () => {
+    const state = createTestState({
+      board: boardWith({ 0: piece('MACHINE', 5), 1: piece('MACHINE', 2), 2: piece('MACHINE', 8) }),
     });
-    expect(result?.log).toMatchObject({ code: 'CARD_HIGHLIGHT_OLDEST', subject: 'PLAYER', target: 'MACHINE', value: 2 });
-  });
-
-  it('destaca a mais antiga entre várias, por turnPlaced', () => {
-    const state = createTestState({ board: boardWith({ 0: piece('MACHINE', 5), 1: piece('MACHINE', 2) }) });
     const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
-    expect(result?.log?.value).toBe(1); // turnPlaced 2 < 5
-    expect(result?.patch?.highlightedOldestFor).toMatchObject({ index: 1, turnPlaced: 2 });
+    expect(result?.log).toMatchObject({ code: 'CARD_HIGHLIGHT_OLDEST', subject: 'PLAYER', target: 'MACHINE', value: 1 });
+    expect(result?.patch).toEqual({
+      highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 1, turnPlaced: 2 },
+    });
   });
 
-  it('canPlay: indisponível com o oponente sem nenhuma peça', () => {
+  it('canPlay: indisponível com o oponente sem peça nenhuma', () => {
     const state = createTestState();
     expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: indisponível com o oponente tendo só 1-2 peças (patch pós-Fase 7a — antes bastava >=1)', () => {
+    const state = createTestState({ board: boardWith({ 0: piece('MACHINE', 0), 1: piece('MACHINE', 1) }) });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível com o oponente tendo 3 peças', () => {
+    const state = createTestState({
+      board: boardWith({ 0: piece('MACHINE', 0), 1: piece('MACHINE', 1), 2: piece('MACHINE', 2) }),
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
+  });
+
+  it('AMALDIÇOAR ativo: revela o índice MARCADO, não o mais velho por turnPlaced (patch pós-Fase 7a)', () => {
+    const state = createTestState({
+      board: boardWith({ 0: piece('MACHINE', 1), 1: piece('MACHINE', 2), 2: piece('MACHINE', 3) }),
+      // A mais velha por turnPlaced seria o índice 0 — mas AMALDIÇOAR marcou o índice 2.
+      forcedVanish: { owner: 'MACHINE', mode: 'CHOSEN', index: 2, turnPlaced: 3 },
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.patch?.highlightedOldestFor).toMatchObject({ index: 2, turnPlaced: 3 });
+  });
+
+  it('RANDOM_FADE ativo: a previsão bate com getVanishingIndex e o canal BOARD não é consumido de verdade (patch pós-Fase 7a)', () => {
+    const board = boardWith({ 0: piece('MACHINE', 0), 1: piece('MACHINE', 1), 2: piece('MACHINE', 2) });
+    const state = createTestState({ board, activeRule: 'RANDOM_FADE' });
+
+    // A previsão do VIDENTE precisa bater com o índice que getVanishingIndex
+    // (rules.ts) escolheria de verdade, consumindo o MESMO canal BOARD, na
+    // MESMA seed — ou a "espiada" estaria mentindo.
+    seedMatch(42);
+    const expectedIndex = getVanishingIndex(board, 'MACHINE', 'RANDOM_FADE', null);
+
+    seedMatch(42); // reseta pro mesmo ponto de antes do pick acima
+    const cursorBefore = getChannel('BOARD').getState();
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    const cursorAfter = getChannel('BOARD').getState();
+
+    expect(result?.patch?.highlightedOldestFor?.index).toBe(expectedIndex);
+    // O canal BOARD precisa continuar EXATAMENTE onde estava antes do peek —
+    // a próxima remoção "de verdade" não pode ver o efeito da espiada.
+    expect(cursorAfter).toBe(cursorBefore);
   });
 });
 
@@ -411,20 +474,40 @@ describe('ANOMALIA (QUEUE_SHUFFLE) — carta nova: força a próxima peça do op
 /*                                OBSOLESCÊNCIA                                */
 /* -------------------------------------------------------------------------- */
 
-describe('OBSOLESCÊNCIA (OBSOLESCENCE) — efeito alterado: mata direto → força posição na fila', () => {
+describe('AMALDIÇOAR (id OBSOLESCENCE, renomeada no patch pós-Fase 7a) — força posição na fila, sem revelar o alvo no log', () => {
   const card = getCard('OBSOLESCENCE');
 
-  it('marca forcedVanish CHOSEN com o índice e turnPlaced da peça alvo', () => {
-    const state = createTestState({ board: boardWith({ 4: piece('MACHINE', 7) }) });
+  it('nome exibido é AMALDIÇOAR', () => {
+    expect(card.name).toBe('AMALDIÇOAR');
+  });
+
+  it('marca forcedVanish CHOSEN com o índice e turnPlaced da peça alvo, sem `value` no log/notice (não revela o alvo)', () => {
+    const state = createTestState({
+      board: boardWith({ 0: piece('MACHINE', 0), 1: piece('MACHINE', 1), 4: piece('MACHINE', 7) }),
+    });
     const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 4, rng });
     expect(result?.patch).toEqual({
       forcedVanish: { owner: 'MACHINE', mode: 'CHOSEN', index: 4, turnPlaced: 7 },
     });
+    expect(result?.log?.value).toBeUndefined();
+    expect(result?.notice?.value).toBeUndefined();
   });
 
   it('canPlay: indisponível com o oponente sem peça nenhuma', () => {
     const state = createTestState();
     expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: indisponível com o oponente tendo só 1-2 peças (patch pós-Fase 7a — antes bastava >=1)', () => {
+    const state = createTestState({ board: boardWith({ 0: piece('MACHINE', 0), 1: piece('MACHINE', 1) }) });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível com o oponente tendo 3 peças', () => {
+    const state = createTestState({
+      board: boardWith({ 0: piece('MACHINE', 0), 1: piece('MACHINE', 1), 2: piece('MACHINE', 2) }),
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
   });
 
   it('isValidTarget: só peça do oponente', () => {
@@ -843,6 +926,11 @@ describe('TROCAR (SINGLE_CARD_TRADE) — encadeamento de 2 passos com carta real
 describe('ALTAR DE SACRIFÍCIO (ALTAR_OF_SACRIFICE) — SACRIFICE_DRAG, fusão de raridade + invocação (Fase 6b)', () => {
   const card = getCard('ALTAR_OF_SACRIFICE');
 
+  it('raridade LENDÁRIA, custo 1⚡ (patch pós-Fase 7a — antes BOOM/0⚡)', () => {
+    expect(card.rarity).toBe('LEGENDARY');
+    expect(card.cost).toBe(1);
+  });
+
   it('canPlay: indisponível com menos de 2 outras cartas na mão', () => {
     const state = createTestState({
       playerHand: [
@@ -945,6 +1033,23 @@ describe('ALTAR DE SACRIFÍCIO (ALTAR_OF_SACRIFICE) — SACRIFICE_DRAG, fusão d
 
     const hand = result?.patch?.playerHand as { uid: string; cardId: string }[];
     expect(getCard(hand[0].cardId as Parameters<typeof getCard>[0]).rarity).toBe('BOOM');
+  });
+
+  it('resolve: BOOM + BOOM devolve null (patch pós-Fase 7a — não é mais um ritual válido)', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'o1', cardId: 'CHAOS_ROULETTE' }, // BOOM
+        { uid: 'o2', cardId: 'CHAOS_ROULETTE' }, // BOOM
+      ],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'altar',
+      rng,
+      interaction: { selection: { kind: 'SACRIFICE_DRAG', uids: ['o1', 'o2'] }, priorSelections: [] },
+    });
+    expect(result).toBeNull();
   });
 
   it('resolve: uid inexistente devolve null (mesma defesa de TROCAR)', () => {
@@ -1060,6 +1165,10 @@ describe('ESPIONAGEM (INTEL_REVEAL) — revela sem descartar; count sempre 2 (cl
 describe('PROCRASTINAR (CARD_DRAFT) — opções geradas na hora, não são cartas de nenhuma mão', () => {
   const card = getCard('CARD_DRAFT');
 
+  it('custo 1⚡ (patch pós-Fase 7a — antes 2⚡)', () => {
+    expect(card.cost).toBe(1);
+  });
+
   it('abre PICK_ONE_REVEALED com 3 opções vindas do canal CARDS', () => {
     const state = createTestState();
     const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng: createRng(1) });
@@ -1088,6 +1197,10 @@ describe('PROCRASTINAR (CARD_DRAFT) — opções geradas na hora, não são cart
 
 describe('PROCRASTINAR II (CARD_DRAFT_TIERED) — distribuição garantida 2 comuns + 2 épicas + 1 lendária', () => {
   const card = getCard('CARD_DRAFT_TIERED');
+
+  it('custo 2⚡ (patch pós-Fase 7a — antes 3⚡)', () => {
+    expect(card.cost).toBe(2);
+  });
 
   it('abre PICK_ONE_REVEALED com 5 opções na distribuição garantida (não o sorteio ponderado normal)', () => {
     const state = createTestState();
@@ -1252,5 +1365,255 @@ describe('TIC TAC BOOM! (CHAOS_ROULETTE) — reshuffle total das peças existent
     // WIN_LINES ([0,1,2]), o desempate oficial decidido em
     // docs/NOTAS_TECNICAS.md. Cobertura ponta a ponta em gameStore.test.ts.
     expect(findWinner(newBoard)).toMatchObject({ winner: 'PLAYER', line: [0, 1, 2] });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                  RENOVAR                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('RENOVAR (RENEW_PIECE) — carta nova (patch pós-Fase 7a): peça própria vira a mais nova da fila', () => {
+  const card = getCard('RENEW_PIECE');
+
+  it('recarimba turnPlaced para o turno atual, mantendo owner/mark', () => {
+    const state = createTestState({
+      board: boardWith({ 0: piece('PLAYER', 1), 1: piece('PLAYER', 2) }),
+      turnCount: 9,
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 0, rng });
+    const newBoard = result?.patch?.board as Board;
+    expect(newBoard[0]).toEqual({ owner: 'PLAYER', mark: 'X', turnPlaced: 9 });
+  });
+
+  it('a peça renovada passa a ser a mais nova — getOldestPieceIndex não aponta mais pra ela', () => {
+    const state = createTestState({
+      board: boardWith({ 0: piece('PLAYER', 1), 1: piece('PLAYER', 2), 2: piece('PLAYER', 3) }),
+      turnCount: 20,
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 0, rng });
+    const newBoard = result?.patch?.board as Board;
+    // Antes, 0 (turnPlaced 1) era a mais antiga. Depois de renovada (turnPlaced
+    // 20), a mais antiga passa a ser 1 (turnPlaced 2).
+    expect(getOldestPieceIndex(newBoard, 'PLAYER')).toBe(1);
+  });
+
+  it('isValidTarget: só peça PRÓPRIA', () => {
+    const state = createTestState({ board: boardWith({ 0: piece('PLAYER', 0), 1: piece('MACHINE', 0) }) });
+    expect(card.isValidTarget?.({ state, caster: 'PLAYER', index: 0 })).toBe(true);
+    expect(card.isValidTarget?.({ state, caster: 'PLAYER', index: 1 })).toBe(false);
+  });
+
+  it('canPlay: indisponível com só 1 peça própria (já é a mais nova de qualquer jeito)', () => {
+    const state = createTestState({ board: boardWith({ 0: piece('PLAYER', 0) }) });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível com 2+ peças próprias', () => {
+    const state = createTestState({ board: boardWith({ 0: piece('PLAYER', 0), 1: piece('PLAYER', 1) }) });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
+  });
+
+  it('alvo inexistente/vazio devolve null', () => {
+    const state = createTestState();
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 0, rng });
+    expect(result).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                  RECICLAR                                   */
+/* -------------------------------------------------------------------------- */
+
+describe('RECICLAR (MULLIGAN) — carta nova (patch pós-Fase 7a): descarta 1 carta própria, compra 1 nova', () => {
+  const card = getCard('MULLIGAN');
+
+  it('canPlay: indisponível com a RECICLAR sendo a única carta na mão', () => {
+    const state = createTestState({ playerHand: [{ uid: 'x', cardId: 'MULLIGAN' }] });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível com mais alguma carta na mão', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'x', cardId: 'MULLIGAN' },
+        { uid: 'o1', cardId: 'HEAL_SELF' },
+      ],
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
+  });
+
+  it('1º passo: abre PICK_ONE_FROM_HAND com source=caster (mão própria, face-up) excluindo a própria RECICLAR', () => {
+    const state = createTestState({
+      playerHand: [
+        { uid: 'x', cardId: 'MULLIGAN' },
+        { uid: 'o1', cardId: 'HEAL_SELF' },
+        { uid: 'o2', cardId: 'DIRECT_DAMAGE' },
+      ],
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.interaction).toEqual({
+      kind: 'PICK_ONE_FROM_HAND',
+      source: 'PLAYER',
+      optionUids: ['o1', 'o2'],
+    });
+  });
+
+  it('2º passo: descarta a carta escolhida e declara a compra de 1 (draw, não mint manual)', () => {
+    const state = createTestState({
+      // A própria RECICLAR já saiu da mão ao abrir a interação (timing
+      // unificado da Fase 3).
+      playerHand: [{ uid: 'o1', cardId: 'HEAL_SELF' }],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'o1' }, priorSelections: [] },
+    });
+    expect(result?.patch).toEqual({ playerHand: [] });
+    expect(result?.draw).toEqual({ target: 'PLAYER', count: 1 });
+    expect(result?.log).toMatchObject({ code: 'CARD_MULLIGAN', subject: 'PLAYER' });
+  });
+
+  it('2º passo: uid inexistente devolve null', () => {
+    const state = createTestState({ playerHand: [{ uid: 'o1', cardId: 'HEAL_SELF' }] });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: { selection: { kind: 'PICK_ONE_FROM_HAND', uid: 'fantasma' }, priorSelections: [] },
+    });
+    expect(result).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                  DESLIZAR                                   */
+/* -------------------------------------------------------------------------- */
+
+describe('DESLIZAR (SLIDE_PIECE) — carta nova (patch pós-Fase 7a): move peça própria para vizinho vazio, sem mudar a idade', () => {
+  const card = getCard('SLIDE_PIECE');
+
+  it('isValidTarget: só peça própria com >=1 vizinho ortogonal vazio', () => {
+    // índice 4 (centro): vizinhos 1,3,5,7. Todos ocupados -> sem alvo válido.
+    const state = createTestState({
+      board: boardWith({
+        4: piece('PLAYER', 0),
+        1: piece('MACHINE', 1),
+        3: piece('MACHINE', 2),
+        5: piece('MACHINE', 3),
+        7: piece('MACHINE', 4),
+      }),
+    });
+    expect(card.isValidTarget?.({ state, caster: 'PLAYER', index: 4 })).toBe(false);
+  });
+
+  it('isValidTarget: peça própria com vizinho vazio é alvo válido; peça do oponente nunca é', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('PLAYER', 0), 1: piece('MACHINE', 1) }) });
+    expect(card.isValidTarget?.({ state, caster: 'PLAYER', index: 4 })).toBe(true);
+    expect(card.isValidTarget?.({ state, caster: 'PLAYER', index: 1 })).toBe(false);
+  });
+
+  it('canPlay: indisponível sem nenhuma peça própria com vizinho vazio (tabuleiro cheio ao redor)', () => {
+    const state = createTestState({
+      board: boardWith({
+        4: piece('PLAYER', 0),
+        1: piece('MACHINE', 1),
+        3: piece('MACHINE', 2),
+        5: piece('MACHINE', 3),
+        7: piece('MACHINE', 4),
+      }),
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível com alguma peça própria tendo vizinho vazio', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('PLAYER', 0) }) });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
+  });
+
+  it('1º passo: abre PICK_BOARD_CELL com os vizinhos VAZIOS do alvo escolhido', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('PLAYER', 0), 1: piece('MACHINE', 1) }) });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 4, rng });
+    expect(result?.interaction?.kind).toBe('PICK_BOARD_CELL');
+    if (result?.interaction?.kind === 'PICK_BOARD_CELL') {
+      // Vizinhos de 4 são 1,3,5,7 — 1 está ocupado (MACHINE), sobram 3,5,7.
+      // Ordem não importa (é só a lista de alvos válidos p/ a UI destacar).
+      expect([...result.interaction.eligibleIndexes].sort()).toEqual([3, 5, 7]);
+    }
+  });
+
+  it('2º passo: move a peça — some da origem, aparece no destino com o MESMO turnPlaced', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('PLAYER', 7) }) });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: {
+        selection: { kind: 'PICK_BOARD_CELL', index: 5 },
+        priorSelections: [{ kind: 'BOARD_TARGET', index: 4 }],
+      },
+    });
+    const newBoard = result?.patch?.board as Board;
+    expect(newBoard[4]).toBeNull();
+    expect(newBoard[5]).toEqual({ owner: 'PLAYER', mark: 'X', turnPlaced: 7 });
+    expect(result?.log).toMatchObject({ code: 'CARD_SLIDE_PIECE', value: 5 });
+  });
+
+  it('2º passo: destino não-adjacente (ou ocupado) devolve null — mesma defesa que as outras cartas de 2 passos', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('PLAYER', 7), 8: piece('MACHINE', 1) }) });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: {
+        selection: { kind: 'PICK_BOARD_CELL', index: 8 }, // não é vizinho ortogonal de 4
+        priorSelections: [{ kind: 'BOARD_TARGET', index: 4 }],
+      },
+    });
+    expect(result).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                 PRESSÁGIO                                   */
+/* -------------------------------------------------------------------------- */
+
+describe('PRESSÁGIO (SCRY_DECK) — carta nova (patch pós-Fase 7a): espia as 3 próximas cartas sem sacar', () => {
+  const card = getCard('SCRY_DECK');
+
+  it('sem canPlay — sempre jogável', () => {
+    expect(card.canPlay).toBeUndefined();
+  });
+
+  it('revela 3 CardIds via acknowledge (kind INTEL_FLIP, reaproveitado de VISÃO ABSOLUTA)', () => {
+    const state = createTestState();
+    seedMatch(99);
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng: getChannel('CARDS') });
+    expect(result?.acknowledge?.kind).toBe('INTEL_FLIP');
+    expect(result?.acknowledge?.revealedCards).toHaveLength(3);
+  });
+
+  it('não consome o canal CARDS de verdade — a próxima compra real sai igual a uma sem PRESSÁGIO no meio', () => {
+    const state = createTestState();
+
+    seedMatch(7);
+    const withoutScry = [drawCardId(getChannel('CARDS')), drawCardId(getChannel('CARDS'))];
+
+    seedMatch(7);
+    card.effect({ state, caster: 'PLAYER', uid: 'x', rng: getChannel('CARDS') }); // PRESSÁGIO no meio
+    const withScry = [drawCardId(getChannel('CARDS')), drawCardId(getChannel('CARDS'))];
+
+    expect(withScry).toEqual(withoutScry);
+  });
+
+  it('a mão da IA (offline) não ganha acknowledge — igual às outras cartas de informação', () => {
+    const state = createTestState();
+    const result = card.effect({ state, caster: 'MACHINE', uid: 'x', rng });
+    expect(result?.acknowledge).toBeUndefined();
   });
 });

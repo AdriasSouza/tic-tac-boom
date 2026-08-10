@@ -105,12 +105,13 @@ export function CardHand({ style }: CardHandProps) {
   const { cardWidth, cardHeight, fanSpacing, handAreaHeight } = useResponsiveLayout();
 
   // Qualquer interação pendente trava mão/tabuleiro pra outra ação (regra do
-  // contrato, Fase 3) — `isTargeting` é o caso ESPECÍFICO de `BOARD_TARGET`,
-  // que é quem tem a própria faixa "◎ ESCOLHA UM ALVO" abaixo; os outros
-  // `kind`s ganham UI própria no `<InteractionModal />`, montado no root da
-  // tela, não aqui.
+  // contrato, Fase 3) — `isTargeting` cobre os 2 `kind`s que miram CÉLULA
+  // (`BOARD_TARGET`, e `PICK_BOARD_CELL` — 2º passo de DESLIZAR), que são
+  // quem tem a própria faixa "◎ ESCOLHA..." abaixo; os outros `kind`s ganham
+  // UI própria no `<InteractionModal />`, montado no root da tela, não aqui.
   const isInteracting = pendingInteraction !== null;
-  const isTargeting = pendingInteraction?.kind === 'BOARD_TARGET';
+  const isTargeting =
+    pendingInteraction?.kind === 'BOARD_TARGET' || pendingInteraction?.kind === 'PICK_BOARD_CELL';
 
   /* --- Modo foco -----------------------------------------------------------
      Estado local (não vive na store): é puramente apresentacional, não afeta
@@ -318,8 +319,9 @@ export function CardHand({ style }: CardHandProps) {
         </Animated.View>
       )}
 
-      {/* Faixa de instrução — sem ela, o modo mira vira um beco sem saída. */}
-      {pendingInteraction?.kind === 'BOARD_TARGET' && (
+      {/* Faixa de instrução — sem ela, o modo mira vira um beco sem saída.
+          Cobre os 2 `kind`s que miram célula (ver `isTargeting`, acima). */}
+      {isTargeting && pendingInteraction && (
         <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)}>
           <Pressable
             onPress={handleCancelTargeting}
@@ -328,7 +330,8 @@ export function CardHand({ style }: CardHandProps) {
             accessibilityLabel="Cancelar seleção de alvo"
           >
             <Text style={styles.targetBannerText}>
-              ◎ ESCOLHA UM ALVO · {getCard(pendingInteraction.cardId).name}
+              {pendingInteraction.kind === 'PICK_BOARD_CELL' ? '◎ ESCOLHA O DESTINO' : '◎ ESCOLHA UM ALVO'} ·{' '}
+              {getCard(pendingInteraction.cardId).name}
             </Text>
             {/* Selo próprio, separado da linha de instrução acima — reforça
                 que ESTA parte específica é a ação de cancelar, no mesmo

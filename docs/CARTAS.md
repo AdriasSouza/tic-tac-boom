@@ -66,41 +66,109 @@
 
   ### VIDENTE (`HIGHLIGHT_OLDEST`, novo)
   - **Custo:** 1⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
-  - **Efeito exato:** Destaca visualmente, só para o jogador que a jogou, qual é a peça "mais
-    velha" do oponente (a próxima que sumiria sozinha pela regra do infinito, ao ele colocar a 4ª
-    peça). Não altera a fila do "infinito" nem destrói nada — é leitura pura; o destaque em si É
-    estado efêmero (`highlightedOldestFor`, `src/engine/rules.ts`), consultado só pela
-    apresentação, nunca por outra regra do motor. Expira quando o turno de quem jogou termina, ou
-    antes disso se a peça destacada sair do tabuleiro por outro caminho (auto-invalidação por
-    identidade — mesma ideia do `forcedVanish`/OBSOLESCÊNCIA). Implementado na Fase 2.6 (a Fase 2
-    só devolvia `log`/`notice`, sem nada acender no tabuleiro — regressão do glow removido junto
-    de `doomedCell`, corrigida aqui com mecanismo próprio).
+  - **Efeito exato:** Destaca visualmente, só para o jogador que a jogou, qual peça do oponente
+    é a próxima a sumir pela regra do infinito. Não altera a fila do "infinito" nem destrói nada —
+    é leitura pura; o destaque em si É estado efêmero (`highlightedOldestFor`,
+    `src/engine/rules.ts`), consultado só pela apresentação, nunca por outra regra do motor.
+    Expira quando o turno de quem jogou termina, ou antes disso se a peça destacada sair do
+    tabuleiro por outro caminho (auto-invalidação por identidade — mesma ideia do
+    `forcedVanish`/AMALDIÇOAR).
   - **Abre modal:** Não (destaque na própria tela do tabuleiro). **Exige alvo no tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Não coberta por
     PROTEÇÃO (não lê/retira mão) nem por RICOCHETE (não é um efeito direcionado a você — é leitura
     do estado do TABULEIRO do oponente, não um ataque aos seus recursos).
   - **Casos de borda:**
-    - **Tabuleiro sem alvo válido** (oponente sem nenhuma peça no tabuleiro): carta indisponível
-      para jogar.
+    - **Tabuleiro sem alvo válido** (oponente com menos de 3 peças no tabuleiro): carta
+      indisponível para jogar (patch pós-Fase 7a — antes bastava >=1 peça; ver "Rebalanceamento"
+      abaixo para o motivo da virada).
     - Mão do oponente vazia / mão cheia — não se aplicam.
+  - **Patch pós-Fase 7a — funciona contra AMALDIÇOAR e contra o surto RANDOM_FADE do terminal do
+    caos:** "a peça que vai sumir" nem sempre é a cronologicamente mais antiga
+    (`getPieceIndexes[0]`) — se AMALDIÇOAR já marcou uma peça específica (`forcedVanish.mode ===
+    'CHOSEN'`) ou o surto RANDOM_FADE está ativo, VIDENTE revela a peça REAL que vai sumir, não a
+    mais velha por ordem cronológica:
+    - `CHOSEN` (AMALDIÇOAR): usa o índice marcado diretamente — determinístico, sem RNG.
+    - `RANDOM`/`RANDOM_FADE`: o sorteio de verdade só acontece no instante da remoção
+      (`getVanishingIndex`, `src/engine/rules.ts`) — para revelar isso ANTES, VIDENTE espia o
+      canal `BOARD` do RNG sem consumi-lo de verdade (`snapshotRng()` → sorteia → `restoreRng()`,
+      mesma técnica de PRESSÁGIO no baralho, abaixo). Efeito colateral ACEITO: se algo mais
+      consumir o canal `BOARD` entre o VIDENTE e a remoção de verdade, a previsão fica
+      desatualizada — raro, e do mesmo espírito "caótico" do resto do baralho.
+  - **Rebalanceamento (análise de mesa, pós-Fase 2 e pós-Fase 7a):** RARA/2⚡ → COMUM/1⚡ (Fase 2,
+    quando virou informação pura). `canPlay` endurecido de >=1 para >=3 peças do oponente no patch
+    pós-Fase 7a: com menos de 3 peças a informação já era óbvia de graça olhando o tabuleiro, e
+    "a próxima a sumir" não faz sentido nenhum antes da fila do infinito valer para o dono.
   - **Nota de migração:** carta NOVA — o `REVEAL_OLDEST` atual já não faz mais isto (marca e
-    destrói de verdade — ver OBSOLESCÊNCIA, agora nas Raras, sua sucessora direta).
-  - **Rebalanceamento (análise de mesa, pós-Fase 2):** RARA/2⚡ → COMUM/1⚡. Depois do redesenho
-    da Fase 2 (virou informação pura, sem destruir nada), o preço de rara ficou caro demais pelo
-    que a carta entrega — nivelada para comum, junto com o ajuste de DEMOLIR/OBSOLESCÊNCIA/
-    ANTIMAGIA/RICOCHETE/ESPIONAGEM na mesma rodada.
-  - **Decisão confirmada na Fase 2:** "a peça mais antiga" é lida como
-    `getPieceIndexes(board, oponente)[0]` — a mais antiga que EXISTIR, exigindo só >=1 peça (é
-    exatamente o que o caso de borda acima já diz: "sem NENHUMA peça", não "menos de 3"). Isto é
-    DIFERENTE do conceito de "peça mais velha" que a regra do infinito usa em outro lugar do motor
-    (`getOldestPieceIndex`, que só responde depois de 3 peças) — com 1-2 peças no tabuleiro, VIDENTE
-    destaca a mais antiga mesmo que a regra do infinito ainda não valha para ela.
-    **Motivo de manter >=1, não 3:** com menos de 3 peças a informação já é ÓBVIA de graça olhando
-    o tabuleiro — não tem mistério nenhum qual peça é a mais antiga quando só existe uma ou duas.
-    Jogar VIDENTE nessa hora é uma decisão RUIM do jogador (gastou energia por uma informação que
-    já tinha de graça), não um estado inválido que a carta precise recusar — e `canPlay` não existe
-    para proteger o jogador de decisões ruins, só de jogadas sem sentido (sem NENHUMA peça, não há
-    o que destacar). Testado em `registry.effects.test.ts` como regra confirmada.
+    destrói de verdade — ver AMALDIÇOAR, agora nas Raras, sua sucessora direta).
+
+  ### RENOVAR (`RENEW_PIECE`, novo — patch pós-Fase 7a)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Feitiço (Estratégia) · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** O jogador escolhe 1 das próprias peças no tabuleiro. O motor recarimba
+    `turnPlaced` da peça para o turno atual — na prática, ela passa a ser lida como a "mais nova"
+    da fila e será a última a sumir. O índice no tabuleiro não muda, só a idade na fila.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim — 1 peça própria.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
+  - **Casos de borda:**
+    - **Indisponível com menos de 2 peças próprias no tabuleiro** — com 1 peça só, ela já é a mais
+      nova de qualquer jeito, não há o que renovar.
+    - Mão do oponente vazia / mão cheia — não se aplicam.
+  - **Efeito colateral de graça:** se a peça escolhida estava marcada por AMALDIÇOAR
+    (`forcedVanish.mode === 'CHOSEN'`) ou destacada por VIDENTE (`highlightedOldestFor`), renovar
+    muda a identidade da peça (`owner`+`turnPlaced`) e a marca/destaque se auto-invalida sozinho —
+    mesmo mecanismo que já protege DEMOLIR e o reshuffle do TIC TAC BOOM!, sem código extra.
+  - **Nota de migração:** carta NOVA.
+
+  ### RECICLAR (`MULLIGAN`, novo — patch pós-Fase 7a)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Utilidade / Mão · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** O jogador descarta 1 carta da própria mão (escolha manual, não RNG) e, em
+    seguida, compra 1 carta nova do baralho infinito.
+  - **Abre modal:** Sim — escolha de qual carta descartar, entre a PRÓPRIA mão (face-up, é a mão
+    de quem escolhe). **Exige alvo no tabuleiro:** Não.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Não aciona PROTEÇÃO nem
+    RICOCHETE — só afeta a própria mão do caster, não é um efeito direcionado ao oponente.
+  - **Casos de borda:**
+    - **Indisponível se a RECICLAR for a única carta na mão** — não haveria o que descartar.
+    - Mão do oponente vazia / tabuleiro — não se aplicam.
+  - **Nota de migração:** carta NOVA.
+
+  ### DESLIZAR (`SLIDE_PIECE`, novo — patch pós-Fase 7a)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Feitiço (Território) · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Move 1 das próprias peças para uma célula vazia ortogonalmente adjacente
+    (cima, baixo, esquerda ou direita — sem diagonais). Não altera `turnPlaced` — é posição, não
+    idade na fila (diferente de RENOVAR, acima).
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim, em 2 passos — primeiro a peça própria
+    (só é alvo válido se tiver >=1 vizinho ortogonal vazio), depois a célula de destino (só os
+    vizinhos vazios calculados no 1º passo, sem recalcular a regra na UI).
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
+  - **Casos de borda:**
+    - **Indisponível se o jogador não tiver peças, ou se nenhuma delas tiver vizinho vazio.**
+    - Mão do oponente vazia / mão cheia — não se aplicam.
+  - **Nota de migração:** carta NOVA. Único card do baralho a abrir um `kind` de
+    `pendingInteraction` genuinamente NOVO (`PICK_BOARD_CELL`) — `BOARD_TARGET` (o 1º passo) nunca
+    pode ser pedido 2x em sequência por design (só o motor de resolução de carta o abre, nunca
+    `effect()`), então "escolher célula → escolher OUTRA célula" precisa de um `kind` que nasça de
+    `effect()` de verdade, fluindo pelo mesmo caminho genérico de reentrada que os outros 4 `kind`s
+    (`PICK_ONE_FROM_HAND` etc.) já usam.
+
+  ### PRESSÁGIO (`SCRY_DECK`, novo — patch pós-Fase 7a)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Abre um modal mostrando as 3 próximas cartas do topo do baralho global, na
+    ordem, SEM comprá-las — só uma olhada.
+  - **Abre modal:** Sim (visualização, sem seleção — botão único de confirmação). **Exige alvo no
+    tabuleiro:** Não.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
+  - **Casos de borda:** sem `canPlay` — sempre jogável.
+  - **Mecanismo:** o baralho é infinito, não existe uma fila de "próximas cartas" pré-gerada — cada
+    compra sorteia sob demanda do canal `CARDS` do RNG. Para "olhar sem consumir", o efeito espia:
+    `snapshotRng()` → sorteia 3× (mesma função `drawCardId` de uma compra normal) → `restoreRng()`
+    devolve o cursor exatamente ao ponto de antes, então a PRÓXIMA compra de verdade sai igual a se
+    a espiada nunca tivesse acontecido. Reaproveita `kind: 'INTEL_FLIP'` (já existe para VISÃO
+    ABSOLUTA — "reveladas automaticamente, sem seleção") em vez de inventar um `kind` de
+    `pendingInteraction` novo: é leitura pura, não interação.
+  - **Efeito colateral ACEITO, não bug:** se algo mais consumir o canal `CARDS` entre PRESSÁGIO e a
+    próxima compra real (outro PROCRASTINAR, SAQUE, o Altar), a previsão fica desatualizada. Dito
+    pelo próprio pedido do patch: "o que é ótimo e caótico".
+  - **Nota de migração:** carta NOVA.
 
   ---
 
@@ -109,6 +177,8 @@
   Vantagem tática: manipulação de mão, informação, disrupção de ritmo.
 
   ### ESTUDAR (`STUDY` — hoje `DRAW_CARD`)
+  > **Raridade pós-Fase 7a: ÉPICA** (esta entrada segue listada em Raras por localização
+  > histórica do documento — ver "Épicas", abaixo, para o resto das cartas dessa faixa).
   - **Custo:** 2⚡ · **Categoria (PDF):** Compra · **Tipo (motor):** `ACTION`
   - **Efeito exato:** Compra 2 cartas do deck infinito.
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
@@ -125,11 +195,11 @@
     confundiria as fases seguintes, que se referem às cartas pelo nome.
 
   ### PROCRASTINAR (`CARD_DRAFT`, novo)
-  - **Custo:** 2⚡ · **Categoria (PDF):** Compra · **Tipo (motor):** `ACTION`
-  - **Efeito exato:** Abre modal com 3 cartas aleatórias geradas pelo deck (viradas para cima, sem
-    segredo — são recém-sorteadas, não pertencem a ninguém ainda). O jogador escolhe 1 para a mão;
-    as outras 2 são descartadas sem entrar em jogo.
-  - **Abre modal:** Sim (escolha entre 3 opções reveladas). **Exige alvo no tabuleiro:** Não.
+  - **Custo:** 1⚡ (patch pós-Fase 7a — antes 2⚡) · **Categoria (PDF):** Compra · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Abre modal com 3 cartas sorteadas do deck. O jogador escolhe 1 posição às
+    CEGAS para a mão; as outras 2 são descartadas sem entrar em jogo.
+  - **Abre modal:** Sim (escolha entre 3 posições OCULTAS — patch pós-Fase 7a). **Exige alvo no
+    tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
   - **Casos de borda:**
     - Mão do oponente vazia — não se aplica.
@@ -139,6 +209,12 @@
     - Tabuleiro — não se aplica.
   - **Nota de migração:** carta NOVA — não existe hoje. `DRAW_CARD` (que tinha esse nome antes)
     virou ESTUDAR.
+  - **Patch pós-Fase 7a — opções ficam OCULTAS:** a versão original mostrava as 3 cartas reveladas
+    antes da escolha (contradizendo o próprio nome — "procrastinar" sugere apostar no que vier, não
+    escolher a melhor das 3 vistas). Agora o modal mostra só o verso/posição de cada slot
+    (`revealed={false}` em `<InteractionModal />`) — o `CardId` de cada opção continua trafegando
+    no `pendingInteraction` (a UI/rede já conhecem a identidade, só a APRESENTAÇÃO esconde), então
+    isto é mudança de apresentação, não de contrato do motor.
 
   ### ESPIADA (`PEEK_RANDOM`)
   - **Custo:** 1⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
@@ -223,7 +299,7 @@
   - **Custo:** 2⚡ · **Categoria (PDF):** Feitiço · **Tipo (motor):** `ACTION`
   - **Efeito exato:** Escolhe qualquer peça no tabuleiro (própria ou do oponente) e a destrói. Não
     afeta a fila do "infinito" — só apaga a peça, a célula volta a ficar vazia. É a ferramenta de
-    destruição IMEDIATA do baralho — ver OBSOLESCÊNCIA (rara) para a variante lenta/forçada.
+    destruição IMEDIATA do baralho — ver AMALDIÇOAR (rara) para a variante lenta/forçada.
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim — 1 célula ocupada, de qualquer dono.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
   - **Casos de borda:**
@@ -238,8 +314,8 @@
   - **Custo:** 2⚡ · **Categoria (PDF):** Tabuleiro · **Tipo (motor):** `ACTION`
   - **Efeito exato:** Altera a fila de peças do oponente — a próxima peça dele a sumir (ao colocar
     a 4ª) passa a ser escolhida aleatoriamente pelo sistema, em vez da mais velha por ordem de
-    colocação. Forma uma família coerente com OBSOLESCÊNCIA (rara): ANOMALIA aleatoriza a fila
-    inteira sem escolher nada; OBSOLESCÊNCIA força uma peça ESPECÍFICA escolhida pelo jogador. Uma
+    colocação. Forma uma família coerente com AMALDIÇOAR (rara): ANOMALIA aleatoriza a fila
+    inteira sem escolher nada; AMALDIÇOAR força uma peça ESPECÍFICA escolhida pelo jogador. Uma
     é caos, a outra é precisão — mantenha essa distinção na implementação (mesmo helper de "força
     a próxima da fila", parametrizado por índice aleatório vs. índice escolhido).
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não (afeta a fila inteira do oponente, não
@@ -255,19 +331,29 @@
     - Mão do oponente vazia / mão cheia — não se aplicam.
   - **Nota de migração:** carta NOVA — sem equivalente hoje.
 
-  ### OBSOLESCÊNCIA (`OBSOLESCENCE` — hoje `REVEAL_OLDEST`)
+  ### AMALDIÇOAR (`OBSOLESCENCE` — hoje `REVEAL_OLDEST`; renomeada de OBSOLESCÊNCIA no patch pós-Fase 7a)
   - **Custo:** 2⚡ · **Categoria (PDF):** Tabuleiro · **Tipo (motor):** `ACTION`
   - **Efeito exato:** O jogador seleciona 1 peça do oponente. O sistema marca essa peça como "a
     mais velha" da fila — ela só sumirá quando o dono colocar a peça que estoura o limite de 3,
-    pela regra normal do infinito. NÃO é destruição imediata: é mais lenta e mais fraca que a
-    versão atual, DE PROPÓSITO — destruição imediata de 1 peça já existe e custa 2⚡ (DEMOLIR).
-    Forma família com ANOMALIA (rara) — ver a nota lá.
+    pela regra normal do infinito, sobrepondo a regra padrão de "mais velha por ordem
+    cronológica". NÃO é destruição imediata: é mais lenta e mais fraca que uma destruição direta,
+    DE PROPÓSITO — destruição imediata de 1 peça já existe e custa 2⚡ (DEMOLIR). Forma família com
+    ANOMALIA (rara) — ver a nota lá.
+  - **Feedback visual (patch pós-Fase 7a):** o dono da peça marcada (o defensor) vê um flicker
+    ambíguo circulando entre as PRÓPRIAS peças no tabuleiro — nunca aponta a peça real. É ruído
+    cosmético puramente local (`Math.random()`, não o RNG determinístico — mesma técnica do giro
+    de TIC TAC BOOM!), então não sincroniza entre os dois clientes online e não vaza informação
+    nenhuma. VIDENTE (comum, acima) é a única forma de um jogador ver através dessa ambiguidade —
+    mas só quem MIRA o oponente com VIDENTE, nunca o próprio defensor sobre si mesmo (VIDENTE só
+    lê peças do oponente de quem a joga).
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim — 1 célula ocupada pelo oponente.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Por RICOCHETE: sim, mas
     só ANULA — o oponente já escolheu uma peça seguinte SUA, e não há uma peça "sua" equivalente
     óbvia pra inverter o alvo (ver a regra de fallback em "Regras transversais").
   - **Casos de borda:**
-    - **Tabuleiro sem alvo válido** (oponente sem peças no tabuleiro): indisponível para jogar.
+    - **Tabuleiro sem alvo válido** (oponente com menos de 3 peças no tabuleiro): indisponível
+      para jogar (patch pós-Fase 7a — antes bastava >=1 peça; marcar antes da fila do infinito
+      valer para o dono não fazia sentido).
     - Mão do oponente vazia / mão cheia — não se aplicam.
   - **Nota de migração:** RENOMEADA + EFEITO ALTERADO. Sucessora direta do `REVEAL_OLDEST` atual
     ("VIDENTE" hoje, que marca-e-destrói de verdade via `doomedCell` no início do turno seguinte)
@@ -280,6 +366,10 @@
     de matar direto, virou "força posição na fila"), ficou fraca para o preço de épica que ainda
     ocupava — nivelada de volta para rara, junto com VIDENTE/DEMOLIR/ANTIMAGIA/RICOCHETE/
     ESPIONAGEM na mesma rodada.
+  - **Renomeada no patch pós-Fase 7a:** o nome "OBSOLESCÊNCIA" causava confusão — o jogador
+    esperava saber QUAL peça sua estava marcada, quando a intenção sempre foi a incerteza (ver
+    "Feedback visual", acima). "AMALDIÇOAR" comunica melhor que uma peça foi afetada sem revelar
+    qual. O `id` técnico (`OBSOLESCENCE`) não mudou — só o nome exibido e a descrição.
 
   ### ANTIMAGIA (`ANTI_SPELL_TRAP`, novo)
   - **Custo:** 2⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
@@ -358,7 +448,10 @@
     raridade/custo (COMUM/1⚡ → ÉPICA/2⚡).
 
   ### ESTUDAR II (`STUDY_II` — hoje `DRAW_CARD_BIG`)
-  - **Custo:** 2⚡ · **Categoria (PDF):** Compra · **Tipo (motor):** `ACTION`
+  > **Raridade/custo pós-Fase 7a: LENDÁRIA/3⚡** (esta entrada segue listada em Épicas por
+  > localização histórica do documento — ver "Lendárias", abaixo, para o resto das cartas dessa
+  > faixa).
+  - **Custo:** 3⚡ (patch pós-Fase 7a — antes 2⚡) · **Categoria (PDF):** Compra · **Tipo (motor):** `ACTION`
   - **Efeito exato:** Compra 3 cartas do topo do deck infinito.
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
@@ -382,7 +475,7 @@
   - **Nota de migração:** carta NOVA — sem equivalente hoje (o motor só tem a variante 50/50).
 
   ### PROCRASTINAR II (`CARD_DRAFT_TIERED`, novo)
-  - **Custo:** 3⚡ · **Categoria (PDF):** Compra · **Tipo (motor):** `ACTION`
+  - **Custo:** 2⚡ (patch pós-Fase 7a — antes 3⚡) · **Categoria (PDF):** Compra · **Tipo (motor):** `ACTION`
   - **Efeito exato:** Abre modal com 5 cartas ocultas selecionadas pelo jogo — 2 comuns, 2 épicas
     e 1 lendária, com 100% de garantia dessa distribuição (não passa pelo sorteio normal de
     raridade). O jogador escolhe 1 para a mão; as outras 4 são descartadas.
@@ -566,14 +659,15 @@
   ### MINA (`BOMB_TRAP`)
   - **Custo:** 3⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
   - **Efeito exato:** Virada na mesa. Se o oponente colocar uma peça na casa central do tabuleiro,
-    ele sofre 2 de dano e o turno dele é encerrado imediatamente.
+    ele sofre 1 de dano (rebaixado de 2 no patch pós-Fase 7a — o resto do efeito, abaixo, já era
+    punição suficiente sozinho) e o turno dele é encerrado imediatamente.
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não (arma sem mira; o gatilho é fixo, a casa
     central).
   - **Anulável por armadilha:** Não (Lendária, imune) — inclusive contra ANTIMAGIA: `CLAUDE.md`
     (4) fixa explicitamente que a imunidade cobre TANTO o armar quanto o detonar da MINA, mesmo
     ela sendo, ela própria, uma armadilha.
   - **Casos de borda:** reativa, sem edge case de mão/tabuleiro próprio.
-  - **Nota de migração:** sem mudança. MANTIDA.
+  - **Nota de migração:** sem mudança na mecânica. Dano rebaixado de 2 para 1 no patch pós-Fase 7a.
 
   ---
 
@@ -604,24 +698,37 @@
     mecanismo próprio, novo, do zero.
 
   ### ALTAR DE SACRIFÍCIO (`ALTAR_OF_SACRIFICE`)
-  - **Custo:** 0⚡ · **Categoria (PDF):** Evento · **Tipo (motor):** `ACTION`
-  - **Efeito exato:** Abre modal para o jogador escolher 2 cartas da mão (quaisquer) para
-    sacrificar. A fusão segue a escada `COMUM → RARA → ÉPICA → LENDÁRIA → BOOM`
-    (`CLAUDE.md`, 5): fundir 2 cartas da MESMA raridade sobe 1 grau; fundir 2 de raridades
-    diferentes nivela pela MENOR e sobe 1 grau (`min(a,b) + 1`); fundir 2 lendárias garante uma
-    Boom; Boom + Boom continua Boom. A carta resultante é SORTEADA aleatoriamente dentre as cartas
-    da raridade-alvo, pelo canal `CARDS` do RNG — igual a uma compra normal, sem segundo modal de
+  > **Raridade/custo pós-Fase 7a: LENDÁRIA/1⚡** (era BOOM/0⚡ — ver nota no fim desta entrada;
+  > continua listada em "Boom!" abaixo por localização histórica do documento).
+  - **Custo:** 1⚡ (patch pós-Fase 7a — antes 0⚡) · **Categoria (PDF):** Evento · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Abre modal para o jogador escolher 2 cartas da mão (quaisquer, exceto a
+    combinação BOOM+BOOM — ver abaixo) para sacrificar. A fusão segue a escada `COMUM → RARA →
+    ÉPICA → LENDÁRIA → BOOM` (`CLAUDE.md`, 5): fundir 2 cartas da MESMA raridade sobe 1 grau;
+    fundir 2 de raridades diferentes nivela pela MENOR e sobe 1 grau (`min(a,b) + 1`); fundir 2
+    lendárias garante uma Boom. A carta resultante é SORTEADA aleatoriamente dentre as cartas da
+    raridade-alvo, pelo canal `CARDS` do RNG — igual a uma compra normal, sem segundo modal de
     escolha. Deliberado: deixar o jogador ESCOLHER qualquer lendária transformaria o Altar num
-    tutor a custo 0⚡ e mataria a identidade de aposta que uma carta Boom deve ter.
+    tutor de custo baixíssimo e mataria a identidade de aposta que uma carta Boom deve ter.
 
     **Matemática superada — não ressuscitar:** a seção 4 do PDF ("UX/UI do Altar") descreve outra
     matemática de fusão ("chance de subir DUAS raridades se as cartas já forem raras/épicas"). Essa
     matemática está SUPERADA pela decisão 5 do `CLAUDE.md` (`min(a,b) + 1`, sempre 1 grau, nunca
     2) — se uma sessão futura reler o PDF cru sem ler este documento, corre o risco de reimplementar
     a regra antiga. A única matemática válida é a escada de 1 grau descrita acima.
-  - **Abre modal:** Sim — interação híbrida (drag & drop das cartas da mão para os slots, ou tocar
-    no slot e depois na carta). **Exige alvo no tabuleiro:** Não.
-  - **Anulável por armadilha:** Não (Boom, imune).
+
+    **BOOM + BOOM já não é mais um ritual válido (patch pós-Fase 7a):** antes, sacrificar duas
+    cartas Boom saturava no topo da escada e devolvia Boom (`fuseRarity`, que continua correta
+    para todas as OUTRAS combinações — inclusive Lendária+Lendária→Boom, que não é exceção). Agora
+    essa combinação específica é RECUSADA: o motor (2º passo do `effect`, `registry.ts`) devolve
+    `null` e a interação é reembolsada — o jogador recebe as 2 cartas e a energia de volta. A UI
+    (`<AltarModal />`) também recusa a atribuição antes de chegar a esse ponto, com feedback visual
+    (flash vermelho no slot).
+  - **Abre modal:** Sim — 3 formas equivalentes de atribuição, todas resolvendo pelo mesmo caminho
+    (patch pós-Fase 7a adicionou a 3ª): arrastar uma carta da mão até um slot; tocar um slot vazio
+    e depois numa carta; ou tocar uma carta e depois num slot vazio (nova — antes só a ordem
+    slot-depois-carta funcionava com toque). **Exige alvo no tabuleiro:** Não.
+  - **Anulável por armadilha:** Não (Lendária, imune — `isImmuneToTraps` cobre Lendária E Boom, sem
+    mudança de comportamento na troca de raridade).
   - **Casos de borda:**
     - **Menos de 2 outras cartas na mão** (além do próprio Altar): indisponível para jogar — o
       modal não abre para um ritual impossível de completar.
@@ -641,6 +748,9 @@
     mecanismo próprio — o que fecha de graça a 5ª ocorrência do padrão "regra de domínio só
     respeitada porque a UI não oferece o caminho" (ver `AGENTS.md`) e corrige, como efeito
     colateral, um `handleCancel` que antes nunca devolvia a carta ao cancelar.
+  - **Rebalanceamento (análise de mesa, patch pós-Fase 7a):** BOOM/0⚡ → LENDÁRIA/1⚡. Custo zero
+    tornava o Altar um "grátis, tente a sorte" sem nenhuma fricção — 1⚡ dá ao jogador um motivo
+    para pensar antes de arriscar a fusão, sem descaracterizar a identidade de aposta da carta.
 
   ---
 
@@ -741,13 +851,23 @@
   - **Quando a inversão é bem definida** (dano, roubo de carta, destruição de carta, troca,
     descarte, punição de turno): o efeito se inverte e atinge o próprio autor.
   - **Quando a inversão exigiria re-selecionar um alvo** que o oponente já escolheu (ex:
-    OBSOLESCÊNCIA — o oponente já marcou uma peça SUA; não existe uma peça "dele" óbvia para
+    AMALDIÇOAR — o oponente já marcou uma peça SUA; não existe uma peça "dele" óbvia para
     redirecionar a marca) ou não faz sentido conceitualmente (ex: ANOMALIA embaralhando a PRÓPRIA
     fila de quem a lançou): RICOCHETE apenas ANULA, como ANTIMAGIA — não tenta inverter.
 
   Esta regra de fallback existe para nenhuma carta futura ficar num estado indefinido quando
   RICOCHETE for implementada. Documentada aqui, não repetida carta a carta — cada entrada acima só
   diz "Sim, por RICOCHETE" (inversão) ou "Sim, por RICOCHETE — só anula" (fallback).
+
+  ### PROTEÇÃO/ANTIMAGIA/RICOCHETE nomeiam a carta anulada (patch pós-Fase 7a)
+  Antes deste patch, disparar qualquer uma das três só dizia "uma armadilha disparou" — nem o
+  terminal (`ChaosTerminal`) nem o modal de confirmação (`TRAP_TRIGGERED`) diziam CONTRA QUAL carta
+  do oponente. Agora as três levam o `CardId` da carta cancelada/refletida no `log` (`value:
+  event.cardId`, mesmo padrão que `TRAP_ARMED` já usava para nomear a própria armadilha), e o modal
+  de confirmação cita o nome dela na descrição. Sem risco de vazar segredo indevido: a carta
+  cancelada JÁ estava sendo jogada às claras (o barramento só entrega `CARD_ABOUT_TO_RESOLVE` no
+  instante em que ela ia resolver) — nomeá-la não revela nada que o oponente não estivesse prestes
+  a descobrir de qualquer forma.
 
   ### Limite de mão e compras de 2/3 cartas
   `CLAUDE.md` (3), lei: mão máxima de 5. Se uma compra faria a mão passar de 5, compra até encher

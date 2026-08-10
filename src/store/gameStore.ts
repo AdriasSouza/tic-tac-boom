@@ -233,6 +233,16 @@ export interface GameActions {
    */
   startMatch: (seed?: number, isOnline?: boolean) => void;
 
+  /**
+   * Retoma uma partida local/CPU a partir de um snapshot persistido
+   * (`src/store/matchPersistence.ts`) — ao contrário de `startMatch`, NÃO
+   * resemeia o RNG nem sorteia mão nova (quem chama já rodou `restoreRng`
+   * antes). Sanitiza os campos que dependiam de maquinário desta sessão de
+   * JS que já não existe mais (timers, fila de confirmação) — ver a
+   * implementação para a lista completa.
+   */
+  resumeMatch: (gameState: GameState) => void;
+
   /** Limpa o tabuleiro mantendo o HP — usado entre rodadas. */
   startNextRound: () => void;
 
@@ -857,6 +867,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
         return { ...base, kind: request.kind, source: request.source, optionUids: request.optionUids };
       case 'PICK_ONE_REVEALED':
         return { ...base, kind: request.kind, options: request.options };
+      case 'PICK_BOARD_CELL':
+        return { ...base, kind: request.kind, eligibleIndexes: request.eligibleIndexes };
     }
   }
 
@@ -1430,6 +1442,51 @@ export const useGameStore = create<GameStore>()((set, get) => {
     drawCardsFor('MACHINE', OPENING_HAND_SIZE);
   },
 
+  resumeMatch: (gameState) => {
+    resetEventBus();
+    clearRoundTransition();
+    clearChaosRouletteLock();
+    clearAcknowledgementQueue();
+
+    set({
+      ...gameState,
+      /**
+       * Travas/avisos que dependiam de um `setTimeout`/fila DESTA sessão de
+       * JS — a sessão anterior morreu, e nenhum desses maquinários sobrevive
+       * a um remount/relançamento. Rehidratar como se ainda existissem
+       * travaria o jogo para sempre, sem nenhum timer sobrando para destravar:
+       * - `chaosRouletteSpinning`: só desliga via `scheduleChaosRouletteUnlock`.
+       * - `isPaused`: só desliga via o `<PauseModal />` da tela anterior.
+       * - `pendingAcknowledgement`: o `apply` de quem a enfileirou (ex.:
+       *   `openBoardTarget` de uma carta de mira anunciada) vive só no
+       *   `acknowledgementQueue` em memória deste módulo, não em `GameState`.
+       */
+      chaosRouletteSpinning: false,
+      isPaused: false,
+      pendingAcknowledgement: null,
+      // Eventos "acabou de acontecer" — sem isto, o flash/banner de um evento
+      // de vários turnos atrás dispararia de novo no primeiro frame da
+      // retomada (cada um é lido por um efeito de componente reagindo ao
+      // `id` mudar, não a este valor voltando a existir).
+      lastDamageEvent: null,
+      lastExtraTurn: null,
+      lastChaosRoulette: null,
+      lastNotice: null,
+      lastVanishedIndex: null,
+    });
+
+    // Uma interação a meio caminho (mira, escolha, sacrifício) também
+    // dependia da sessão anterior para terminar — reembolsa como um
+    // cancelamento explícito em vez de tentar resumir uma carta em limbo.
+    const pending = get().pendingInteraction;
+    if (pending) set(refundInteraction(pending));
+
+    // ROUND_OVER tinha uma transição de rodada agendada via `setTimeout`,
+    // morta com a sessão anterior — sem isto o tabuleiro da rodada que já
+    // acabou ficaria na tela para sempre.
+    if (get().status === 'ROUND_OVER') scheduleRoundTransition();
+  },
+
   startNextRound: () => {
     clearRoundTransition();
     clearChaosRouletteLock();
@@ -1827,10 +1884,22 @@ export function isValidTargetFor(
   return isValidTargetForCard(state, getCard(cardId), index, caster);
 }
 
-/** A célula é alvo legal para a carta atualmente em mira (`BOARD_TARGET`)? */
+/**
+ * A célula é alvo legal para a mira ATUAL do tabuleiro? Cobre os 2 `kind`s
+ * que miram célula: `BOARD_TARGET` (1º passo de qualquer carta
+ * `requiresTarget`, valida via `isValidTargetFor`) e `PICK_BOARD_CELL` (2º
+ * passo de DESLIZAR — a lista de elegíveis já vem pronta do 1º passo,
+ * `eligibleIndexes`, sem precisar recalcular a regra de adjacência aqui).
+ */
 export function isPendingTarget(state: GameState, index: number): boolean {
   const pending = state.pendingInteraction;
-  if (!pending || pending.kind !== 'BOARD_TARGET') return false;
+  if (!pending) return false;
+
+  if (pending.kind === 'PICK_BOARD_CELL') {
+    return pending.eligibleIndexes.includes(index);
+  }
+  if (pending.kind !== 'BOARD_TARGET') return false;
+
   // O caster é quem tem a vez — mesma razão de `resolveInteraction`. Cartas
   // cujo alvo válido depende de quem joga (DEMOLIR, TRAVAR) destacariam as
   // células erradas no tabuleiro do convidado se isto assumisse `'PLAYER'`.
@@ -1876,6 +1945,13 @@ export const selectIsPaused = (s: GameStore) => s.isPaused;
  */
 export const selectHighlightedOldest = (s: GameStore) =>
   s.highlightedOldestFor && isHighlightedOldestValid(s) ? s.highlightedOldestFor : null;
+/**
+ * A marca de AMALDIÇOAR/ANOMALIA (`forcedVanish`), sem filtro de validade —
+ * ao contrário de `selectHighlightedOldest`, `<Cell />` não precisa saber
+ * qual peça É a marcada (o ponto é justamente NÃO revelar isso ao dono),
+ * só QUE alguma peça sua está marcada, para acender o flicker ambíguo.
+ */
+export const selectForcedVanish = (s: GameStore) => s.forcedVanish;
 /** Quem tem VISÃO ABSOLUTA ativa agora (vendo a mão inteira do oponente), ou `null`. */
 export const selectFullIntelRevealFor = (s: GameStore) => s.fullIntelRevealFor;
 export const selectMachineHand = (s: GameStore) => s.machineHand;
@@ -1923,8 +1999,10 @@ export const selectRevealedUids = (owner: Combatant) => (s: GameStore) =>
  */
 export const selectIsInteracting = (s: GameStore) => s.pendingInteraction !== null;
 
-/** Tabuleiro especificamente em modo mira (`BOARD_TARGET`)? */
-export const selectIsTargeting = (s: GameStore) => s.pendingInteraction?.kind === 'BOARD_TARGET';
+/** Tabuleiro especificamente em modo mira (`BOARD_TARGET` ou `PICK_BOARD_CELL`
+ * — DESLIZAR passo 2, mesma UI de mira, célula em vez de carta na mão)? */
+export const selectIsTargeting = (s: GameStore) =>
+  s.pendingInteraction?.kind === 'BOARD_TARGET' || s.pendingInteraction?.kind === 'PICK_BOARD_CELL';
 
 /** `uid` da carta em mira, ou `null`. Primitivo, seguro para assinar. */
 export const selectPendingUid = (s: GameStore) =>

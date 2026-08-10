@@ -3,8 +3,11 @@ import {
   CARD_RULE_MIN_DURATION_TURNS,
   HAND_LIMIT,
   INITIAL_HP,
+  MAX_PIECES_PER_PLAYER,
+  adjacentIndexes,
   getPieceIndexes,
   handKeyFor,
+  hasAdjacentEmpty,
   hpOf,
   isImmuneToTraps,
   occupiedIndexes,
@@ -12,6 +15,7 @@ import {
   placementBlockedKeyFor,
   revealedKeyFor,
 } from '@/engine/rules';
+import { getChannel, snapshotRng, restoreRng } from '@/engine/rng';
 import { fuseRarity, RARITY_DRAW_WEIGHT } from './definitions';
 import type { Rng } from '@/engine/rng';
 import { createEmptyBoard } from '@/engine/rules';
@@ -267,6 +271,214 @@ const PEEK_RANDOM: CardDefinition = {
   },
 };
 
+/**
+ * Carta nova (patch pós-Fase 7a). Move 1 peça própria para o fim da fila do
+ * "infinito" — passa a ser lida como a mais NOVA, então a ÚLTIMA a sumir.
+ * Sem mudar o índice no tabuleiro: só `turnPlaced` muda, para um valor mais
+ * novo que qualquer peça em jogo (mesmo carimbo que `placeMark` usa para
+ * peça recém-colocada, `gameStore.ts`).
+ *
+ * Efeito colateral de graça: se a peça escolhida estava marcada por
+ * AMALDIÇOAR/VIDENTE (`forcedVanish`/`highlightedOldestFor`, identidade por
+ * `owner`+`turnPlaced`), renovar muda a identidade e a marca se
+ * auto-invalida sozinha — mesmo padrão que já protege DEMOLIR/o reshuffle do
+ * TIC TAC BOOM! (ver `docs/NOTAS_TECNICAS.md`).
+ */
+const RENEW_PIECE: CardDefinition = {
+  id: 'RENEW_PIECE',
+  name: 'RENOVAR',
+  type: 'ACTION',
+  description: 'Escolha 1 peça sua no tabuleiro. Ela passa a ser a mais nova da fila — a última a sumir.',
+  targeting: 'OCCUPIED_CELL',
+  rarity: 'COMMON',
+  weight: 3,
+  cost: 1,
+
+  requiresTarget: true,
+  isValidTarget: ({ state, caster, index }) => state.board[index]?.owner === caster,
+
+  // Com 1 peça só, ela já é a mais nova de qualquer jeito — nada para renovar.
+  canPlay: ({ state, caster }) => occupiedIndexes(state, caster).length >= 2,
+
+  effect: ({ state, caster, targetIndex }) => {
+    if (targetIndex === undefined) return null;
+    const piece = state.board[targetIndex];
+    if (!piece || piece.owner !== caster) return null;
+
+    const board = [...state.board];
+    board[targetIndex] = { ...piece, turnPlaced: state.turnCount };
+
+    return {
+      patch: { board },
+      log: { code: 'CARD_RENEW_PIECE', subject: caster, value: targetIndex },
+      notice: { code: 'CARD_RENEW_PIECE', subject: caster, value: targetIndex, tone: 'NEUTRAL' },
+    };
+  },
+};
+
+/**
+ * Carta nova (patch pós-Fase 7a). Descarta 1 carta da PRÓPRIA mão e compra 1
+ * nova em troca. `PICK_ONE_FROM_HAND` com `source: caster` já mostra a mão
+ * de quem escolhe com a face virada (é a mão dele mesmo) — sem mudança de
+ * contrato. `draw` (não mint manual) processa a compra depois do patch de
+ * descarte, mesmo mecanismo declarativo de ESTUDAR — reaproveita o clamp de
+ * `HAND_LIMIT` de graça, embora nunca chegue a importar aqui (descarta 1
+ * antes de comprar 1, o tamanho da mão nunca sobe).
+ */
+const MULLIGAN: CardDefinition = {
+  id: 'MULLIGAN',
+  name: 'RECICLAR',
+  type: 'ACTION',
+  description: 'Descarte 1 carta da sua mão e compre 1 nova.',
+  targeting: 'NONE',
+  rarity: 'COMMON',
+  weight: 3,
+  cost: 1,
+
+  // A própria RECICLAR está na mão nesta checagem (`canPlay` roda antes dela
+  // sair) — precisa de ao menos 1 OUTRA carta para descartar.
+  canPlay: ({ state, caster }) => state[handKeyFor(caster)].length > 1,
+
+  effect: (ctx) => {
+    const { state, caster, uid } = ctx;
+
+    if (!ctx.interaction) {
+      const options = state[handKeyFor(caster)].filter((c) => c.uid !== uid).map((c) => c.uid);
+      if (options.length === 0) return null;
+      return { interaction: { kind: 'PICK_ONE_FROM_HAND', source: caster, optionUids: options } };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_ONE_FROM_HAND') return null;
+
+    // A própria RECICLAR já saiu da mão ao abrir a interação (timing
+    // unificado da Fase 3) — `state[handKeyFor(caster)]` aqui já reflete isso.
+    const hand = state[handKeyFor(caster)];
+    const discarded = hand.find((c) => c.uid === selection.uid);
+    if (!discarded) return null;
+
+    const event = { code: 'CARD_MULLIGAN', subject: caster } as const;
+    return {
+      patch: { [handKeyFor(caster)]: hand.filter((c) => c.uid !== discarded.uid) },
+      draw: { target: caster, count: 1 },
+      log: event,
+      notice: { ...event, tone: 'NEUTRAL' },
+    };
+  },
+};
+
+/**
+ * Carta nova (patch pós-Fase 7a). Único card que abre um `kind` de
+ * `pendingInteraction` NOVO (`PICK_BOARD_CELL`) — `BOARD_TARGET` não pode ser
+ * pedido 2x em sequência (só o motor de resolução de carta o abre, nunca
+ * `effect()`, ver `definitions.ts`), então "escolher célula → escolher OUTRA
+ * célula" precisa de um `kind` que nasça de `effect()` de verdade.
+ *
+ * Passo 1 reaproveita `BOARD_TARGET` como qualquer carta `requiresTarget`
+ * comum: escolhe a PRÓPRIA peça a mover (só é alvo válido se tiver >=1
+ * vizinho ortogonal vazio, `hasAdjacentEmpty`). Passo 2 (`PICK_BOARD_CELL`)
+ * escolhe o destino dentre os vizinhos já calculados no passo 1 —
+ * `eligibleIndexes` chega pronto para a UI destacar sem recalcular a regra de
+ * adjacência (`<Cell />`).
+ *
+ * `turnPlaced` NÃO muda — é posição, não idade (diferente de RENOVAR).
+ */
+const SLIDE_PIECE: CardDefinition = {
+  id: 'SLIDE_PIECE',
+  name: 'DESLIZAR',
+  type: 'ACTION',
+  description: 'Mova 1 peça sua para uma célula vazia adjacente (sem diagonais). Não muda a idade dela na fila.',
+  targeting: 'CELL',
+  rarity: 'COMMON',
+  weight: 3,
+  cost: 1,
+
+  requiresTarget: true,
+  isValidTarget: ({ state, caster, index }) =>
+    state.board[index]?.owner === caster && hasAdjacentEmpty(state.board, index),
+
+  canPlay: ({ state, caster }) =>
+    occupiedIndexes(state, caster).some((index) => hasAdjacentEmpty(state.board, index)),
+
+  effect: (ctx) => {
+    const { state, caster, targetIndex } = ctx;
+
+    if (!ctx.interaction) {
+      if (targetIndex === undefined) return null;
+      const piece = state.board[targetIndex];
+      if (!piece || piece.owner !== caster) return null;
+
+      const eligibleIndexes = adjacentIndexes(targetIndex).filter((i) => state.board[i] === null);
+      if (eligibleIndexes.length === 0) return null;
+
+      return { interaction: { kind: 'PICK_BOARD_CELL', eligibleIndexes } };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_BOARD_CELL') return null;
+    const origin = ctx.interaction.priorSelections[0];
+    if (!origin || origin.kind !== 'BOARD_TARGET') return null;
+
+    const piece = state.board[origin.index];
+    if (!piece || piece.owner !== caster) return null;
+    if (state.board[selection.index] !== null) return null;
+    if (!adjacentIndexes(origin.index).includes(selection.index)) return null;
+
+    const board = [...state.board];
+    board[origin.index] = null;
+    board[selection.index] = piece;
+
+    return {
+      patch: { board },
+      log: { code: 'CARD_SLIDE_PIECE', subject: caster, value: selection.index },
+      notice: { code: 'CARD_SLIDE_PIECE', subject: caster, value: selection.index, tone: 'NEUTRAL' },
+    };
+  },
+};
+
+/**
+ * Carta nova (patch pós-Fase 7a). Espia as 3 próximas cartas do baralho
+ * infinito SEM sacar — `snapshotRng()` → 3× `drawCardId` no canal `CARDS` →
+ * `restoreRng()` devolve o cursor exatamente onde estava, então a PRÓXIMA
+ * compra de verdade (ESTUDAR, PROCRASTINAR, o que vier) sorteia do mesmo
+ * ponto, como se o espião nunca tivesse olhado. Reaproveita `kind:
+ * 'INTEL_FLIP'` (já existe para VISÃO ABSOLUTA — "todas viradas pra cima ao
+ * abrir, sem seleção") em vez de um `AcknowledgementKind` novo:
+ * `<AcknowledgementModal />` já renderiza `revealedCards` face-up para esse
+ * `kind`, sem precisar de nenhuma mudança de UI.
+ *
+ * Efeito colateral ACEITO, não bug (confirmado com o usuário): se algo mais
+ * consumir o canal `CARDS` entre PRESSÁGIO e a próxima compra de verdade
+ * (outra carta de compra, SAQUE, o Altar), a previsão fica desatualizada —
+ * mesmo espírito "caótico" do resto do baralho.
+ *
+ * Sem `canPlay`: sempre jogável, não depende de mão do oponente nem de
+ * tabuleiro.
+ */
+const SCRY_DECK: CardDefinition = {
+  id: 'SCRY_DECK',
+  name: 'PRESSÁGIO',
+  type: 'ACTION',
+  description: 'Veja as 3 próximas cartas do baralho, sem comprá-las.',
+  targeting: 'NONE',
+  rarity: 'COMMON',
+  weight: 3,
+  cost: 1,
+
+  effect: ({ state, caster, rng }) => {
+    const snapshot = snapshotRng();
+    const upcoming: CardId[] = [drawCardId(rng), drawCardId(rng), drawCardId(rng)];
+    restoreRng(snapshot);
+
+    return {
+      log: { code: 'CARD_SCRY_DECK', subject: caster },
+      acknowledge: isAIController(state, caster)
+        ? undefined
+        : { code: 'CARD_SCRY_DECK', kind: 'INTEL_FLIP', subject: caster, revealedCards: upcoming },
+    };
+  },
+};
+
 /* -------------------------------------------------------------------------- */
 /*                          CUSTO 2 — VANTAGEM                                  */
 /* -------------------------------------------------------------------------- */
@@ -277,7 +489,7 @@ const DRAW_CARD: CardDefinition = {
   type: 'ACTION',
   description: 'Compra 2 cartas novas.',
   targeting: 'NONE',
-  rarity: 'RARE',
+  rarity: 'EPIC',
   weight: 3,
   cost: 2,
 
@@ -442,17 +654,24 @@ const CARD_TRADE: CardDefinition = {
  * do "infinito") virou HIGHLIGHT_OLDEST/VIDENTE, abaixo. Esta agora FORÇA uma
  * peça inimiga à escolha do jogador a ser a próxima a sumir da fila do
  * "infinito" dele — NÃO é mais destruição imediata: só some quando o dono
- * estourar o limite de 3 peças, pela regra normal (`docs/CARTAS.md`: mais
- * lenta e mais fraca que antes, DE PROPÓSITO — destruição imediata já existe
- * e custa só 1⚡, DEMOLIR). Mesmo mecanismo de ANOMALIA (`forcedVanish`,
- * `getVanishingIndex` em `rules.ts`), parametrizado com um índice ESCOLHIDO
- * em vez de aleatório.
+ * estourar o limite de 3 peças, pela regra normal. Mesmo mecanismo de ANOMALIA
+ * (`forcedVanish`, `getVanishingIndex` em `rules.ts`), parametrizado com um
+ * índice ESCOLHIDO em vez de aleatório.
+ *
+ * Renomeada para AMALDIÇOAR (patch pós-Fase 7a): o mecanismo em si já estava
+ * correto, o que faltava era o oponente NÃO saber qual peça foi marcada — o
+ * destaque ambíguo (flicker cosmético, local, sem RNG determinístico) mora em
+ * `<Cell />`, não aqui, exatamente porque este `effect` não pode revelar o
+ * alvo real para quem é dono da peça (só para `caster`, via `log`/`notice`).
+ * `canPlay` exige >=3 peças do oponente (não só >=1 como antes) — marcar uma
+ * peça antes da fila do "infinito" valer para o dono não faz sentido nenhum.
  */
 const MARK_DOOMED: CardDefinition = {
   id: 'OBSOLESCENCE',
-  name: 'OBSOLESCÊNCIA',
+  name: 'AMALDIÇOAR',
   type: 'ACTION',
-  description: 'Marca uma peça do oponente para ser a próxima a sumir da fila do "infinito" dele.',
+  description:
+    'Marca uma peça do oponente: quando ele estourar o limite da fila, ela some no lugar da mais velha — mas o efeito visual mostra uma peça aleatória, para ele não saber qual é a de verdade.',
   targeting: 'OCCUPIED_CELL',
   rarity: 'RARE',
   weight: 3,
@@ -462,18 +681,24 @@ const MARK_DOOMED: CardDefinition = {
   requiresTarget: true,
   isValidTarget: ({ state, caster, index }) => state.board[index]?.owner === opponentOf(caster),
 
-  canPlay: ({ state, caster }) => occupiedIndexes(state, opponentOf(caster)).length > 0,
+  canPlay: ({ state, caster }) =>
+    occupiedIndexes(state, opponentOf(caster)).length >= MAX_PIECES_PER_PLAYER,
 
   effect: ({ state, caster, targetIndex }) => {
     if (targetIndex === undefined) return null;
     const piece = state.board[targetIndex];
     if (!piece || piece.owner !== opponentOf(caster)) return null;
 
+    // SEM `value: targetIndex` de propósito: `log`/`notice` são fatos
+    // COMPARTILHADOS (só o pronome muda por perspectiva, não o conteúdo) — se
+    // o índice viajasse aqui, o terminal entregaria ao próprio dono da peça
+    // exatamente qual foi marcada, destruindo a ambiguidade que é o efeito
+    // desta carta (ver o flicker cosmético em `<Cell />`). O caster já sabe
+    // qual célula tocou; ninguém mais precisa saber pelo log.
     const event = {
       code: 'CARD_MARK_DOOMED',
       subject: caster,
       target: opponentOf(caster),
-      value: targetIndex,
     } as const;
 
     return {
@@ -568,9 +793,9 @@ const DRAW_CARD_BIG: CardDefinition = {
   type: 'ACTION',
   description: 'Compra 3 cartas novas.',
   targeting: 'NONE',
-  rarity: 'EPIC',
+  rarity: 'LEGENDARY',
   weight: 2,
-  cost: 2,
+  cost: 3,
 
   canPlay: ({ state, caster }) => state[handKeyFor(caster)].length < HAND_LIMIT,
 
@@ -589,29 +814,57 @@ const DRAW_CARD_BIG: CardDefinition = {
  * `caster` — auto-invalida se a peça sair do índice por outro caminho antes
  * do turno de `caster` terminar (ver `isHighlightedOldestValid`).
  *
- * `canPlay` exige só >=1 peça do oponente, não as 3 do "infinito" — a spec
- * (`docs/CARTAS.md`) só define o caso de borda "sem NENHUMA peça", não
- * "menos de 3"; com 1-2 peças a carta destaca a mais antiga que existir,
- * mesmo antes da regra do infinito valer. Decisão registrada em
- * `docs/CARTAS.md`, não confirmada pela spec — testada como presunção.
+ * `canPlay` exige >=3 peças do oponente (patch pós-Fase 7a — antes bastava
+ * >=1): destacar "a mais antiga" antes da fila do infinito valer para o dono
+ * não faz sentido, é informação óbvia de graça olhando o tabuleiro.
+ *
+ * A "peça mais antiga" nem sempre é `getPieceIndexes[0]` (a de menor
+ * `turnPlaced`) — se AMALDIÇOAR ou o surto RANDOM_FADE do terminal do caos já
+ * decidiram uma peça DIFERENTE para sumir no lugar dela, VIDENTE revela essa,
+ * não a cronologicamente mais velha (`docs/CARTAS.md`/pedido do patch). Para
+ * `CHOSEN` (AMALDIÇOAR) o índice já está decidido, sem RNG. Para `RANDOM`
+ * (ANOMALIA) ou `RANDOM_FADE` (surto global), o sorteio de verdade só
+ * acontece na hora da remoção (`getVanishingIndex`, `rules.ts`) — para
+ * revelar isso ANTES, sem consumir o canal `BOARD` de verdade, VIDENTE espia:
+ * `snapshotRng()` → sorteia → `restoreRng()`. A previsão pode ficar
+ * desatualizada se algo mais consumir o canal `BOARD` nesse meio-tempo —
+ * aceito, mesmo espírito "caótico" de PRESSÁGIO no baralho.
  */
 const HIGHLIGHT_OLDEST: CardDefinition = {
   id: 'HIGHLIGHT_OLDEST',
   name: 'VIDENTE',
   type: 'ACTION',
-  description: 'Destaca a peça mais antiga do oponente no tabuleiro.',
+  description: 'Revela qual peça do oponente vai sumir da fila do "infinito" — inclusive se AMALDIÇOAR ou o caos já mudaram qual é.',
   targeting: 'NONE',
   rarity: 'COMMON',
   weight: 2,
   cost: 1,
 
-  canPlay: ({ state, caster }) => occupiedIndexes(state, opponentOf(caster)).length > 0,
+  canPlay: ({ state, caster }) =>
+    occupiedIndexes(state, opponentOf(caster)).length >= MAX_PIECES_PER_PLAYER,
 
   effect: ({ state, caster }) => {
     const target = opponentOf(caster);
-    const oldest = getPieceIndexes(state.board, target)[0];
-    if (oldest === undefined) return null;
-    const piece = state.board[oldest]!; // sempre não-nulo — veio de getPieceIndexes
+    const indexes = getPieceIndexes(state.board, target);
+    if (indexes.length === 0) return null;
+
+    const forced = state.forcedVanish;
+    let oldest: number;
+    if (forced && forced.owner === target && forced.mode === 'CHOSEN') {
+      oldest = forced.index;
+    } else if (
+      indexes.length >= MAX_PIECES_PER_PLAYER &&
+      ((forced && forced.owner === target && forced.mode === 'RANDOM') ||
+        state.activeRule === 'RANDOM_FADE')
+    ) {
+      const snapshot = snapshotRng();
+      oldest = getChannel('BOARD').pick(indexes);
+      restoreRng(snapshot);
+    } else {
+      oldest = indexes[0];
+    }
+
+    const piece = state.board[oldest]!; // sempre não-nulo — veio de getPieceIndexes/forcedVanish válido
 
     const event = { code: 'CARD_HIGHLIGHT_OLDEST', subject: caster, target, value: oldest } as const;
     return {
@@ -824,11 +1077,11 @@ const CARD_DRAFT: CardDefinition = {
   id: 'CARD_DRAFT',
   name: 'PROCRASTINAR',
   type: 'ACTION',
-  description: 'Revela 3 cartas novas do baralho e escolha 1 para a mão.',
+  description: 'Sorteia 3 cartas ocultas do baralho e escolha 1 às cegas para a mão.',
   targeting: 'NONE',
   rarity: 'RARE',
   weight: 2,
-  cost: 2,
+  cost: 1,
 
   effect: (ctx) => {
     const { state, caster, rng } = ctx;
@@ -964,11 +1217,11 @@ const CARD_DRAFT_TIERED: CardDefinition = {
   id: 'CARD_DRAFT_TIERED',
   name: 'PROCRASTINAR II',
   type: 'ACTION',
-  description: 'Revela 5 cartas novas do baralho (2 comuns, 2 épicas, 1 lendária) e escolha 1 para a mão.',
+  description: 'Sorteia 5 cartas ocultas do baralho (2 comuns, 2 épicas, 1 lendária) e escolha 1 às cegas para a mão.',
   targeting: 'NONE',
   rarity: 'EPIC',
   weight: 2,
-  cost: 3,
+  cost: 2,
 
   effect: (ctx) => {
     const { state, caster, rng } = ctx;
@@ -1106,13 +1359,15 @@ const FULL_INTEL: CardDefinition = {
 
 /**
  * Sucessora da antiga MINA (mesmo id, mesmo mecanismo): virou Lendária/custo 3
- * por ser a punição mais dura do baralho — nenhuma mudança na lógica.
+ * por ser a punição mais dura do baralho. Dano rebaixado de 2 para 1 no patch
+ * pós-Fase 7a (análise de mesa) — o resto do efeito (o oponente perde a vez)
+ * já é punição suficiente sozinho.
  */
 const BOMB_TRAP: CardDefinition = {
   id: 'BOMB_TRAP',
   name: 'MINA',
   type: 'TRAP',
-  description: 'Virada na mesa. Detona se o oponente ocupar o centro: 2 de dano e ele perde a vez.',
+  description: 'Virada na mesa. Detona se o oponente ocupar o centro: 1 de dano e ele perde a vez.',
   targeting: 'NONE',
   rarity: 'LEGENDARY',
   weight: 3,
@@ -1125,7 +1380,7 @@ const BOMB_TRAP: CardDefinition = {
   triggerCondition: (event) => event.type === 'PIECE_PLACED' && event.index === CENTER_INDEX,
 
   effect: ({ caster }) => ({
-    damage: { target: opponentOf(caster), amount: 2 },
+    damage: { target: opponentOf(caster), amount: 1 },
 
     /**
      * "Cancela a vez dele" traduzido para a máquina que já existe.
@@ -1174,7 +1429,13 @@ const SHIELD_TRAP: CardDefinition = {
     getCard(event.cardId).readsOrRemovesFromHand === true &&
     !isImmuneToTraps(getCard(event.cardId).rarity),
 
-  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_SHIELD', subject: caster } }),
+  effect: ({ caster, event }) => {
+    if (!event || event.type !== 'CARD_ABOUT_TO_RESOLVE') return null;
+    // `value` carrega o id da carta anulada (mesmo padrão de `TRAP_ARMED`) —
+    // sem isso, o log/modal só diz "uma armadilha disparou", nunca CONTRA O
+    // QUE.
+    return { cancelsAction: true, log: { code: 'TRAP_SHIELD', subject: caster, value: event.cardId } };
+  },
 };
 
 /**
@@ -1203,7 +1464,10 @@ const ANTI_SPELL_TRAP: CardDefinition = {
   triggerCondition: (event) =>
     event.type === 'CARD_ABOUT_TO_RESOLVE' && !isImmuneToTraps(getCard(event.cardId).rarity),
 
-  effect: ({ caster }) => ({ cancelsAction: true, log: { code: 'TRAP_ANTI_SPELL', subject: caster } }),
+  effect: ({ caster, event }) => {
+    if (!event || event.type !== 'CARD_ABOUT_TO_RESOLVE') return null;
+    return { cancelsAction: true, log: { code: 'TRAP_ANTI_SPELL', subject: caster, value: event.cardId } };
+  },
 };
 
 /**
@@ -1300,7 +1564,7 @@ const REFLECT_TRAP: CardDefinition = {
 
     return {
       cancelsAction: true,
-      log: { code: 'TRAP_RICOCHET', subject: caster, target: attacker },
+      log: { code: 'TRAP_RICOCHET', subject: caster, target: attacker, value: event.cardId },
       ...inverted,
     };
   },
@@ -1418,9 +1682,12 @@ const ALTAR_OF_SACRIFICE: CardDefinition = {
   type: 'ACTION',
   description: 'Arraste 2 cartas da mão para o altar. A oferenda funde as raridades e invoca uma carta nova.',
   targeting: 'NONE',
-  rarity: 'BOOM',
+  // Rebaixada de BOOM/0⚡ para LENDÁRIA/1⚡ (patch pós-Fase 7a) — continua imune
+  // a armadilha (`isImmuneToTraps` cobre as duas raridades), só muda a chance
+  // de sair numa compra e o custo de jogar.
+  rarity: 'LEGENDARY',
   weight: 1,
-  cost: 0,
+  cost: 1,
 
   // Precisa de 2 OUTRAS cartas na mão além do próprio Altar — senão a
   // interação abriria para um ritual impossível de completar.
@@ -1444,6 +1711,15 @@ const ALTAR_OF_SACRIFICE: CardDefinition = {
     const cardA = hand.find((c) => c.uid === uidA);
     const cardB = hand.find((c) => c.uid === uidB);
     if (!cardA || !cardB || cardA.uid === cardB.uid) return null;
+
+    // Patch pós-Fase 7a: BOOM + BOOM não é mais um ritual válido — a fusão
+    // devolve `null` (mesmo caminho de "passo inválido" de `cardA === cardB`
+    // acima), e `finishInteractionStep` reembolsa as 2 cartas + a energia do
+    // Altar (`refundInteraction`, `gameStore.ts`). A guarda vive no motor, não
+    // só na UI (`AGENTS.md`, "Invariantes de domínio") — `<AltarModal />`
+    // também recusa antecipadamente, mas isto é o que garante a regra de
+    // verdade mesmo se algo (rede, teste) contornar a UI.
+    if (getCard(cardA.cardId).rarity === 'BOOM' && getCard(cardB.cardId).rarity === 'BOOM') return null;
 
     const resultRarity = fuseRarity(getCard(cardA.cardId).rarity, getCard(cardB.cardId).rarity);
     const invokedId = rng.pick(IDS_BY_RARITY[resultRarity]);
@@ -1537,6 +1813,10 @@ export const CARD_REGISTRY: Record<CardId, CardDefinition> = {
   INTEL_REVEAL,
   CARD_DRAFT,
   CARD_DRAFT_TIERED,
+  RENEW_PIECE,
+  MULLIGAN,
+  SLIDE_PIECE,
+  SCRY_DECK,
 };
 
 export const CARD_IDS = Object.keys(CARD_REGISTRY) as CardId[];

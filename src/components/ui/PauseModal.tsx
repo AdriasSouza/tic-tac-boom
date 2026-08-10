@@ -6,6 +6,7 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
+import { clearMatchSnapshot } from '@/store/matchPersistence';
 import { useGameStore } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 
@@ -39,6 +40,12 @@ function PauseModalComponent({ visible, onClose }: PauseModalProps) {
   const handleQuit = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     onClose();
+    // Saída deliberada pro menu: o snapshot desta partida (se houver — online
+    // nunca escreve um, então isto é um no-op inofensivo lá) não deve
+    // reaparecer como "Continuar Partida" depois que o jogador já saiu por
+    // conta própria. `status` ainda não chegou a MATCH_OVER aqui, então o
+    // listener do `useMatchAutosave` sozinho não teria limpado.
+    void clearMatchSnapshot();
     router.replace('/');
   }, [onClose, router]);
 

@@ -16,13 +16,16 @@ import { colors } from '@/theme/colors';
 /**
  * Modal genérico para os 3 `kind`s de `pendingInteraction` que precisam de
  * grade tocável: `PICK_ONE_FROM_HAND`, `PICK_MANY_FROM_HAND`,
- * `PICK_ONE_REVEALED`. Os outros 2 `kind`s NÃO passam por aqui:
+ * `PICK_ONE_REVEALED`. Os outros 3 `kind`s NÃO passam por aqui:
  *
  * - `BOARD_TARGET` — UI própria já existe (overlay do `<Board />`/`<Cell />`
  *   + banner do `<CardHand />`); mira não é modal, é o tabuleiro.
  * - `SACRIFICE_DRAG` — Altar de Sacrifício tem UI própria (`<AltarModal />`,
  *   arrastar/tocar em vez de grade), mesmo já usando `pendingInteraction`
  *   (Fase 6b) por baixo.
+ * - `PICK_BOARD_CELL` — mesma UI do `BOARD_TARGET` (DESLIZAR, passo 2:
+ *   escolher a célula de destino tocando no tabuleiro, não numa grade de
+ *   cartas).
  *
  * Sempre montado no root (como `AcknowledgementModal`/`AltarModal`), decide
  * sozinho se tem algo para mostrar. `controlledCombatants` (`useMatchPerspective`,
@@ -49,7 +52,12 @@ export function InteractionModal() {
   }, [pendingUid]);
 
   if (!pending) return null;
-  if (pending.kind === 'BOARD_TARGET' || pending.kind === 'SACRIFICE_DRAG') return null;
+  if (
+    pending.kind === 'BOARD_TARGET' ||
+    pending.kind === 'SACRIFICE_DRAG' ||
+    pending.kind === 'PICK_BOARD_CELL'
+  )
+    return null;
   if (!controlledCombatants.includes(pending.caster)) return null;
 
   const card = getCard(pending.cardId);
@@ -129,15 +137,21 @@ export function InteractionModal() {
       onPress: () => resolve({ kind: 'PICK_MANY_FROM_HAND', uids: picked }),
     };
   } else {
-    // PICK_ONE_REVEALED
-    caption = 'Escolha 1 destas cartas.';
+    // PICK_ONE_REVEALED — hoje só PROCRASTINAR/PROCRASTINAR II usam este
+    // `kind`. Apesar do nome ("reveladas"), o pedido do patch pós-Fase 7a é
+    // justamente ESCONDER a identidade até a escolha: o barato da carta é
+    // apostar às cegas, não ler os 3 nomes antes de decidir. `pending.options`
+    // continua carregando os `CardId` reais (a rede/UI já sabem a identidade,
+    // ver `rules.ts`) — só a APRESENTAÇÃO some, `revealed={false}` mostra
+    // apenas o verso/posição de cada slot.
+    caption = 'Escolha 1 carta às cegas.';
     grid = (
       <View style={styles.grid}>
         {pending.options.map((optionCardId, index) => (
           <View key={`${optionCardId}-${index}`} style={styles.slotWrap}>
             <FlipCard
               cardId={optionCardId}
-              revealed
+              revealed={false}
               onPress={() => resolve({ kind: 'PICK_ONE_REVEALED', cardId: optionCardId })}
             />
           </View>

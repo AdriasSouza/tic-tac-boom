@@ -8,6 +8,7 @@ import { PixelPanel } from './PixelPanel';
 import { useIsOpponentConnected } from '@/hooks/useLocalTurn';
 import { netForfeit } from '@/services/syncBridge';
 import { selectStatus, useGameStore } from '@/store/gameStore';
+import { selectRoomCode, useMultiplayerStore } from '@/store/multiplayerStore';
 import { colors } from '@/theme/colors';
 
 /**
@@ -35,6 +36,11 @@ const FORFEIT_GRACE_MS = 45_000;
  */
 export function OpponentDisconnectedModal() {
   const isOpponentConnected = useIsOpponentConnected();
+  // Mesmo código que `app/lobby.tsx` já mostra pra quem cria a sala — aqui
+  // serve pra qualquer um dos dois lados poder reencaminhar pro outro (por
+  // telefone, por exemplo) sem precisar criar uma sala nova: o código não
+  // muda por papel (anfitrião/convidado), e a sala continua a mesma.
+  const roomCode = useMultiplayerStore(selectRoomCode);
   // Uma partida já decidida (inclusive por um W.O. que ESTE cliente acabou de
   // declarar) não deve reabrir este aviso por cima da tela de resultado — sem
   // isto, o `<GameOverOverlay />` (uma `View` comum) e este `<Modal />` nativo
@@ -88,6 +94,15 @@ export function OpponentDisconnectedModal() {
                 ? 'Ele ainda não voltou. Você pode esperar mais um pouco ou encerrar a partida agora.'
                 : 'Aguardando reconexão... o jogo retoma sozinho assim que ele voltar.'}
             </Text>
+
+            {roomCode && (
+              <View style={styles.codeBox}>
+                <Text style={styles.codeLabel}>CÓDIGO DA SALA</Text>
+                <Text style={styles.codeText} selectable>
+                  {roomCode}
+                </Text>
+              </View>
+            )}
 
             {canForfeit && (
               <PixelButton
@@ -161,6 +176,31 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     textAlign: 'center',
     opacity: 0.85,
+  },
+  codeBox: {
+    marginTop: 14,
+    alignSelf: 'stretch',
+    borderWidth: 2,
+    borderColor: colors.winGlow,
+    backgroundColor: colors.bgDeep,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  codeLabel: {
+    color: colors.textDim,
+    fontSize: 8,
+    fontWeight: '800',
+    letterSpacing: 2,
+  },
+  codeText: {
+    marginTop: 4,
+    color: colors.winGlow,
+    fontSize: 26,
+    fontWeight: '900',
+    letterSpacing: 6,
+    // Compensa o `letterSpacing`, que o RN aplica também DEPOIS do último
+    // caractere — mesmo ajuste de `app/lobby.tsx`.
+    marginLeft: 6,
   },
   button: {
     alignSelf: 'stretch',

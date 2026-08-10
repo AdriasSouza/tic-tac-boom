@@ -334,8 +334,39 @@ export function netForfeit(): void {
 /*                      ENTRADA: REDE ➜ LOCAL                                  */
 /* -------------------------------------------------------------------------- */
 
-/** Traduz uma ação da rede numa chamada do `gameStore`. */
-function applyRemoteAction(action: StoredAction): void {
+/**
+ * Dessincronia detectada nesta chamada de `consumeRemoteActions` — ver
+ * `reportDesync`/`resyncFromActionLog` abaixo.
+ */
+let desyncDetected = false;
+
+/**
+ * Loga uma dessincronia E marca a flag que `consumeRemoteActions` devolve.
+ *
+ * Não há recuperação automática possível AQUI (o histórico local já é
+ * outro) — o que muda agora é que quem chama (`useMultiplayerSync`) pode
+ * reagir ao valor de retorno reconstruindo o estado inteiro a partir do log
+ * (`resyncFromActionLog`), em vez de deixar os dois clientes travados
+ * "esperando a jogada um do outro" para sempre. Continua gritando alto no
+ * console de qualquer forma: um desync é o bug mais caro de diagnosticar
+ * depois, e saber QUE aconteceu (mesmo já corrigido) importa para investigar
+ * a causa.
+ */
+function reportDesync(...args: unknown[]): void {
+  console.error('[syncBridge] DESSINCRONIA:', ...args);
+  desyncDetected = true;
+}
+
+/**
+ * Traduz uma ação do log numa chamada do `gameStore`.
+ *
+ * Usada por dois chamadores com necessidades diferentes: `consumeRemoteActions`
+ * (incremental, ignora ações do PRÓPRIO cliente — já rodaram no clique) e
+ * `resyncFromActionLog` (reconstrução total, aplica TODAS as ações, inclusive
+ * as próprias, contra um estado recém-reseedado). Por isso não assume nada
+ * sobre autoria além do que `action.by` já diz — quem filtra é cada chamador.
+ */
+function applyLoggedAction(action: StoredAction): void {
   const game = useGameStore.getState();
   const combatant = COMBATANT_BY_SLOT[action.by];
 
@@ -344,12 +375,10 @@ function applyRemoteAction(action: StoredAction): void {
       const played = game.placeMark(combatant, action.index);
 
       // A engine recusou uma jogada que o outro cliente aceitou ⇒ os dois
-      // estados divergiram. Não há recuperação automática possível aqui (o
-      // histórico local já é outro), então o que resta é gritar alto: um
-      // desync silencioso é o bug mais caro de diagnosticar depois.
+      // estados divergiram.
       if (!played) {
-        console.error(
-          '[syncBridge] DESSINCRONIA: a jogada remota em',
+        reportDesync(
+          'a jogada remota em',
           action.index,
           'foi recusada localmente. Turno local:',
           useGameStore.getState().turn,
@@ -368,11 +397,7 @@ function applyRemoteAction(action: StoredAction): void {
           : game.playMachineCard(action.uid, target);
 
       if (!played) {
-        console.error(
-          '[syncBridge] DESSINCRONIA: a carta remota',
-          action.uid,
-          'foi recusada localmente.',
-        );
+        reportDesync('a carta remota', action.uid, 'foi recusada localmente.');
       }
       break;
     }
@@ -380,8 +405,8 @@ function applyRemoteAction(action: StoredAction): void {
     case 'END_TURN': {
       const passed = game.endTurn(combatant);
       if (!passed) {
-        console.error(
-          '[syncBridge] DESSINCRONIA: o "passar a vez" remoto de',
+        reportDesync(
+          'o "passar a vez" remoto de',
           combatant,
           'foi recusado localmente. Turno local:',
           useGameStore.getState().turn,
@@ -393,11 +418,7 @@ function applyRemoteAction(action: StoredAction): void {
     case 'RESOLVE_INTERACTION': {
       const resolved = game.resolveInteraction(combatant, action.selection);
       if (!resolved) {
-        console.error(
-          '[syncBridge] DESSINCRONIA: a resolução remota de interação de',
-          combatant,
-          'foi recusada localmente.',
-        );
+        reportDesync('a resolução remota de interação de', combatant, 'foi recusada localmente.');
       }
       break;
     }
@@ -405,11 +426,7 @@ function applyRemoteAction(action: StoredAction): void {
     case 'CANCEL_INTERACTION': {
       const cancelled = game.cancelInteraction(combatant);
       if (!cancelled) {
-        console.error(
-          '[syncBridge] DESSINCRONIA: o cancelamento remoto de interação de',
-          combatant,
-          'foi recusado localmente.',
-        );
+        reportDesync('o cancelamento remoto de interação de', combatant, 'foi recusado localmente.');
       }
       break;
     }
@@ -437,8 +454,13 @@ function applyRemoteAction(action: StoredAction): void {
  * Ações do PRÓPRIO jogador são marcadas como processadas mas **não
  * aplicadas** — elas já rodaram localmente no momento do clique. É o outro
  * lado da moeda do desenho "aplica local, publica depois".
+ *
+ * @returns `true` se alguma ação desta chamada foi recusada localmente
+ * (dessincronia) — quem chama pode reagir com `resyncFromActionLog`.
  */
-export function consumeRemoteActions(actions: StoredAction[]): void {
+export function consumeRemoteActions(actions: StoredAction[]): boolean {
+  desyncDetected = false;
+
   for (const action of actions) {
     if (processedActionIds.has(action.id)) continue;
     processedActionIds.add(action.id);
@@ -452,12 +474,53 @@ export function consumeRemoteActions(actions: StoredAction[]): void {
 
     isApplyingNetworkAction = true;
     try {
-      applyRemoteAction(action);
+      applyLoggedAction(action);
     } finally {
-      // `finally` e não uma atribuição no fim: se `applyRemoteAction` lançar,
+      // `finally` e não uma atribuição no fim: se `applyLoggedAction` lançar,
       // a trava ficaria presa em `true` e o cliente pararia de publicar
       // qualquer jogada pelo resto da partida, sem nenhum sintoma óbvio.
       isApplyingNetworkAction = false;
     }
+  }
+
+  return desyncDetected;
+}
+
+/**
+ * Reconstrói o estado do zero a partir do log COMPLETO da sala.
+ *
+ * Ao contrário de `consumeRemoteActions` (incremental, ignora as próprias
+ * ações porque elas já rodaram local no clique), aqui NINGUÉM rodou nada
+ * ainda: acabou de reseedar via `startMatch`, então o replay cobre TODAS as
+ * ações do log, inclusive as do próprio cliente, na mesma ordem em que
+ * aconteceram. Determinístico por construção (event sourcing sobre seed) —
+ * os dois lados que rodarem isto a partir do MESMO log chegam no MESMO
+ * estado, o que é exatamente a garantia que falta hoje quando uma
+ * dessincronia acontece.
+ *
+ * Chamada em dois momentos, de `useMultiplayerSync.ts`: ao entrar/reentrar
+ * numa sala (cobre reconexão sem precisar distinguir "sala nova" de "sala
+ * retomada" — uma sala nova tem `actions` vazio, então o replay não faz
+ * nada), e quando `consumeRemoteActions` sinaliza uma dessincronia. NÃO é o
+ * caminho do dia a dia: repetir isto a cada ação nova reabriria banners/
+ * flashes de eventos antigos (`lastDamageEvent`, `lastChaosRoulette`, etc.)
+ * toda vez que o oponente jogasse — regressão visual real, não só ineficiência.
+ */
+export function resyncFromActionLog(seed: number, actions: StoredAction[]): void {
+  useGameStore.getState().startMatch(seed, true);
+
+  processedActionIds = new Set<string>();
+  lastActionAuthor = null;
+  desyncDetected = false;
+
+  isApplyingNetworkAction = true;
+  try {
+    for (const action of actions) {
+      processedActionIds.add(action.id);
+      lastActionAuthor = action.by;
+      applyLoggedAction(action);
+    }
+  } finally {
+    isApplyingNetworkAction = false;
   }
 }

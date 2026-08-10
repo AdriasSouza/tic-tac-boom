@@ -99,11 +99,21 @@ interface AltarSlotProps {
   index: 0 | 1;
   card: HandCard | null;
   armed: boolean;
+  /** Flash vermelho breve — a última tentativa de preencher este slot violava
+   * a regra de BOOM+BOOM (ver `isBoomPairConflict`). */
+  rejected: boolean;
   onPress: (index: 0 | 1) => void;
   onMeasured: (index: 0 | 1, rect: Rect) => void;
 }
 
-const AltarSlot = memo(function AltarSlot({ index, card, armed, onPress, onMeasured }: AltarSlotProps) {
+const AltarSlot = memo(function AltarSlot({
+  index,
+  card,
+  armed,
+  rejected,
+  onPress,
+  onMeasured,
+}: AltarSlotProps) {
   const ref = useRef<View>(null);
   const cardDef = card ? getCard(card.cardId) : null;
 
@@ -129,6 +139,7 @@ const AltarSlot = memo(function AltarSlot({ index, card, armed, onPress, onMeasu
         styles.slot,
         armed && styles.slotArmed,
         cardDef ? { borderColor: RARITY_COLOR[cardDef.rarity] } : null,
+        rejected && styles.slotRejected,
       ]}
       accessibilityRole="button"
       accessibilityLabel={
@@ -164,6 +175,9 @@ interface AltarHandChipProps {
   slot1Rect: SharedValue<Rect>;
   slot0Filled: boolean;
   slot1Filled: boolean;
+  /** `true` quando ESTA carta foi tocada primeiro e está esperando o toque
+   * num slot (via tocar-carta-depois-slot, ver `armedCardUid`). */
+  armed: boolean;
   onDrop: (uid: string, index: 0 | 1) => void;
   onTap: (uid: string) => void;
 }
@@ -178,6 +192,7 @@ const AltarHandChip = memo(function AltarHandChip({
   slot1Rect,
   slot0Filled,
   slot1Filled,
+  armed,
   onDrop,
   onTap,
 }: AltarHandChipProps) {
@@ -257,7 +272,7 @@ const AltarHandChip = memo(function AltarHandChip({
 
   return (
     <GestureDetector gesture={gesture}>
-      <Animated.View style={[styles.chip, animatedStyle]}>
+      <Animated.View style={[styles.chip, armed && styles.chipArmed, animatedStyle]}>
         <View style={[styles.chipRarityBar, { backgroundColor: RARITY_COLOR[cardDef.rarity] }]} />
         <Text style={styles.chipName} numberOfLines={2}>
           {cardDef.name}
@@ -274,10 +289,34 @@ const AltarHandChip = memo(function AltarHandChip({
 
 interface AltarSelection {
   slots: [string | null, string | null];
-  armed: 0 | 1 | null;
+  /** Slot tocado primeiro, esperando o toque numa carta. */
+  armedSlot: 0 | 1 | null;
+  /** Carta tocada primeiro, esperando o toque num slot — via oposta de
+   * `armedSlot`, nunca as duas ao mesmo tempo. */
+  armedCardUid: string | null;
 }
 
-const EMPTY_SELECTION: AltarSelection = { slots: [null, null], armed: null };
+const EMPTY_SELECTION: AltarSelection = { slots: [null, null], armedSlot: null, armedCardUid: null };
+
+/**
+ * Duas cartas BOOM não podem mais ocupar os 2 slots juntas (patch pós-Fase
+ * 7a) — mesma regra que `ALTAR_OF_SACRIFICE.effect` já recusa no motor
+ * (`registry.ts`, 2º passo). Checar aqui de novo é só para dar feedback
+ * IMEDIATO ao tentar preencher, em vez de deixar a UI aceitar e só falhar
+ * (reembolsada) ao confirmar — a regra em si já vive no motor.
+ */
+function isBoomPairConflict(
+  hand: readonly HandCard[],
+  slots: readonly [string | null, string | null],
+  targetIndex: 0 | 1,
+  candidateCardId: HandCard['cardId'],
+): boolean {
+  if (getCard(candidateCardId).rarity !== 'BOOM') return false;
+  const otherUid = slots[targetIndex === 0 ? 1 : 0];
+  if (!otherUid) return false;
+  const otherCard = hand.find((c) => c.uid === otherUid);
+  return !!otherCard && getCard(otherCard.cardId).rarity === 'BOOM';
+}
 
 export function AltarModal() {
   const pending = useGameStore(selectPendingInteraction);
@@ -286,6 +325,20 @@ export function AltarModal() {
 
   const [visible, setVisible] = useState(false);
   const [selection, setSelection] = useState<AltarSelection>(EMPTY_SELECTION);
+  // Leitura sempre fresca dentro dos handlers (drag termina na UI thread via
+  // `runOnJS`, toque é evento direto) sem precisar de `selection` nas deps de
+  // cada `useCallback` — mesmo padrão de `isWinningRef` em `Cell.tsx`.
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
+
+  /** Slot que acabou de recusar uma tentativa de fusão BOOM+BOOM — flash
+   * vermelho breve, depois volta a `null` sozinho. */
+  const [rejectedIndex, setRejectedIndex] = useState<0 | 1 | null>(null);
+  const triggerReject = useCallback((index: 0 | 1) => {
+    void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    setRejectedIndex(index);
+    setTimeout(() => setRejectedIndex((current) => (current === index ? null : current)), 260);
+  }, []);
 
   const slot0Rect = useSharedValue<Rect>(EMPTY_RECT);
   const slot1Rect = useSharedValue<Rect>(EMPTY_RECT);
@@ -313,37 +366,83 @@ export function AltarModal() {
     [slot0Rect, slot1Rect],
   );
 
-  /** Toca um slot VAZIO: arma (ou desarma, se já estava armado). Toca um slot CHEIO: limpa. */
-  const handleSlotPress = useCallback((index: 0 | 1) => {
-    setSelection((current) => {
+  /**
+   * Preenche `index` com `uid` — caminho ÚNICO compartilhado pelas 3 formas
+   * de atribuição (arrastar, slot→carta, carta→slot), o que garante que a
+   * guarda de BOOM+BOOM (`isBoomPairConflict`) e o desarme dos dois "modos
+   * armados" valem igual nas três, sem repetir a lógica.
+   */
+  const fillSlot = useCallback(
+    (index: 0 | 1, uid: string) => {
+      const current = selectionRef.current;
+      const card = hand.find((c) => c.uid === uid);
+      if (card && isBoomPairConflict(hand, current.slots, index, card.cardId)) {
+        triggerReject(index);
+        return;
+      }
+      const slots: [string | null, string | null] = [...current.slots];
+      slots[index] = uid;
+      setSelection({ slots, armedSlot: null, armedCardUid: null });
+    },
+    [hand, triggerReject],
+  );
+
+  /**
+   * Toca um slot: CHEIO limpa; VAZIO com uma carta já armada (tocar-carta-
+   * primeiro) preenche com ela; VAZIO sem nada armado arma (ou desarma, se já
+   * estava) o próprio slot — comportamento de sempre, tocar-slot-primeiro.
+   */
+  const handleSlotPress = useCallback(
+    (index: 0 | 1) => {
+      const current = selectionRef.current;
       if (current.slots[index] !== null) {
         const slots: [string | null, string | null] = [...current.slots];
         slots[index] = null;
-        return { slots, armed: null };
+        setSelection({ slots, armedSlot: null, armedCardUid: null });
+        return;
       }
-      return { ...current, armed: current.armed === index ? null : index };
-    });
-  }, []);
+      if (current.armedCardUid !== null) {
+        fillSlot(index, current.armedCardUid);
+        return;
+      }
+      setSelection({
+        ...current,
+        armedSlot: current.armedSlot === index ? null : index,
+        armedCardUid: null,
+      });
+    },
+    [fillSlot],
+  );
 
-  /** Toca uma carta da mão: só faz algo se algum slot estiver armado. */
-  const handleHandCardTap = useCallback((uid: string) => {
-    setSelection((current) => {
-      if (current.armed === null) return current;
-      const slots: [string | null, string | null] = [...current.slots];
-      slots[current.armed] = uid;
-      return { slots, armed: null };
-    });
-  }, []);
+  /**
+   * Toca uma carta da mão: com um slot já armado (tocar-slot-primeiro),
+   * preenche ele; sem nada armado, arma (ou desarma, se já era a mesma) a
+   * PRÓPRIA carta — via nova, simétrica ao slot, pedida no patch pós-Fase 7a.
+   */
+  const handleHandCardTap = useCallback(
+    (uid: string) => {
+      const current = selectionRef.current;
+      if (current.armedSlot !== null) {
+        fillSlot(current.armedSlot, uid);
+        return;
+      }
+      setSelection({
+        ...current,
+        armedCardUid: current.armedCardUid === uid ? null : uid,
+        armedSlot: null,
+      });
+    },
+    [fillSlot],
+  );
 
   /** Solta uma carta arrastada num slot vazio. Slot cheio recusa (não substitui). */
-  const handleDrop = useCallback((uid: string, index: 0 | 1) => {
-    setSelection((current) => {
-      if (current.slots[index] !== null) return current;
-      const slots: [string | null, string | null] = [...current.slots];
-      slots[index] = uid;
-      return { slots, armed: null };
-    });
-  }, []);
+  const handleDrop = useCallback(
+    (uid: string, index: 0 | 1) => {
+      if (selectionRef.current.slots[index] !== null) return;
+      fillSlot(index, uid);
+    },
+    [fillSlot],
+  );
 
   // Cartas já num slot saem da fileira "disponível" — a mesma carta não pode
   // ocupar dois lugares ao mesmo tempo.
@@ -404,14 +503,15 @@ export function AltarModal() {
           <PixelPanel accent={colors.markO} contentStyle={styles.panelContent}>
             <Text style={styles.subtitle}>ALTAR DE SACRIFÍCIO</Text>
             <Text style={styles.description}>
-              Arraste 2 cartas até os slots — ou toque num slot e depois numa carta da mão.
+              Arraste 2 cartas até os slots, ou toque numa carta e num slot em qualquer ordem.
             </Text>
 
             <View style={styles.slotsRow}>
               <AltarSlot
                 index={0}
                 card={slotCards[0]}
-                armed={selection.armed === 0}
+                armed={selection.armedSlot === 0}
+                rejected={rejectedIndex === 0}
                 onPress={handleSlotPress}
                 onMeasured={handleMeasured}
               />
@@ -421,7 +521,8 @@ export function AltarModal() {
               <AltarSlot
                 index={1}
                 card={slotCards[1]}
-                armed={selection.armed === 1}
+                armed={selection.armedSlot === 1}
+                rejected={rejectedIndex === 1}
                 onPress={handleSlotPress}
                 onMeasured={handleMeasured}
               />
@@ -440,6 +541,7 @@ export function AltarModal() {
                     slot1Rect={slot1Rect}
                     slot0Filled={selection.slots[0] !== null}
                     slot1Filled={selection.slots[1] !== null}
+                    armed={selection.armedCardUid === card.uid}
                     onDrop={handleDrop}
                     onTap={handleHandCardTap}
                   />
@@ -545,6 +647,10 @@ const styles = StyleSheet.create({
     borderStyle: 'solid',
     borderColor: colors.winGlow,
   },
+  slotRejected: {
+    borderStyle: 'solid',
+    borderColor: colors.danger,
+  },
   slotPlaceholder: {
     color: colors.textDim,
     fontSize: 8,
@@ -594,6 +700,12 @@ const styles = StyleSheet.create({
     shadowColor: colors.winGlow,
     shadowOffset: { width: 0, height: 4 },
     shadowRadius: 8,
+  },
+  // Tocar-carta-primeiro: mesma cor de "armado" que o slot já usa
+  // (`slotArmed`), pro jogador ler os dois estados como o mesmo conceito.
+  chipArmed: {
+    borderColor: colors.winGlow,
+    borderStyle: 'solid',
   },
   chipRarityBar: {
     position: 'absolute',

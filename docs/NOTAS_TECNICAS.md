@@ -509,3 +509,51 @@ MACHINE jogue mais parece "melhor" só por isso). Achados da investigação:
 **Não corrigido nesta sessão** (fora de escopo — sessão é diagnóstico). Encaminhado pra
 próxima fase: rodar metade das seeds com os papéis de "quem começa" invertidos antes de
 confiar na tabela de vitória condicionada por carta.
+
+## TIC TAC BOOM! — bug relatado ("CPU jogou, eu venci, o dano não aplicou") não reproduzido no motor (patch pós-Fase 7a)
+
+**Contexto:** usuário relatou que, numa partida contra a CPU, ela jogou CHAOS_ROULETTE, o
+reshuffle fechou uma linha do jogador humano, mas o dano/fim de rodada não aplicaram.
+Investigação completa do caminho `playMachineCard → resolveCardPlay →
+queueAcknowledgement(CARD_PLAYED, applyResult) → acknowledgePending → applyCardEffectResult`
+não encontrou NENHUM branch que condicione `findWinner`/`takeDamage` ao `caster` — o código
+lido é agnóstico de quem jogou a carta, tanto para quem tem a vitória (`outcome.winner`, vem
+só de `findWinner(board)`) quanto para quem sofre o dano (`outcome.winner === 'PLAYER' ?
+'MACHINE' : 'PLAYER'`, sempre o LADO OPOSTO ao vencedor, nunca ao caster).
+
+**O que de fato faltava: cobertura de teste, não um bug confirmado.** Nenhum teste no repo
+jogava CHAOS_ROULETTE com `caster: 'MACHINE'` antes deste patch — todos usavam `playCard`
+(`caster: 'PLAYER'`), e nos que fechavam linha, quem vencia sempre coincidia com quem
+lançou a carta. O cenário exato do relato (`caster: 'MACHINE'`, `winner: 'PLAYER'`) nunca
+tinha sido exercitado. Adicionado em `gameStore.test.ts` — passa com o código como estava,
+sem nenhuma mudança de lógica necessária para esse caminho.
+
+**Candidato real e independente encontrado, mas não corrigido (não bate 100% com o relato):**
+`resumeMatch` (persistência de partida local/CPU, sessão anterior) descarta o
+`acknowledgementQueue` — a fila em memória do MÓDULO (`gameStore.ts`, fora do `GameState`) que
+guarda o `apply` de um `CARD_PLAYED` pendente — se o app remontar/relançar enquanto o modal "A
+CPU JOGOU..." está na tela. Se isso acontecer bem no meio de um CHAOS_ROULETTE da CPU, o efeito
+(reshuffle + recheck de vitória + dano) é perdido silenciosamente: o jogo retoma como se a CPU
+não tivesse jogado nada. Não registrado como bug desta sessão porque (a) exige um remount
+exatamente naquela janela — não acontece numa sessão contínua sem recarregar o app/Metro, e (b)
+não reproduz exatamente "eu vi o reshuffle acontecer" do relato, já que o reshuffle também
+nunca chegaria a aplicar nesse caminho.
+
+**O que FOI corrigido nesta sessão, e é o candidato mais provável pra explicar o relato:** a
+linha vencedora do TIC TAC BOOM! acendia (`surfaceWinning`, `Cell.tsx`) assim que a PRÓPRIA
+coluna daquela célula parava de girar (900/1700/2500ms, por coluna) — não quando o giro
+INTEIRO terminava. Uma linha vencedora não-vertical (qualquer linha, coluna ou diagonal que
+cruze colunas diferentes) podia mostrar o dourado até 1.6s antes da 3ª coluna parar, enquanto
+as outras duas células ainda mostravam glifos aleatórios do flicker. Um jogador vendo "minha
+linha já fechou" bem antes da animação terminar, seguido de uma pausa de ~1.6s sem nada
+acontecer, é consistente com "pareceu que ganhei mas o efeito não veio" — mesmo o dano já
+tendo sido aplicado de verdade, de forma síncrona, no instante em que o giro começou (ver
+comentário em `applyCardEffectResult`, `gameStore.ts`, sobre por que isso é proposital: o
+`chaosRoulettePatch` é montado ANTES do recheck de `findWinner`). Corrigido gateando
+`surfaceWinning` pelo flag GLOBAL `chaosRouletteSpinning` (só cai no ÚLTIMO stop do
+cronograma) em vez do `isSpinning` LOCAL de cada célula.
+
+**Revisitar** se o relato se repetir depois deste patch — nesse ponto o candidato do
+`resumeMatch`/`acknowledgementQueue` acima passa a valer a pena perseguir de verdade (exigiria
+serializar a fila de anúncios pendentes, ou reprocessar o log de ações como o multiplayer já
+faz via `resyncFromActionLog` — não uma mudança pequena).

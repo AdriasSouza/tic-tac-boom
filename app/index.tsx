@@ -1,15 +1,59 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import Animated, { withRepeat, withTiming, withSequence, useSharedValue, useAnimatedStyle } from 'react-native-reanimated';
 import PixelButton from '@/components/ui/PixelButton';
 import HowToPlayModal from '@/components/ui/HowToPlayModal';
 import CreditsModal from '@/components/ui/CreditsModal';
+import { clearMatchSnapshot, loadMatchSnapshot, type MatchSnapshot, type PersistableMode } from '@/store/matchPersistence';
 
 export default function TitleScreen() {
   const router = useRouter();
   const [modalVisible, setModalVisible] = useState(false);
   const [creditsVisible, setCreditsVisible] = useState(false);
+
+  /**
+   * Existe uma partida local/CPU salva para retomar? (ver
+   * `src/store/matchPersistence.ts` — investigação de "rotação reinicia o
+   * jogo"). `useFocusEffect`, não `useEffect` de montagem: precisa reavaliar
+   * toda vez que o jogador volta pro menu (ex.: saiu pela Pausa), não só no
+   * cold start — e cobre o caso do Router NÃO reentregar a última rota depois
+   * de um relançamento real do app, oferecendo a retomada aqui também.
+   */
+  const [resumable, setResumable] = useState<MatchSnapshot | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      void loadMatchSnapshot().then((snapshot) => {
+        if (!cancelled) setResumable(snapshot);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }, []),
+  );
+
+  /**
+   * Começar uma partida nova pelo menu é o único momento em que a intenção do
+   * jogador é inequívoca — por isso é AQUI, não na tela do jogo, que o
+   * snapshot antigo é descartado. Sem isto, "rota reentregue depois de um
+   * remount" e "jogador pediu partida nova" ficariam indistinguíveis do lado
+   * de lá (nem uma query string resolveria: no web um reload preserva a URL
+   * inteira, query incluída).
+   */
+  const handleFreshStart = useCallback(
+    async (mode: PersistableMode) => {
+      await clearMatchSnapshot();
+      router.push({ pathname: '/game/[mode]', params: { mode } });
+    },
+    [router],
+  );
+
+  const handleResume = useCallback(() => {
+    if (!resumable) return;
+    router.push({ pathname: '/game/[mode]', params: { mode: resumable.mode } });
+  }, [resumable, router]);
 
   const scale = useSharedValue(1);
 
@@ -36,13 +80,20 @@ export default function TitleScreen() {
       </Animated.View>
 
     <View style={styles.menu}>
-      <PixelButton 
-        label="Jogar vs CPU" 
-        onPress={() => router.push({ pathname: '/game/[mode]', params: { mode: 'cpu' } })} 
+      {resumable && (
+        <PixelButton
+          label="Continuar Partida"
+          variant="secondary"
+          onPress={handleResume}
+        />
+      )}
+      <PixelButton
+        label="Jogar vs CPU"
+        onPress={() => void handleFreshStart('cpu')}
       />
       <PixelButton
         label="Jogar Local"
-        onPress={() => router.push({ pathname: '/game/[mode]', params: { mode: 'local' } })}
+        onPress={() => void handleFreshStart('local')}
       />
       <PixelButton
         label="Jogar Online"

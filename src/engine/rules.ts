@@ -97,7 +97,8 @@ export type InteractionSelection =
   | { kind: 'PICK_ONE_FROM_HAND'; uid: string }
   | { kind: 'PICK_MANY_FROM_HAND'; uids: readonly string[] }
   | { kind: 'PICK_ONE_REVEALED'; cardId: CardId }
-  | { kind: 'SACRIFICE_DRAG'; uids: readonly [string, string] };
+  | { kind: 'SACRIFICE_DRAG'; uids: readonly [string, string] }
+  | { kind: 'PICK_BOARD_CELL'; index: number };
 
 interface PendingInteractionBase {
   caster: Combatant;
@@ -162,6 +163,11 @@ export type PendingInteraction =
       kind: 'SACRIFICE_DRAG';
       eligibleUids: readonly string[];
       count: number; // mesma regra de clamp
+    })
+  | (PendingInteractionBase & {
+      kind: 'PICK_BOARD_CELL';
+      /** Células candidatas já calculadas pelo passo anterior (ver DESLIZAR). */
+      eligibleIndexes: readonly number[];
     });
 
 /**
@@ -216,12 +222,15 @@ export type AcknowledgementKind = 'INFO' | 'SPY_PICK' | 'INTEL_FLIP';
  *                      junto, mas só o dono pode lê-lo (ver a tradução).
  * - `CARD_PLAYED`    — anúncio de carta jogada, antes de o efeito aplicar.
  * - `HAND_REVEALED`  — espionagem: `target` é o dono da mão exibida.
+ * - `CARD_SCRY_DECK` — PRESSÁGIO: `revealedCards` são as 3 próximas cartas do
+ *                      baralho (sem `target` — o baralho não tem dono).
  */
 export type AcknowledgementCode =
   | 'TRAP_TRIGGERED'
   | 'TRAP_ARMED'
   | 'CARD_PLAYED'
-  | 'HAND_REVEALED';
+  | 'HAND_REVEALED'
+  | 'CARD_SCRY_DECK';
 
 /**
  * Pausa de confirmação manual — uma armadilha disparou, alguém jogou uma
@@ -800,6 +809,26 @@ export function getPieceIndexes(board: Board, owner: Combatant): number[] {
 export function getOldestPieceIndex(board: Board, owner: Combatant): number | null {
   const indexes = getPieceIndexes(board, owner);
   return indexes.length < MAX_PIECES_PER_PLAYER ? null : indexes[0];
+}
+
+/**
+ * Índices ortogonalmente adjacentes a `index` na grade 3×3 (0..8), sem
+ * diagonais — usado por DESLIZAR. Puro, sem RNG.
+ */
+export function adjacentIndexes(index: number): number[] {
+  const row = Math.floor(index / 3);
+  const col = index % 3;
+  const out: number[] = [];
+  if (row > 0) out.push(index - 3);
+  if (row < 2) out.push(index + 3);
+  if (col > 0) out.push(index - 1);
+  if (col < 2) out.push(index + 1);
+  return out;
+}
+
+/** `index` tem ao menos 1 vizinho ortogonal vazio no tabuleiro? (DESLIZAR) */
+export function hasAdjacentEmpty(board: Board, index: number): boolean {
+  return adjacentIndexes(index).some((neighbor) => board[neighbor] === null);
 }
 
 /** Procura uma linha fechada. Retorna o vencedor e a linha, ou `null`. */

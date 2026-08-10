@@ -45,13 +45,19 @@ export type LogCode =
    * lados, cada um vendo o que tem direito de ver.
    */
   | 'TRAP_ARMED'
-  /** Armadilha de `subject` anulou uma carta que leu/retirou da mão dele. */
+  /**
+   * Armadilha de `subject` anulou uma carta que leu/retirou da mão dele.
+   * `value` = `CardId` da carta anulada.
+   */
   | 'TRAP_SHIELD'
   /** A MINA de `subject` detonou no centro. */
   | 'TRAP_BOMB'
-  /** ANTIMAGIA de `subject` anulou a próxima carta do oponente. */
+  /** ANTIMAGIA de `subject` anulou a próxima carta do oponente. `value` = `CardId` anulada. */
   | 'TRAP_ANTI_SPELL'
-  /** RICOCHETE de `subject` inverteu ou anulou um efeito de `target`. */
+  /**
+   * RICOCHETE de `subject` inverteu ou anulou um efeito de `target`. `value` =
+   * `CardId` que foi invertida/anulada.
+   */
   | 'TRAP_RICOCHET'
 
   /* --- Cartas ------------------------------------------------------------- */
@@ -125,7 +131,19 @@ export type LogCode =
   /** `subject` disparou a roleta do caos. */
   | 'CARD_CHAOS_ROULETTE'
   /** `subject` invocou uma carta nova no Altar de Sacrifício. `value` = `CardId` invocada. */
-  | 'CARD_ALTAR_INVOKED';
+  | 'CARD_ALTAR_INVOKED'
+  /**
+   * `subject` espiou as 3 próximas cartas do baralho (PRESSÁGIO). Sem `value`
+   * — a identidade das 3 cartas viaja só no `acknowledge` (privada, não vai
+   * para o terminal compartilhado).
+   */
+  | 'CARD_SCRY_DECK'
+  /** `subject` renovou 1 peça própria — ela passa a ser a mais nova da fila. `value` = índice. */
+  | 'CARD_RENEW_PIECE'
+  /** `subject` descartou 1 carta própria e comprou outra (RECICLAR). Sem `value`. */
+  | 'CARD_MULLIGAN'
+  /** `subject` deslizou 1 peça própria para uma célula vizinha. `value` = índice de destino. */
+  | 'CARD_SLIDE_PIECE';
 
 /**
  * O fato, sem identidade. É o que os produtores (store, cartas) emitem.

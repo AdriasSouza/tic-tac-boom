@@ -52,7 +52,11 @@ export type CardId =
   | 'SINGLE_CARD_TRADE'
   | 'INTEL_REVEAL'
   | 'CARD_DRAFT'
-  | 'CARD_DRAFT_TIERED';
+  | 'CARD_DRAFT_TIERED'
+  | 'RENEW_PIECE'
+  | 'MULLIGAN'
+  | 'SLIDE_PIECE'
+  | 'SCRY_DECK';
 
 /**
  * - `ACTION`  — resolve imediatamente ao ser jogada.
@@ -323,7 +327,8 @@ export type PendingInteractionRequest =
       count: number;
     }
   | { kind: 'PICK_ONE_REVEALED'; options: readonly CardId[] }
-  | { kind: 'SACRIFICE_DRAG'; eligibleUids: readonly string[]; count: number };
+  | { kind: 'SACRIFICE_DRAG'; eligibleUids: readonly string[]; count: number }
+  | { kind: 'PICK_BOARD_CELL'; eligibleIndexes: readonly number[] };
 
 /** Retornar `null` significa "jogada inválida" — a carta volta para a mão. */
 export type CardEffect = (context: CardEffectContext) => CardEffectResult | null;

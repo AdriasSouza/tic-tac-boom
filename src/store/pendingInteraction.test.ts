@@ -393,6 +393,48 @@ describe('pendingInteraction — fluxo completo por kind', () => {
     expect(state.pendingInteraction).toBeNull();
     expect(state.terminalLog.at(-1)).toMatchObject({ code: 'CARD_DRAW', value: 'DIRECT_DAMAGE' });
   });
+
+  it('PICK_BOARD_CELL (carta real DESLIZAR, patch pós-Fase 7a): BOARD_TARGET abre o passo 1, effect() encadeia pro passo 2 sem precisar de um 6º kind pré-existente', () => {
+    const board = createEmptyBoard();
+    board[4] = { owner: 'PLAYER', mark: 'X', turnPlaced: 3 };
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      board,
+      playerHand: [{ uid: 'slide', cardId: 'SLIDE_PIECE' }],
+    });
+
+    // Passo 1 — igual a qualquer `requiresTarget`: abre BOARD_TARGET.
+    expect(useGameStore.getState().playCard('slide')).toBe(true);
+    expect(useGameStore.getState().pendingInteraction?.kind).toBe('BOARD_TARGET');
+
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'BOARD_TARGET', index: 4 }),
+    ).toBe(true);
+
+    // A interação NÃO fechou — `effect()` pediu mais um passo, um `kind`
+    // NOVO que nunca nasce de `resolveCardPlay` sozinho.
+    const mid = useGameStore.getState();
+    expect(mid.pendingInteraction).toMatchObject({
+      kind: 'PICK_BOARD_CELL',
+      caster: 'PLAYER',
+      cardId: 'SLIDE_PIECE',
+    });
+    if (mid.pendingInteraction?.kind === 'PICK_BOARD_CELL') {
+      expect([...mid.pendingInteraction.eligibleIndexes].sort()).toEqual([1, 3, 5, 7]);
+    }
+
+    // Passo 2 — resolve pro destino escolhido.
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'PICK_BOARD_CELL', index: 5 }),
+    ).toBe(true);
+
+    const final = useGameStore.getState();
+    expect(final.pendingInteraction).toBeNull();
+    expect(final.board[4]).toBeNull();
+    expect(final.board[5]).toEqual({ owner: 'PLAYER', mark: 'X', turnPlaced: 3 });
+    expect(final.terminalLog.at(-1)).toMatchObject({ code: 'CARD_SLIDE_PIECE', value: 5 });
+  });
 });
 
 describe('cancelamento devolve carta e energia (todo kind, inclusive no meio de uma cadeia)', () => {
@@ -443,6 +485,31 @@ describe('cancelamento devolve carta e energia (todo kind, inclusive no meio de 
     expect(state.playerEnergy).toBe(3);
     expect(state.playerHand).toEqual([{ uid: 'p', cardId: FIXTURE_CHAIN }]);
     expect(state.pendingInteraction).toBeNull();
+  });
+
+  it('cancela DESLIZAR no meio da cadeia (passo PICK_BOARD_CELL) — peça NÃO se move, carta e energia voltam', () => {
+    const board = createEmptyBoard();
+    board[4] = { owner: 'PLAYER', mark: 'X', turnPlaced: 3 };
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      board,
+      playerHand: [{ uid: 'slide', cardId: 'SLIDE_PIECE' }],
+    });
+
+    expect(useGameStore.getState().playCard('slide')).toBe(true);
+    expect(
+      useGameStore.getState().resolveInteraction('PLAYER', { kind: 'BOARD_TARGET', index: 4 }),
+    ).toBe(true);
+    expect(useGameStore.getState().pendingInteraction?.kind).toBe('PICK_BOARD_CELL');
+
+    expect(useGameStore.getState().cancelInteraction('PLAYER')).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.playerEnergy).toBe(3);
+    expect(state.playerHand).toEqual([{ uid: 'slide', cardId: 'SLIDE_PIECE' }]);
+    expect(state.pendingInteraction).toBeNull();
+    expect(state.board[4]).toEqual({ owner: 'PLAYER', mark: 'X', turnPlaced: 3 }); // não se moveu
   });
 });
 

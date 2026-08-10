@@ -4,7 +4,7 @@ import type { CardDefinition, CardId } from '@/engine/cards/definitions';
 import * as registry from '@/engine/cards/registry';
 import { CENTER_INDEX } from '@/engine/events';
 import { getChannel } from '@/engine/rng';
-import { createEmptyBoard } from '@/engine/rules';
+import { createEmptyBoard, type PendingInteraction } from '@/engine/rules';
 import {
   CHAOS_ROULETTE_COLUMN_STOP_MS,
   ENERGY_CAP,
@@ -281,7 +281,7 @@ describe('MINA (BOMB_TRAP) — suíte e2e completa (Fase 5: única trap sem cobe
     useGameStore.getState().acknowledgePending();
 
     const state = useGameStore.getState();
-    expect(state.playerHp).toBe(3); // 5 - 2
+    expect(state.playerHp).toBe(4); // 5 - 1 (dano rebaixado de 2 para 1, patch pós-Fase 7a)
     expect(state.extraTurnPending).toBe('MACHINE');
     expect(state.machineTraps).toEqual([]); // consumida
   });
@@ -335,7 +335,7 @@ describe('MINA (BOMB_TRAP) — suíte e2e completa (Fase 5: única trap sem cobe
     useGameStore.getState().acknowledgePending();
 
     const state = useGameStore.getState();
-    expect(state.playerHp).toBe(3); // a mina detonou normalmente
+    expect(state.playerHp).toBe(4); // a mina detonou normalmente (1 de dano, patch pós-Fase 7a)
     expect(state.playerTraps).toEqual([
       { uid: 'a', cardId: 'ANTI_SPELL_TRAP' },
       { uid: 'r', cardId: 'REFLECT_TRAP' },
@@ -540,7 +540,10 @@ describe('PROTEÇÃO (SHIELD_TRAP) x RICOCHETE — FIFO nos dois sentidos (Fase 
 describe('RICOCHETE — fallback e2e (só anula, sem inverter) para OBSOLESCÊNCIA e ANOMALIA (Fase 5)', () => {
   it('OBSOLESCÊNCIA: RICOCHETE cancela — forcedVanish nunca é setado', () => {
     const board = createEmptyBoard();
+    // canPlay exige >=3 peças do oponente (patch pós-Fase 7a) — antes bastava 1.
     board[4] = { owner: 'PLAYER', mark: 'X', turnPlaced: 1 };
+    board[0] = { owner: 'PLAYER', mark: 'X', turnPlaced: 2 };
+    board[1] = { owner: 'PLAYER', mark: 'X', turnPlaced: 3 };
     useGameStore.setState({
       turn: 'MACHINE',
       machineEnergy: 3,
@@ -650,12 +653,17 @@ describe('forcedVanish não atravessa troca de rodada (bug encontrado limpando c
   });
 
   it('OBSOLESCÊNCIA marca uma peça, a rodada fecha (linha completada) e a marcação não sobrevive para a fila da rodada nova', () => {
-    // Tabuleiro: MACHINE tem 1 peça em 8 (alvo da carta); PLAYER já tem 2 em
-    // linha (0 e 1), faltando 1 jogada para fechar.
+    // Tabuleiro: MACHINE tem 3 peças, incluindo o alvo da carta em 8 (canPlay
+    // exige >=3 peças do oponente, patch pós-Fase 7a — antes bastava 1);
+    // PLAYER já tem 2 em linha (0 e 1), faltando 1 jogada para fechar. 4/5
+    // não fecham nenhuma linha pra MACHINE (nem com 8: [3,4,5] falta 3,
+    // [0,4,8] falta 0 que é do PLAYER).
     const openingBoard = createEmptyBoard();
     openingBoard[0] = { owner: 'PLAYER', mark: 'X', turnPlaced: 1 };
     openingBoard[1] = { owner: 'PLAYER', mark: 'X', turnPlaced: 2 };
     openingBoard[8] = { owner: 'MACHINE', mark: 'O', turnPlaced: 3 };
+    openingBoard[4] = { owner: 'MACHINE', mark: 'O', turnPlaced: 4 };
+    openingBoard[5] = { owner: 'MACHINE', mark: 'O', turnPlaced: 5 };
 
     useGameStore.setState({
       board: openingBoard,
@@ -957,7 +965,12 @@ describe('VIDENTE — destaque no tabuleiro (highlightedOldestFor, Fase 2.6)', (
 
   it('DEMOLIR remove a peça destacada: o glow para de acender por identidade, não por limpeza de campo', () => {
     const board = createEmptyBoard();
+    // canPlay de VIDENTE exige >=3 peças do oponente (patch pós-Fase 7a) —
+    // as duas extras são mais NOVAS (turnPlaced maior), então 4 continua
+    // sendo a mais antiga e o resto do teste vale sem mudança.
     board[4] = { owner: 'MACHINE', mark: 'O', turnPlaced: 1 };
+    board[0] = { owner: 'MACHINE', mark: 'O', turnPlaced: 2 };
+    board[1] = { owner: 'MACHINE', mark: 'O', turnPlaced: 3 };
 
     useGameStore.setState({
       turn: 'PLAYER',
@@ -1074,5 +1087,159 @@ describe('TIC TAC BOOM! (CHAOS_ROULETTE) — evento de giro (efeito visual, Fase
 
     expect(useGameStore.getState().playCard('b')).toBe(true);
     expect(useGameStore.getState().lastChaosRoulette?.id).toBe(1);
+  });
+});
+
+describe('TIC TAC BOOM! (CHAOS_ROULETTE) — MACHINE joga, PLAYER vence (bug relatado, patch pós-Fase 7a)', () => {
+  it('a MACHINE joga a carta, o reshuffle fecha linha do PLAYER, e o dano cai no perdedor certo (MACHINE) mesmo sem ser quem jogou', () => {
+    // Cenário exato do bug relatado: "a CPU jogou TIC TAC BOOM!, eu ganhei,
+    // mas o efeito do dano não foi aplicado". Nenhum teste existente cobria
+    // `caster: 'MACHINE'` — todos os de cima usam `playCard`/`caster:
+    // 'PLAYER'`. `playMachineCard` sempre anuncia (`announcesCardPlay`
+    // retorna `true` incondicionalmente pra `caster === 'MACHINE'`), então o
+    // efeito só aplica de verdade depois de `acknowledgePending()` — é esse
+    // segundo passo que o teste também teria pulado por engano se o bug
+    // fosse real.
+    vi.spyOn(getChannel('CARDS'), 'shuffle').mockImplementation((items) => [...items]);
+
+    const board = createEmptyBoard();
+    board[6] = { owner: 'PLAYER', mark: 'X', turnPlaced: 1 };
+    board[7] = { owner: 'PLAYER', mark: 'X', turnPlaced: 2 };
+    board[8] = { owner: 'PLAYER', mark: 'X', turnPlaced: 3 };
+    board[3] = { owner: 'MACHINE', mark: 'O', turnPlaced: 4 };
+    board[4] = { owner: 'MACHINE', mark: 'O', turnPlaced: 5 };
+
+    useGameStore.setState({
+      turn: 'MACHINE',
+      board,
+      machineHand: [{ uid: 'ttb', cardId: 'CHAOS_ROULETTE' }],
+      playerHp: 5,
+      machineHp: 5,
+    });
+
+    vi.useFakeTimers();
+
+    expect(useGameStore.getState().playMachineCard('ttb')).toBe(true);
+    // Efeito ainda NÃO aplicou — só o anúncio foi enfileirado.
+    expect(useGameStore.getState().pendingAcknowledgement).toMatchObject({
+      code: 'CARD_PLAYED',
+      subject: 'MACHINE',
+    });
+    expect(useGameStore.getState().board).toEqual(board);
+    expect(useGameStore.getState().status).toBe('PLAYING');
+
+    useGameStore.getState().acknowledgePending();
+
+    // Com a identidade (sem embaralhar de verdade), X (3 peças, índices
+    // 6/7/8) cai nas 3 primeiras posições do sorteio ([0,1,2]) e fecha a
+    // linha do PLAYER; O (2 peças) cai em [3,4] — não fecha nada.
+    const state = useGameStore.getState();
+    expect(state.status).toBe('ROUND_OVER');
+    expect(state.roundWinner).toBe('PLAYER');
+    expect(state.winningLine).toEqual([0, 1, 2]);
+    // O perdedor (MACHINE) sofre o dano, mesmo tendo sido ela a lançar a
+    // carta — `applyCardEffectResult` não faz distinção de caster aqui.
+    expect(state.machineHp).toBe(4);
+    expect(state.playerHp).toBe(5);
+    expect(state.lastChaosRoulette).toMatchObject({ caster: 'MACHINE' });
+  });
+});
+
+describe('resumeMatch — retomada de partida local/CPU após remount/relançamento (rotação)', () => {
+  it('sanitiza campos que dependiam de maquinário da sessão anterior, independente do que o snapshot trouxer', () => {
+    const board = createEmptyBoard();
+    board[0] = { owner: 'PLAYER', mark: 'X', turnPlaced: 1 };
+
+    const snapshot = {
+      ...useGameStore.getState(),
+      board,
+      turnCount: 7,
+      status: 'PLAYING' as const,
+      pendingInteraction: null,
+      chaosRouletteSpinning: true,
+      isPaused: true,
+      pendingAcknowledgement: {
+        code: 'CARD_PLAYED' as const,
+        kind: 'INFO' as const,
+        subject: 'MACHINE' as const,
+        revealedCards: [],
+        id: 3,
+      },
+      lastDamageEvent: { target: 'PLAYER' as const, amount: 1, id: 1 },
+      lastExtraTurn: { target: 'PLAYER' as const, id: 1 },
+      lastChaosRoulette: { caster: 'PLAYER' as const, id: 1 },
+      lastNotice: {
+        code: 'CARD_ALTAR_INVOKED' as const,
+        subject: 'PLAYER' as const,
+        value: 'STUDY' as const,
+        tone: 'NEUTRAL' as const,
+        id: 1,
+      },
+      lastVanishedIndex: 4,
+    };
+
+    useGameStore.getState().resumeMatch(snapshot);
+
+    const state = useGameStore.getState();
+    // Dados puros: restaurados tal como estavam.
+    expect(state.board).toEqual(board);
+    expect(state.turnCount).toBe(7);
+    // Maquinário desta sessão que morreu junto com o processo anterior:
+    // forçado a um estado seguro, nunca rehidratado como se ainda existisse.
+    expect(state.chaosRouletteSpinning).toBe(false);
+    expect(state.isPaused).toBe(false);
+    expect(state.pendingAcknowledgement).toBeNull();
+    expect(state.lastDamageEvent).toBeNull();
+    expect(state.lastExtraTurn).toBeNull();
+    expect(state.lastChaosRoulette).toBeNull();
+    expect(state.lastNotice).toBeNull();
+    expect(state.lastVanishedIndex).toBeNull();
+  });
+
+  it('reembolsa uma interação pendente em vez de tentar retomá-la', () => {
+    const pending: PendingInteraction = {
+      kind: 'BOARD_TARGET',
+      caster: 'PLAYER',
+      cardId: 'LOCK_CELL',
+      cardUid: 'lock#1',
+      handIndex: 1,
+      priorSelections: [],
+    };
+
+    const snapshot = {
+      ...useGameStore.getState(),
+      // 'lock#1' já foi retirada da mão quando a interação abriu — mesmo
+      // estado que um `BOARD_TARGET` de verdade deixaria no meio do caminho.
+      playerHand: [{ uid: 'a', cardId: 'STUDY' as CardId }, { uid: 'b', cardId: 'STUDY' as CardId }],
+      playerEnergy: 1,
+      pendingInteraction: pending,
+    };
+
+    useGameStore.getState().resumeMatch(snapshot);
+
+    const state = useGameStore.getState();
+    expect(state.pendingInteraction).toBeNull();
+    // Devolvida no handIndex ORIGINAL (1), não no fim da mão.
+    expect(state.playerHand[1]).toEqual({ uid: 'lock#1', cardId: 'LOCK_CELL' });
+    expect(state.playerEnergy).toBe(1 + registry.getCard('LOCK_CELL').cost);
+  });
+
+  it('rearma a transição de rodada quando o snapshot está em ROUND_OVER (o timer original morreu com a sessão anterior)', () => {
+    const snapshot = {
+      ...useGameStore.getState(),
+      status: 'ROUND_OVER' as const,
+      roundWinner: 'PLAYER' as const,
+      winningLine: [0, 1, 2] as [number, number, number],
+    };
+
+    vi.useFakeTimers();
+    useGameStore.getState().resumeMatch(snapshot);
+    expect(useGameStore.getState().status).toBe('ROUND_OVER');
+
+    // Não precisa do valor exato de `ROUND_TRANSITION_DELAY_MS` (privado ao
+    // módulo) — só confirmar que ALGUM timer foi rearmado e eventualmente
+    // dispara, em vez do tabuleiro ficar preso na rodada que já acabou.
+    vi.advanceTimersByTime(10_000);
+    expect(useGameStore.getState().status).toBe('PLAYING');
   });
 });

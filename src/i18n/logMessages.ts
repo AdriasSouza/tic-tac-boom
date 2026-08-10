@@ -111,13 +111,13 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
         : `armadilha :: ${who} armou uma armadilha na mesa`;
 
     case 'TRAP_SHIELD':
-      return `proteção :: o efeito contra ${who} foi anulado`;
+      return `proteção :: o efeito contra ${who} foi anulado — ${cardName(entry.value)}`;
     case 'TRAP_BOMB':
-      return `mina :: o centro detonou — 2 de dano e um turno extra para ${who}`;
+      return `mina :: o centro detonou — 1 de dano e um turno extra para ${who}`;
     case 'TRAP_ANTI_SPELL':
-      return `antimagia :: ${who} anulou a próxima carta do oponente`;
+      return `antimagia :: ${who} anulou ${cardName(entry.value).toLowerCase()} do oponente`;
     case 'TRAP_RICOCHET':
-      return `ricochete :: ${who} inverteu ou anulou um efeito ${whose === 'sua' ? 'de você' : whose}`;
+      return `ricochete :: ${who} inverteu ou anulou ${cardName(entry.value).toLowerCase()} ${whose === 'sua' ? 'de você' : whose}`;
 
     case 'CARD_BREAK_PIECE':
       return `demolir :: ${who} destruiu a peça em ${cellLabel(entry.value)}`;
@@ -146,7 +146,7 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
     case 'CARD_QUEUE_SHUFFLE':
       return `anomalia :: ${who} embaralhou a fila do infinito ${whose === 'sua' ? 'de você' : whose}`;
     case 'CARD_MARK_DOOMED':
-      return `obsolescência :: ${who} marcou a peça em ${cellLabel(entry.value)} como a próxima a sumir`;
+      return `amaldiçoar :: ${who} marcou uma peça ${whose === 'sua' ? 'de você' : whose} como a próxima a sumir`;
     case 'CARD_REBOBINAR':
       return `rebobinar :: ${who} bloqueou a próxima colocação de peça ${whose}`;
     case 'CARD_LOCK_CELL':
@@ -167,6 +167,14 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
       return `tic tac boom :: ${who} embaralhou as peças do tabuleiro`;
     case 'CARD_ALTAR_INVOKED':
       return `altar :: ${who} sacrificou a oferenda e invocou ${cardName(entry.value)}`;
+    case 'CARD_SCRY_DECK':
+      return `presságio :: ${who} espiou as próximas cartas do baralho`;
+    case 'CARD_RENEW_PIECE':
+      return `renovar :: ${who} renovou a peça em ${cellLabel(entry.value)} — agora é a mais nova`;
+    case 'CARD_MULLIGAN':
+      return `reciclar :: ${who} descartou 1 carta e comprou outra`;
+    case 'CARD_SLIDE_PIECE':
+      return `deslizar :: ${who} moveu uma peça para ${cellLabel(entry.value)}`;
   }
 }
 
@@ -201,7 +209,7 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
     case 'CARD_CLEANSE_ALL':
       return 'TABULEIRO PURIFICADO';
     case 'CARD_MARK_DOOMED':
-      return `PEÇA MARCADA EM ${cellLabel(entry.value)}`;
+      return 'UMA PEÇA FOI AMALDIÇOADA';
     case 'CARD_LOCK_CELL':
       return `CASA ${cellLabel(entry.value)} LACRADA`;
     case 'CARD_SPY_PEEK':
@@ -361,5 +369,13 @@ export function formatAcknowledgement(
         tone: 'INTEL',
       };
     }
+
+    case 'CARD_SCRY_DECK':
+      return {
+        subtitle: 'PRESSÁGIO',
+        title: 'PRÓXIMAS CARTAS DO BARALHO',
+        description: `As próximas ${ack.revealedCards.length} cartas a sair, na ordem — ninguém mais viu isto.`,
+        tone: 'INTEL',
+      };
   }
 }

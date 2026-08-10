@@ -553,7 +553,10 @@ documentado como limitação conhecida, abaixo.
 - **Fonte pixelada** — usando monospace do sistema
 - **Áudio** — nenhum som ou trilha
 - **Testes automatizados** — a engine é pura e testável, mas nenhum teste foi escrito
-- **Persistência** — nada é salvo entre sessões
+- ~~**Persistência** — nada é salvo entre sessões~~ Partidas locais/CPU sobrevivem a um
+  remount ou relançamento do app (`src/store/matchPersistence.ts` + `resumeMatch` em
+  `gameStore.ts`); partidas online se recuperam reconstruindo o estado a partir do log de
+  ações da sala (`resyncFromActionLog` em `syncBridge.ts`), não de um snapshot local
 - **VISÃO ABSOLUTA (`FULL_INTEL`) com prazo.** O texto da carta ("vire quantas cartas quiser")
   ainda não tem seleção por carta — hoje só loga a contagem da mão. É uma mecânica diferente do
   rastreamento por posição do `<HandTracker />`: revela a mão inteira e tem prazo explícito (o

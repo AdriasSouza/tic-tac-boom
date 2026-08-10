@@ -1,6 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
-import { consumeRemoteActions, resetSyncBridge } from '@/services/syncBridge';
+import { consumeRemoteActions, resetSyncBridge, resyncFromActionLog } from '@/services/syncBridge';
 import { selectRoom, selectRoomCode, useMultiplayerStore } from '@/store/multiplayerStore';
 
 /**
@@ -17,13 +17,22 @@ export function useMultiplayerSync(): void {
   const roomCode = useMultiplayerStore(selectRoomCode);
   const room = useMultiplayerStore(selectRoom);
 
-  /* --- Nova sala ⇒ ponte limpa ---------------------------------------------
-     Os ids processados são específicos de uma sala. Sem este reset, entrar
-     numa segunda partida com a ponte ainda cheia dos ids da primeira faria
-     ela ignorar ações legítimas — e o jogo simplesmente não responderia às
+  /**
+   * Toda entrada/reentrada numa sala pede um resync COMPLETO na próxima vez
+   * que `room` chegar (efeito abaixo), não o consumo incremental de sempre —
+   * cobre reconexão sem precisar diferenciar "sala nova" (log vazio, o
+   * replay não faz nada) de "sala retomada" (log cheio, reconstrói tudo).
+   */
+  const needsFullResyncRef = useRef(false);
+
+  /* --- Nova sala ⇒ ponte limpa + resync completo pendente ------------------
+     Os ids processados são específicos de uma sala. Sem o reset, entrar numa
+     segunda partida com a ponte ainda cheia dos ids da primeira faria ela
+     ignorar ações legítimas — e o jogo simplesmente não responderia às
      jogadas do oponente, sem erro nenhum.                                   */
   useEffect(() => {
     resetSyncBridge();
+    needsFullResyncRef.current = true;
   }, [roomCode]);
 
   /* --- Consumo do log ------------------------------------------------------
@@ -31,10 +40,28 @@ export function useMultiplayerSync(): void {
      recria o array a cada snapshot do RTDB, então a identidade muda sempre
      que algo chega. `consumeRemoteActions` é idempotente, então reprocessar a
      lista completa é seguro e barato — e é o que torna a reconexão trivial:
-     o log volta inteiro e só o que faltava é aplicado.                      */
+     o log volta inteiro e só o que faltava é aplicado.
+
+     Duas exceções ao caminho incremental de sempre, as duas via
+     `resyncFromActionLog` (reconstrução total, determinística a partir do
+     log completo — ver o JSDoc dela): a entrada/reentrada marcada acima, e
+     uma dessincronia que o consumo incremental acabou de detectar. Nenhuma
+     delas é o caminho do dia a dia — só os dois momentos em que já se sabe
+     que o estado local pode não bater com o log. */
   useEffect(() => {
     if (!room) return;
-    consumeRemoteActions(room.actions);
+
+    if (needsFullResyncRef.current) {
+      needsFullResyncRef.current = false;
+      resyncFromActionLog(room.seed, room.actions);
+      return;
+    }
+
+    const hadDesync = consumeRemoteActions(room.actions);
+    if (hadDesync) {
+      console.warn('[useMultiplayerSync] dessincronia detectada — reconstruindo a partir do log completo.');
+      resyncFromActionLog(room.seed, room.actions);
+    }
   }, [room]);
 }
 

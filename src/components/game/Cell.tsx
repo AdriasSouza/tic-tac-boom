@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import Animated, {
   Easing,
@@ -25,9 +25,11 @@ import {
   canPlaceAt,
   isPendingTarget,
   selectCell,
+  selectForcedVanish,
   selectHighlightedOldest,
   selectIsBlocked,
   selectIsCardLocked,
+  selectIsChaosRouletteSpinning,
   selectIsTargeting,
   selectIsValidTarget,
   selectIsVanishing,
@@ -96,6 +98,9 @@ function CellComponent({ index, size }: CellProps) {
   const isBlocked = useGameStore(useMemo(() => selectIsBlocked(index), [index]));
   const isCardLocked = useGameStore(useMemo(() => selectIsCardLocked(index), [index]));
   const isWinning = useGameStore(useMemo(() => selectIsWinningCell(index), [index]));
+  // Global, não por-célula: liga só quando a ÚLTIMA coluna do giro parou —
+  // ver o comentário na seção do giro de TIC TAC BOOM! abaixo.
+  const chaosRouletteSpinning = useGameStore(selectIsChaosRouletteSpinning);
   const isTargeting = useGameStore(selectIsTargeting);
   const isValidTarget = useGameStore(useMemo(() => selectIsValidTarget(index), [index]));
   // Define qual peça é "minha" para efeito de cor — ver `colorFor`.
@@ -117,6 +122,21 @@ function CellComponent({ index, size }: CellProps) {
   const isHighlightedByVidente =
     highlighted?.index === index && (!isOnline || highlighted.caster === localCombatant);
 
+  /**
+   * AMALDIÇOAR: o dono das peças marcadas (`forcedVanish.owner ===
+   * localCombatant`) precisa SENTIR que uma delas está condenada, sem saber
+   * QUAL — ao contrário do destaque de VIDENTE (que aponta a peça real só
+   * para o caster), aqui nenhuma célula lê `forcedVanish.index`. Toda peça
+   * PRÓPRIA do dono é candidata igual; o flicker (efeito abaixo) decide,
+   * localmente e sem RNG determinístico, quais acendem a cada instante.
+   */
+  const forcedVanish = useGameStore(selectForcedVanish);
+  const isDoubtCandidate =
+    !!piece &&
+    piece.owner === localCombatant &&
+    forcedVanish?.mode === 'CHOSEN' &&
+    forcedVanish.owner === localCombatant;
+
   /* --- Shared values (rodam na UI thread, zero re-render) ----------------- */
   const pulse = useSharedValue(1); // 1 = opaco, 0 = quase apagado
   const press = useSharedValue(0); // 0 = solto, 1 = pressionado
@@ -124,6 +144,29 @@ function CellComponent({ index, size }: CellProps) {
   const shake = useSharedValue(0); // tremida de jogada inválida
   const targetGlow = useSharedValue(0); // 0..1 — pisca-pisca de alvo válido
   const visionGlow = useSharedValue(0); // 0..1 — glow do destaque de VIDENTE
+  const doubtGlow = useSharedValue(0); // 0..1 — flicker ambíguo de AMALDIÇOAR
+  const winPulse = useSharedValue(0); // 0..1 — brilho intermitente ao revelar linha do TIC TAC BOOM!
+  const clearShake = useSharedValue(0); // tremida ao limpar um bloqueio (LIMPAR/PURIFICAR)
+  const clearFade = useSharedValue(1); // opacidade do glifo de bloqueio saindo
+  const lockShake = useSharedValue(0); // tremida de entrada ao travar uma célula nova (TRAVAR)
+
+  // Leitura sempre fresca de `isWinning` dentro do timer do giro (abaixo) sem
+  // precisar listar `isWinning` nas deps daquele efeito — ele é reagendado só
+  // por `lastChaosRoulette?.id`/`column`, e `winningLine` já está decidido
+  // (síncrono, no mesmo `set()` que abre o giro) muito antes deste timer
+  // dispensar, então o valor não teria como mudar no meio do caminho de
+  // qualquer forma; a ref só evita a dependência supérflua.
+  const isWinningRef = useRef(isWinning);
+  isWinningRef.current = isWinning;
+
+  /** Estado da borda ANTERIOR de bloqueio/trava, para o efeito de
+   * shake+fade/shake-de-entrada abaixo detectar a transição sem depender de
+   * saber QUAL carta causou a mudança — `<Cell />` só vê o fato (bloqueada ou
+   * não), nunca a carta (LIMPAR/PURIFICAR/TRAVAR/surto de caos revertendo). */
+  const prevBlockRef = useRef({ blocked: isBlocked, locked: isCardLocked });
+  /** Glifo de bloqueio em saída (depois de limpo) — precisa continuar
+   * montado por cima do fade/shake antes de sumir de vez. */
+  const [exitingGlyph, setExitingGlyph] = useState<{ locked: boolean } | null>(null);
 
   /* --- Pulso contínuo da peça condenada ----------------------------------- */
   useEffect(() => {
@@ -181,6 +224,73 @@ function CellComponent({ index, size }: CellProps) {
     return () => cancelAnimation(visionGlow);
   }, [isHighlightedByVidente, visionGlow]);
 
+  /** --- Flicker ambíguo de AMALDIÇOAR -------------------------------------
+   * `Math.random()` de propósito, não o canal do RNG determinístico — mesmo
+   * racional do flicker de TIC TAC BOOM! (`Cell.tsx`, giro abaixo): ruído
+   * puramente cosmético que não carrega informação real (a peça VERDADEIRA
+   * marcada nunca é lida aqui, só `forcedVanish.owner`/`.mode`), então os
+   * dois clientes de uma partida online podem piscar em padrões diferentes
+   * sem nenhum risco de dessincronia — não é estado de jogo, é só dúvida. */
+  useEffect(() => {
+    if (!isDoubtCandidate) {
+      cancelAnimation(doubtGlow);
+      doubtGlow.value = withTiming(0, { duration: 160 });
+      return;
+    }
+
+    const flicker = setInterval(() => {
+      const lit = Math.random() < 0.4;
+      doubtGlow.value = withTiming(lit ? 1 : 0, { duration: 220 });
+    }, 450);
+
+    return () => {
+      clearInterval(flicker);
+      cancelAnimation(doubtGlow);
+    };
+  }, [isDoubtCandidate, doubtGlow]);
+
+  /** --- LIMPAR/PURIFICAR (saída) e TRAVAR (entrada) ------------------------
+   * Uma única transição de borda por chamada — `isBlocked`/`isCardLocked` são
+   * booleans PUROS (o motor não diz "foi a carta X"), então a UI só reage à
+   * MUDANÇA em si: bloqueio caindo treme+esmaece o glifo antigo antes de
+   * desmontar (cobre LIMPAR, PURIFICAR e o surto de caos revertendo sozinho —
+   * visualmente é o MESMO evento, uma célula deixando de estar interditada);
+   * `isCardLocked` subindo treme a entrada (só TRAVAR liga esse boolean). */
+  useEffect(() => {
+    const prev = prevBlockRef.current;
+    prevBlockRef.current = { blocked: isBlocked, locked: isCardLocked };
+
+    if (!prev.blocked && isBlocked) {
+      // Bloqueio NOVO: garante o glifo visível de novo, mesmo que a célula já
+      // tivesse acabado de sumir num ciclo anterior (`clearFade` ficaria em 0).
+      cancelAnimation(clearFade);
+      clearFade.value = 1;
+    }
+
+    if (prev.blocked && !isBlocked) {
+      setExitingGlyph({ locked: prev.locked });
+      clearShake.value = withSequence(
+        withTiming(-5, { duration: 45 }),
+        withTiming(5, { duration: 45 }),
+        withTiming(-3, { duration: 45 }),
+        withTiming(0, { duration: 45 }),
+      );
+      clearFade.value = withTiming(0, { duration: 220 });
+      const timer = setTimeout(() => setExitingGlyph(null), 260);
+      return () => clearTimeout(timer);
+    }
+
+    if (!prev.locked && isCardLocked) {
+      lockShake.value = withSequence(
+        withTiming(-6, { duration: 50 }),
+        withTiming(6, { duration: 50 }),
+        withTiming(-4, { duration: 50 }),
+        withTiming(4, { duration: 50 }),
+        withTiming(0, { duration: 50 }),
+      );
+    }
+  }, [isBlocked, isCardLocked, clearFade, clearShake, lockShake]);
+
   /** --- Giro de TIC TAC BOOM! (CHAOS_ROULETTE) -----------------------------
    * Reage ao `id` (não ao payload), mesmo racional de `<ExtraTurnBanner />`:
    * sobrevive a double-invoke de efeito em dev e refaz mesmo em replay
@@ -217,14 +327,36 @@ function CellComponent({ index, size }: CellProps) {
       chaosGlow.value = withTiming(0, { duration: CHAOS_ROULETTE_FADE_MS });
     }, CHAOS_ROULETTE_COLUMN_STOP_MS[column]);
 
+    /* --- Brilho intermitente da linha vencedora --------------------------
+       Agendado pela ÚLTIMA coluna (`[2]`), não a própria — cada célula sabe
+       exatamente quando o giro INTEIRO (não só a própria coluna) terminou,
+       sem depender de `chaosRouletteSpinning` como dependência de efeito (o
+       store já cuida de desligá-lo nesse mesmo instante, ver
+       `scheduleChaosRouletteUnlock`). Só pulsa se ESTA célula acabou fazendo
+       parte da linha — `isWinningRef` porque o efeito não está listado por
+       `isWinning` (ver comentário na declaração da ref). */
+    const winReveal = setTimeout(() => {
+      if (!isWinningRef.current) return;
+      winPulse.value = withSequence(
+        withTiming(1, { duration: 140 }),
+        withTiming(0.15, { duration: 140 }),
+        withTiming(1, { duration: 140 }),
+        withTiming(0.15, { duration: 140 }),
+        withTiming(0, { duration: 220 }),
+      );
+    }, CHAOS_ROULETTE_COLUMN_STOP_MS[2]);
+
     return () => {
       clearInterval(flicker);
       clearTimeout(stop);
+      clearTimeout(winReveal);
       cancelAnimation(chaosGlow);
+      cancelAnimation(winPulse);
     };
-  }, [lastChaosRoulette?.id, column, chaosGlow]);
+  }, [lastChaosRoulette?.id, column, chaosGlow, winPulse]);
 
   const chaosOverlayStyle = useAnimatedStyle(() => ({ opacity: chaosGlow.value }));
+  const winPulseOverlayStyle = useAnimatedStyle(() => ({ opacity: winPulse.value }));
 
   /* --- Entrada da peça ----------------------------------------------------
      Depende de `turnPlaced`, não da existência da peça: assim uma peça que
@@ -264,6 +396,21 @@ function CellComponent({ index, size }: CellProps) {
    * (borda tracejada) — os dois nunca coexistem, mas a leitura fica inequívoca. */
   const visionOverlayStyle = useAnimatedStyle(() => ({
     opacity: interpolate(visionGlow.value, [0, 1], [0.35, 0.9]),
+  }));
+
+  /** Overlay do flicker ambíguo de AMALDIÇOAR. Tom "danger" (vermelho fraco)
+   * — distinto do dourado de VIDENTE/alvo válido de propósito: aqui não é
+   * uma pista boa, é um aviso incerto. */
+  const doubtOverlayStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(doubtGlow.value, [0, 1], [0, 0.5]),
+  }));
+
+  /** Glifo de bloqueio (LIMPAR/PURIFICAR saindo, TRAVAR entrando) — os dois
+   * tremores nunca coexistem no tempo (um é saída, o outro é entrada), então
+   * somar os dois `translateX` num transform só é seguro. */
+  const blockGlyphStyle = useAnimatedStyle(() => ({
+    opacity: clearFade.value,
+    transform: [{ translateX: clearShake.value + lockShake.value }],
   }));
 
   /* --- Interação ----------------------------------------------------------- */
@@ -329,6 +476,21 @@ function CellComponent({ index, size }: CellProps) {
       return;
     }
 
+    /* --- 2º passo de DESLIZAR ----------------------------------------------
+       Mesma UI de mira do BOARD_TARGET, `kind` diferente — a célula de
+       destino já vem restrita a `pending.eligibleIndexes` (vizinhos vazios
+       calculados no 1º passo), `isPendingTarget` cobre os dois `kind`s. */
+    if (state.pendingInteraction?.kind === 'PICK_BOARD_CELL') {
+      if (!isPendingTarget(state, index)) {
+        rejectFeedback();
+        return;
+      }
+
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      if (!netResolveInteraction({ kind: 'PICK_BOARD_CELL', index })) rejectFeedback();
+      return;
+    }
+
     /* --- Fluxo normal ----------------------------------------------------- */
     if (!canPlaceAt(state, index, getLocalCombatant())) {
       rejectFeedback();
@@ -385,7 +547,15 @@ function CellComponent({ index, size }: CellProps) {
                 ? colors.cellFillAlt
                 : colors.cellFill,
           },
-          isWinning && styles.surfaceWinning,
+          // Gateado por `!chaosRouletteSpinning` (flag GLOBAL, não a própria
+          // coluna desta célula): sem isto, uma célula da coluna 0 revelava o
+          // dourado assim que SUA coluna parava (900ms), até 1.6s antes da
+          // coluna 2 — a linha "fechava" visualmente cedo demais, antes do
+          // giro inteiro acabar. `chaosRouletteSpinning` só cai quando a
+          // ÚLTIMA coluna para (`scheduleChaosRouletteUnlock`), então gatear
+          // por ele sincroniza a revelação com o fim de verdade do giro —
+          // sem custo fora do TIC TAC BOOM!, onde já nasce `false`.
+          isWinning && !chaosRouletteSpinning && styles.surfaceWinning,
           surfaceStyle,
         ]}
       >
@@ -398,6 +568,13 @@ function CellComponent({ index, size }: CellProps) {
             só sumir instantaneamente quando `isSpinning` virar `false`. */}
         <Animated.View style={[styles.chaosRouletteOverlay, chaosOverlayStyle]} pointerEvents="none" />
 
+        {/* Brilho intermitente ao revelar a linha vencedora do TIC TAC BOOM!
+            — alguns pulsos por cima do dourado estático, depois assenta,
+            para dar a impressão de "sequência sorteada" em vez de só acender
+            e ficar parado. Sempre montado (mesma razão do overlay acima);
+            só anima de verdade quando o timer da última coluna dispara. */}
+        <Animated.View style={[styles.winPulseOverlay, winPulseOverlayStyle]} pointerEvents="none" />
+
         {isSpinning ? (
           spinGlyph &&
           (spinGlyph === 'X' ? (
@@ -407,7 +584,11 @@ function CellComponent({ index, size }: CellProps) {
           ))
         ) : (
           <>
-            {isBlocked && <BlockedGlyph size={size} locked={isCardLocked} />}
+            {(isBlocked || exitingGlyph) && (
+              <Animated.View style={[StyleSheet.absoluteFill, blockGlyphStyle]} pointerEvents="none">
+                <BlockedGlyph size={size} locked={isBlocked ? isCardLocked : (exitingGlyph?.locked ?? false)} />
+              </Animated.View>
+            )}
 
             {piece && (
               <Animated.View style={markStyle}>
@@ -449,6 +630,12 @@ function CellComponent({ index, size }: CellProps) {
             quem jogou a carta (ver `isHighlightedByVidente`). */}
         {!isSpinning && isHighlightedByVidente && (
           <Animated.View style={[styles.visionOverlay, visionOverlayStyle]} pointerEvents="none" />
+        )}
+
+        {/* Flicker ambíguo de AMALDIÇOAR: acende sem nunca apontar a peça
+            real (ver `isDoubtCandidate`). */}
+        {!isSpinning && isDoubtCandidate && (
+          <Animated.View style={[styles.doubtOverlay, doubtOverlayStyle]} pointerEvents="none" />
         )}
       </Animated.View>
     </Pressable>
@@ -593,6 +780,12 @@ const styles = StyleSheet.create({
   surfaceWinning: {
     backgroundColor: colors.winGlow,
   },
+  // Camada própria por cima de `surfaceWinning` — anima só a OPACIDADE do
+  // brilho intermitente (`winPulse`), sem interferir no fundo estático.
+  winPulseOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: colors.winGlow,
+  },
   // Opaco de propósito: durante o giro, cobre completamente o que estiver
   // por baixo (inclusive `surfaceWinning`) — ver comentário na Fase de
   // renderização sobre por que isso resolve a precedência sem branch extra.
@@ -642,5 +835,9 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderStyle: 'dashed',
     borderColor: colors.winGlow,
+  },
+  doubtOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: colors.danger,
   },
 });

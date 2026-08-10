@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, StyleSheet, type LayoutChangeEvent } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { restoreRng } from '@/engine/rng';
+import { useMatchAutosave } from '@/hooks/useMatchAutosave';
+import { loadMatchSnapshot } from '@/store/matchPersistence';
+import { isOnlineMatch } from '@/services/syncBridge';
 import ChaosTerminal from '@/components/game/ChaosTerminal';
 import GameHeader from '@/components/game/GameHeader';
 import HUD from '@/components/game/HUD';
@@ -35,7 +39,9 @@ export default function GameScreen() {
   // `seed` só chega no modo online, vinda da sala do Firebase. Nos modos
   // locais é `undefined` e o `startMatch` sorteia a sua.
   const { mode, seed } = useLocalSearchParams<{ mode: string; seed?: string }>();
+  const router = useRouter();
   const startMatch = useGameStore(state => state.startMatch);
+  const resumeMatch = useGameStore(state => state.resumeMatch);
   const setPaused = useGameStore(state => state.setPaused);
   const [pauseVisible, setPauseVisible] = useState(false);
 
@@ -142,22 +148,68 @@ export default function GameScreen() {
   const { localCombatant, remoteCombatant } = useMatchPerspective();
 
   /**
-   * Semeia a partida.
+   * Inicia, retoma, ou desiste desta tela — três casos, um efeito só.
    *
-   * No modo online os DOIS clientes recebem a mesma seed da sala e a repassam
-   * aqui — é o que faz as mãos iniciais e todos os sorteios coincidirem nos
-   * dois aparelhos, requisito do plano de sincronizar apenas os inputs (ver
-   * `src/types/multiplayer.ts`). Uma seed inválida vira `undefined`, e a
-   * partida sorteia a própria: melhor um jogo local coerente do que dois
-   * clientes divergindo em silêncio a partir de um parâmetro corrompido.
+   * **Online**: exige uma sessão multiplayer de verdade (`isOnlineMatch()`)
+   * antes de rodar `startMatch`. Sem isto, se esta rota for reentregue sem
+   * uma sala por trás (relançamento do app, recarregar a URL no web —
+   * `useMultiplayerStore` volta pro estado padrão a cada carga nova), a tela
+   * rodava a partida "isolada": `isOnline:true` fica marcado no motor, mas
+   * não existe CPU nem rede para jogar por `MACHINE`, e nenhum modal de erro
+   * aparece (`OpponentDisconnectedModal`/`OpponentLeftModal` ficam mudos fora
+   * de `MATCH_STARTED`) — era exatamente o "caiu direto na partida bugada em
+   * vez de voltar pra tela de conexão" relatado. A correção é voltar pro
+   * lobby, não tentar rodar a partida.
+   *
+   * **Local/CPU**: tenta retomar um snapshot salvo (`matchPersistence.ts`)
+   * antes de começar uma partida nova — é isto que sobrevive a um remount
+   * (rotação sem a trava de orientação realmente aplicada no build instalado)
+   * ou a um relançamento real do app. `restoreRng` roda ANTES de
+   * `resumeMatch`: os canais de RNG são estado de módulo fora do React (ver
+   * `src/engine/rng.ts`), e `useCpuOpponent` pode consumi-los assim que o
+   * novo estado renderizar. Decidir "começar do zero" é responsabilidade de
+   * quem NAVEGA para cá (`app/index.tsx` já limpa o snapshot antes de
+   * navegar quando o jogador escolhe uma partida nova) — esta tela só olha
+   * "existe algo salvo para ESTE `mode`?".
    */
   useEffect(() => {
-    const parsed = Number.parseInt(seed ?? '', 10);
-    // `isOnline` diz ao motor que o combatente `MACHINE` é uma PESSOA, não a
-    // IA — é o que faz as cartas de informação abrirem o modal para os dois
-    // lados em vez de pular a leitura achando que o outro lado é um robô.
-    startMatch(Number.isFinite(parsed) ? parsed : undefined, mode === 'online');
-  }, [startMatch, seed, mode]);
+    let cancelled = false;
+
+    async function bootstrap() {
+      if (mode === 'online') {
+        if (!isOnlineMatch()) {
+          router.replace('/lobby');
+          return;
+        }
+        const parsed = Number.parseInt(seed ?? '', 10);
+        // `isOnline` diz ao motor que o combatente `MACHINE` é uma PESSOA,
+        // não a IA — é o que faz as cartas de informação abrirem o modal
+        // para os dois lados em vez de pular a leitura achando que o outro
+        // lado é um robô.
+        startMatch(Number.isFinite(parsed) ? parsed : undefined, true);
+        return;
+      }
+
+      const snapshot = await loadMatchSnapshot();
+      if (cancelled) return;
+
+      if (snapshot && snapshot.mode === mode) {
+        restoreRng(snapshot.rng);
+        resumeMatch(snapshot.gameState);
+      } else {
+        startMatch(undefined, false);
+      }
+    }
+
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [startMatch, resumeMatch, seed, mode, router]);
+
+  // Salva local/CPU automaticamente enquanto a partida está em andamento —
+  // inerte no online (ver `useMatchAutosave`).
+  useMatchAutosave(mode);
 
   // Ativa a IA apenas se a rota acessada for /game/cpu. O hook também se
   // inibe sozinho durante uma partida online (ver `useCpuOpponent`).
