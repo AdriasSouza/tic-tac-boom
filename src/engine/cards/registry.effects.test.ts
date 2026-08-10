@@ -383,6 +383,19 @@ describe('RICOCHETE (REFLECT_TRAP) — carta nova: inverte quando bem definido, 
     expect(result?.patch).toBeUndefined();
     expect(result?.damage).toBeUndefined();
   });
+
+  it('inverte APAGÃO (carta nova, patch pós-Fase 7a) — a energia de quem lançou zera, não a do defensor', () => {
+    const blackoutState = createTestState({ playerEnergy: 3, machineEnergy: 1 });
+    const result = card.effect({
+      state: blackoutState,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'BLACKOUT' },
+    });
+    expect(result?.cancelsAction).toBe(true);
+    expect(result?.energyDrain).toEqual({ target: 'MACHINE', amount: 1 });
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1615,5 +1628,230 @@ describe('PRESSÁGIO (SCRY_DECK) — carta nova (patch pós-Fase 7a): espia as 3
     const state = createTestState();
     const result = card.effect({ state, caster: 'MACHINE', uid: 'x', rng });
     expect(result?.acknowledge).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                              BATERIA RESERVA                                */
+/* -------------------------------------------------------------------------- */
+
+describe('BATERIA RESERVA (BACKUP_BATTERY) — carta nova: escudo de 1 uso contra o próximo dano', () => {
+  const card = getCard('BACKUP_BATTERY');
+
+  it('canPlay: indisponível com o escudo já ativo — não empilha', () => {
+    const state = createTestState({ playerShield: true });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível sem escudo ativo', () => {
+    const state = createTestState({ playerShield: false });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
+  });
+
+  it('ativa o escudo do caster', () => {
+    const state = createTestState();
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.patch).toEqual({ playerShield: true });
+    expect(result?.log).toMatchObject({ code: 'CARD_BACKUP_BATTERY', subject: 'PLAYER' });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                              CÁPSULA DO TEMPO                               */
+/* -------------------------------------------------------------------------- */
+
+describe('CÁPSULA DO TEMPO (TIME_CAPSULE) — carta nova: a regra real vive em takeDamage (gameStore.ts), não em effect()', () => {
+  const card = getCard('TIME_CAPSULE');
+
+  it('é uma TRAP sem triggerCondition — não participa do barramento de eventos (ver events.ts, DAMAGE_TAKEN nunca dispara)', () => {
+    expect(card.type).toBe('TRAP');
+    expect(card.triggerCondition).toBeUndefined();
+  });
+
+  it('effect() nunca é chamado pelo fluxo normal — devolve null por segurança', () => {
+    const state = createTestState();
+    expect(card.effect({ state, caster: 'PLAYER', uid: 'x', rng })).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                FIO DE ARAME                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('FIO DE ARAME (TRIPWIRE) — carta nova: drena energia na próxima peça colocada pelo oponente', () => {
+  const card = getCard('TRIPWIRE');
+  const state = createTestState();
+
+  it('dispara em qualquer colocação de peça, sem restringir à casa central (diferente de MINA)', () => {
+    expect(card.triggerCondition?.({ type: 'PIECE_PLACED', player: 'MACHINE', index: 0 }, state)).toBe(true);
+    expect(card.triggerCondition?.({ type: 'PIECE_PLACED', player: 'MACHINE', index: 4 }, state)).toBe(true);
+  });
+
+  it('NÃO dispara para outros tipos de evento', () => {
+    expect(card.triggerCondition?.({ type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'STUDY' }, state)).toBe(false);
+  });
+
+  it('drena até 2⚡ de quem colocou a peça', () => {
+    const rich = createTestState({ machineEnergy: 3 });
+    const result = card.effect({
+      state: rich,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'PIECE_PLACED', player: 'MACHINE', index: 0 },
+    });
+    expect(result?.energyDrain).toEqual({ target: 'MACHINE', amount: 2 });
+    expect(result?.log).toMatchObject({ code: 'CARD_TRIPWIRE', subject: 'PLAYER', target: 'MACHINE', value: 2 });
+  });
+
+  it('clampa em quanto o alvo realmente tem, se for menos que 2', () => {
+    const poor = createTestState({ machineEnergy: 1 });
+    const result = card.effect({
+      state: poor,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'PIECE_PLACED', player: 'MACHINE', index: 0 },
+    });
+    expect(result?.energyDrain).toEqual({ target: 'MACHINE', amount: 1 });
+  });
+
+  it('sem evento (ou evento errado) devolve null', () => {
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                   APAGÃO                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('APAGÃO (BLACKOUT) — carta nova: drena toda a energia do oponente', () => {
+  const card = getCard('BLACKOUT');
+
+  it('canPlay: indisponível com o oponente já em 0⚡', () => {
+    const state = createTestState({ machineEnergy: 0 });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível com o oponente tendo energia', () => {
+    const state = createTestState({ machineEnergy: 1 });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
+  });
+
+  it('drena exatamente a energia atual do oponente', () => {
+    const state = createTestState({ machineEnergy: 2 });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', rng });
+    expect(result?.energyDrain).toEqual({ target: 'MACHINE', amount: 2 });
+    expect(result?.log).toMatchObject({ code: 'CARD_BLACKOUT', subject: 'PLAYER', target: 'MACHINE' });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                  PARADOXO                                   */
+/* -------------------------------------------------------------------------- */
+
+describe('PARADOXO (PARADOX) — carta nova, a mais complexa do baralho: copia de graça a próxima carta de custo 3⚡', () => {
+  const card = getCard('PARADOX');
+
+  it('dispara só para CARD_PLAYED de uma carta de custo 3⚡', () => {
+    const state = createTestState();
+    expect(card.triggerCondition?.({ type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'HEAL_SELF' }, state)).toBe(true); // custo 3
+    expect(card.triggerCondition?.({ type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'STUDY' }, state)).toBe(false); // custo 2
+    expect(card.triggerCondition?.({ type: 'PIECE_PLACED', player: 'MACHINE', index: 0 }, state)).toBe(false);
+  });
+
+  it('copia CURA (ACTION): o dono do PARADOXO também é curado', () => {
+    const state = createTestState({ playerHp: 3, machineHp: 5 });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'HEAL_SELF' },
+    });
+    expect(result?.heal).toEqual({ target: 'PLAYER', amount: 1 });
+    expect(result?.log).toMatchObject({ code: 'CARD_PARADOX', subject: 'PLAYER', target: 'MACHINE', value: 'HEAL_SELF' });
+  });
+
+  it('copia ATAQUE (ACTION): o dano espelhado atinge quem jogou, não o dono do PARADOXO', () => {
+    const state = createTestState();
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'DIRECT_DAMAGE' },
+    });
+    expect(result?.damage).toEqual({ target: 'MACHINE', amount: 1 });
+  });
+
+  it('copia PERMUTA CAÓTICA (ACTION): reexecuta a troca com o caster invertido (operação simétrica entre as duas mãos)', () => {
+    const state = createTestState({
+      playerHand: [{ uid: 'p1', cardId: 'HEAL_SELF' }],
+      machineHand: [{ uid: 'm1', cardId: 'DIRECT_DAMAGE' }],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'HAND_SWAP' },
+    });
+    // Encadeado com a jogada original (já refletida em `state` no fluxo real,
+    // via CARD_PLAYED disparado DEPOIS de aplicar o efeito), esta 2ª troca
+    // devolve cada mão ao dono de antes.
+    expect(result?.patch?.playerHand).toEqual(state.machineHand);
+    expect(result?.patch?.machineHand).toEqual(state.playerHand);
+  });
+
+  it('copia SABOTAGEM (interativa): resolve a escolha sozinho via RNG, sem devolver .interaction', () => {
+    const state = createTestState({
+      machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'SABOTAGE' },
+    });
+    expect(result?.interaction).toBeUndefined();
+    // A única carta da mão de MACHINE some — mesmo efeito que SABOTAGEM
+    // produziria se o dono do PARADOXO a tivesse jogado de verdade.
+    expect(result?.patch?.machineHand).toEqual([]);
+  });
+
+  it('copia MINA (TRAP): arma uma armadilha idêntica pro dono do PARADOXO — armar nunca chama effect()', () => {
+    const state = createTestState({ playerTraps: [] });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'BOMB_TRAP' },
+    });
+    expect(result?.patch?.playerTraps).toHaveLength(1);
+    expect(result?.patch?.playerTraps?.[0].cardId).toBe('BOMB_TRAP');
+  });
+
+  it('copia MINA com TRAP_LIMIT cheio: PARADOXO ainda dispara (é consumido), só a cópia não cabe', () => {
+    const state = createTestState({
+      playerTraps: [
+        { uid: 't1', cardId: 'SHIELD_TRAP' },
+        { uid: 't2', cardId: 'ANTI_SPELL_TRAP' },
+        { uid: 't3', cardId: 'REFLECT_TRAP' },
+      ],
+    });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      event: { type: 'CARD_PLAYED', player: 'MACHINE', cardId: 'BOMB_TRAP' },
+    });
+    expect(result).not.toBeNull();
+    expect(result?.patch).toBeUndefined();
+    expect(result?.log).toMatchObject({ code: 'CARD_PARADOX', value: 'BOMB_TRAP' });
   });
 });

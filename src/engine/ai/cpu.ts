@@ -5,6 +5,7 @@ import {
   INITIAL_HP,
   MARK_BY_COMBATANT,
   TRAP_LIMIT,
+  adjacentIndexes,
   energyKeyFor,
   findWinner,
   getOldestPieceIndex,
@@ -12,6 +13,7 @@ import {
   handKeyFor,
   hpOf,
   isCellUnavailable,
+  shieldKeyFor,
   trapsKeyFor,
   type Board,
   type Combatant,
@@ -156,6 +158,40 @@ function findWinningMove(state: GameState, owner: Combatant, moves: number[]): n
   return null;
 }
 
+/**
+ * Tabuleiro resultante de deslizar uma peça de `origin` para `destination`
+ * (DESLIZAR/`SLIDE_PIECE`) — o objeto inteiro muda de célula, `turnPlaced`
+ * incluso: deslizar não altera a idade na fila, só a posição.
+ */
+function simulateSlide(board: Board, origin: number, destination: number): Board {
+  const next = [...board];
+  next[destination] = next[origin];
+  next[origin] = null;
+  return next;
+}
+
+/**
+ * Peça própria + vizinho ortogonal vazio que fecha uma linha ao deslizar pra
+ * lá, se existir — mesma urgência de `findWinningMove`, só que via DESLIZAR
+ * em vez de colocação nova. Reaproveitado por `resolveCpuInteraction` (2º
+ * passo da carta) pra escolher o MESMO destino, em vez de sortear.
+ */
+function findWinningSlide(
+  state: GameState,
+  owner: Combatant,
+): { origin: number; destination: number } | null {
+  for (const origin of getPieceIndexes(state.board, owner)) {
+    for (const destination of adjacentIndexes(origin)) {
+      if (state.board[destination] !== null) continue;
+      if (isCellUnavailable(state, destination)) continue;
+      if (findWinner(simulateSlide(state.board, origin, destination))?.winner === owner) {
+        return { origin, destination };
+      }
+    }
+  }
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                CARTAS DA CPU                                */
 /* -------------------------------------------------------------------------- */
@@ -174,17 +210,17 @@ export interface CpuCardPlay {
  * Prioridade fixa, primeira que se aplica vence — nenhuma prevê o futuro além
  * de "o oponente tem 3 peças" (para o alvo do DEMOLIR).
  *
- * Limitar a uma carta por turno é o que mantém isto "simples": nada impede
- * cartas futuras de se acumularem — a CPU só age quando alguma regra abaixo
- * casa, senão guarda a mão para o próximo turno.
+ * **Pode ser chamada mais de uma vez no MESMO turno.** A jogada de carta da
+ * CPU é anunciada num modal que pausa o jogo; quando o jogador confirma, o
+ * hook (`useCpuOpponent`) re-invoca `playCPUTurn`, que chama esta função de
+ * novo com o estado JÁ atualizado (energia/mão debitadas da carta anterior).
+ * Nenhum rastreamento de "já joguei uma carta este turno" é necessário: cada
+ * chamada decide com o estado corrente, e `ENERGY_CAP` (3) já limita
+ * naturalmente quantas cartas cabem — no máximo 3 de 1⚡, por exemplo. Devolve
+ * `null` quando não sobra nenhuma jogada de carta que valha a pena, e é isso
+ * que sinaliza a `playCPUTurn` para seguir para a colocação de peça.
  */
 export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
-  /* A jogada de carta da CPU é anunciada num modal que PAUSA o jogo, e a IA
-     retoma o turno depois do "Entendi". Sem esta marca ela recomeçaria a
-     decisão do zero nesse retorno e jogaria uma segunda carta no mesmo turno
-     — o limite de "uma por turno" viraria "uma por confirmação". */
-  if (state.machineCardTurn === state.turnCount) return null;
-
   const hand = state[handKeyFor(CPU)];
   const energy = state[energyKeyFor(CPU)];
   // Cego a `canPlay`/alvo — só a carta ESTAR na mão e CABER na energia do
@@ -201,11 +237,42 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   const heal = find('HEAL_SELF');
   if (heal && hpOf(state, CPU) <= 2) return { uid: heal.uid, cardId: heal.cardId };
 
-  // 2. Possível abate — se o dano fecha a partida, é sempre a melhor jogada.
+  // 2. BATERIA RESERVA (carta nova) — machucado e sem escudo ainda: previne
+  // o próximo dano em vez de só reagir depois dele.
+  const shield = find('BACKUP_BATTERY');
+  if (shield && hpOf(state, CPU) <= 3 && !state[shieldKeyFor(CPU)]) {
+    return { uid: shield.uid, cardId: shield.cardId };
+  }
+
+  // 3. CÁPSULA DO TEMPO (carta nova) — HP crítico e ainda não armada: dá
+  // timing de verdade a uma armadilha que, senão, só entraria em jogo por
+  // sorte de ordem na mão (regra genérica de armadilha, item 8 abaixo).
+  const capsule = find('TIME_CAPSULE');
+  if (
+    capsule &&
+    hpOf(state, CPU) <= 2 &&
+    state[trapsKeyFor(CPU)].length < TRAP_LIMIT &&
+    !state[trapsKeyFor(CPU)].some((c) => c.cardId === 'TIME_CAPSULE')
+  ) {
+    return { uid: capsule.uid, cardId: capsule.cardId };
+  }
+
+  // 4. Possível abate — se o dano fecha a partida, é sempre a melhor jogada.
   const attack = find('DIRECT_DAMAGE');
   if (attack && hpOf(state, HUMAN) <= 2) return { uid: attack.uid, cardId: attack.cardId };
 
-  // 3. Remove a própria interdição antes de tentar jogar no tabuleiro. LIMPAR
+  // 5. DESLIZAR (carta nova) fecha linha na hora, se alguma peça própria
+  // puder deslizar pra isso — mesma urgência do abate: se dá pra vencer
+  // AGORA, vence (ver `findWinningSlide`).
+  const slide = find('SLIDE_PIECE');
+  if (slide) {
+    const winningSlide = findWinningSlide(state, CPU);
+    if (winningSlide) {
+      return { uid: slide.uid, cardId: slide.cardId, targetIndex: winningSlide.origin };
+    }
+  }
+
+  // 6. Remove a própria interdição antes de tentar jogar no tabuleiro. LIMPAR
   // só cobre o bloqueio do caos; PURIFICAR cobre os dois — ambas exigem alvo
   // agora (a própria célula interditada), diferente da antiga CLEANSE global.
   const clearBlock = find('CLEAR_BLOCK');
@@ -218,17 +285,22 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (target !== null) return { uid: cleanse.uid, cardId: cleanse.cardId, targetIndex: target };
   }
 
-  // 4. TURNO EXTRA é sempre bom e nunca tem alvo — sem desvantagem.
+  // 7. TURNO EXTRA é sempre bom e nunca tem alvo — sem desvantagem.
   const extra = find('TURNO_EXTRA');
   if (extra && state.extraTurnPending !== CPU) return { uid: extra.uid, cardId: extra.cardId };
 
-  // 5. Arma a primeira armadilha disponível, se sobrar espaço na mesa.
+  // 8. Arma a primeira armadilha disponível, se sobrar espaço na mesa —
+  // cobre MINA, PROTEÇÃO, ANTIMAGIA, RICOCHETE e as 3 armadilhas novas
+  // (TIME_CAPSULE, TRIPWIRE, PARADOX) de graça, por categoria
+  // (`TRAP_CARD_IDS`). TIME_CAPSULE já tem prioridade PRÓPRIA acima (item 3)
+  // quando o HP está crítico — aqui ela só entra pela ordem da mão, como as
+  // outras.
   if (state[trapsKeyFor(CPU)].length < TRAP_LIMIT) {
     const trap = hand.find((c) => TRAP_CARD_IDS.includes(c.cardId) && getCard(c.cardId).cost <= energy);
     if (trap) return { uid: trap.uid, cardId: trap.cardId };
   }
 
-  // 6. Demolir a peça mais velha do HUMANO, só quando ele já tem 3 no
+  // 9. Demolir a peça mais velha do HUMANO, só quando ele já tem 3 no
   // tabuleiro (senão a carta só abriria espaço de graça para ele).
   const breakPiece = find('BREAK_PIECE');
   if (breakPiece) {
@@ -236,7 +308,17 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (target !== null) return { uid: breakPiece.uid, cardId: breakPiece.cardId, targetIndex: target };
   }
 
-  // 7. SAQUE e ESPIONAGEM: as duas mexem na mão do humano de verdade agora
+  // 10. RENOVAR (carta nova) — com 2+ peças próprias no tabuleiro, atrasa o
+  // sumiço da mais antiga (jogada de tempo, não de ataque).
+  const renew = find('RENEW_PIECE');
+  if (renew) {
+    const ownPieces = getPieceIndexes(state.board, CPU);
+    if (ownPieces.length >= 2) {
+      return { uid: renew.uid, cardId: renew.cardId, targetIndex: ownPieces[0] };
+    }
+  }
+
+  // 11. SAQUE e ESPIONAGEM: as duas mexem na mão do humano de verdade agora
   // (SAQUE tem 50% de chance de roubar; ESPIONAGEM sempre descobre E
   // descarta) — prioridade parecida, só incomodam se ele tiver o que perder.
   const raid = find('HAND_RAID');
@@ -248,7 +330,14 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     return { uid: spyCard.uid, cardId: spyCard.cardId };
   }
 
-  // 8. Trava uma célula vazia aleatória — disrupção de baixo custo. Nunca a
+  // 12. APAGÃO (carta nova) — só vale a pena drenando energia relevante do
+  // humano, senão é 2⚡ desperdiçados numa recarga de +1 que ele nem sentiria.
+  const blackout = find('BLACKOUT');
+  if (blackout && state[energyKeyFor(HUMAN)] >= 2) {
+    return { uid: blackout.uid, cardId: blackout.cardId };
+  }
+
+  // 13. Trava uma célula vazia aleatória — disrupção de baixo custo. Nunca a
   // que já está lacrada: o efeito recusaria e a carta voltaria para a mão.
   const lock = find('LOCK_CELL');
   if (lock) {
@@ -258,7 +347,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (empty.length > 0) return { uid: lock.uid, cardId: lock.cardId, targetIndex: rng.pick(empty) };
   }
 
-  // 9. VIDENTE agora DESTRÓI a peça marcada (não só revela) — mirar na mais
+  // 14. VIDENTE agora DESTRÓI a peça marcada (não só revela) — mirar na mais
   // ANTIGA do humano seria desperdício, ela já sumiria sozinha em breve pelo
   // "infinito"; a mais NOVA é o alvo que rende de verdade, porque não sairia
   // do tabuleiro por conta própria tão cedo.
@@ -269,10 +358,10 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (newest !== null) return { uid: reveal.uid, cardId: reveal.cardId, targetIndex: newest };
   }
 
-  // 10. Cura não-crítica — melhor que deixar a carta parada na mão.
+  // 15. Cura não-crítica — melhor que deixar a carta parada na mão.
   if (heal) return { uid: heal.uid, cardId: heal.cardId };
 
-  // 11. Compra por último: preenche a mão quando nada mais se aplica.
+  // 16. Compra por último: preenche a mão quando nada mais se aplica.
   // PROCRASTINAR II primeiro — mesma ideia, mais cartas — quando a energia
   // alcançar; `find` já garante que só é escolhida se couber no turno.
   const drawBig = find('STUDY_II');
@@ -280,7 +369,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   const draw = find('STUDY');
   if (draw && hand.length < HAND_LIMIT) return { uid: draw.uid, cardId: draw.cardId };
 
-  // 12. Puramente informativas — a CPU já decide com o estado inteiro à
+  // 17. Puramente informativas — a CPU já decide com o estado inteiro à
   // vista, então não ganham nada mecânico, mas apodrecer na mão é pior. Do
   // lado do jogador viram um aviso concreto de que foi espiado.
   const fullIntel = find('FULL_INTEL');
@@ -290,13 +379,41 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   const peek = find('PEEK_RANDOM');
   if (peek && state[handKeyFor(HUMAN)].length > 0) return { uid: peek.uid, cardId: peek.cardId };
 
-  // 13. TROCAR é alto risco (pode devolver uma carta melhor ao oponente) —
+  // 18. PRESSÁGIO (carta nova) — zero ganho mecânico pra CPU (ela não tem
+  // como "lembrar" do que viu, só decide com o `state` inteiro à vista), mas
+  // apodrecer na mão é pior — mesmo racional do item 17. Baixa prioridade,
+  // só preenche energia que sobraria sem uso.
+  const scry = find('SCRY_DECK');
+  if (scry && rng.chance(0.2)) return { uid: scry.uid, cardId: scry.cardId };
+
+  // 19. RECICLAR (carta nova) — troca 1 carta parada por outra, quando não
+  // há nada melhor a fazer com a energia sobrando. A escolha de QUAL
+  // descartar já cai na heurística ingênua existente (`PICK_ONE_FROM_HAND`
+  // em `resolveCpuInteraction`).
+  const mulligan = find('MULLIGAN');
+  if (mulligan && hand.length > 1 && rng.chance(0.2)) {
+    return { uid: mulligan.uid, cardId: mulligan.cardId };
+  }
+
+  // 20. TROCAR é alto risco (pode devolver uma carta melhor ao oponente) —
   // só ocasionalmente, nunca como prioridade. Mesma cautela da antiga TROCA
   // (mão inteira), agora só entre uma carta de cada lado.
   const trade = find('HAND_SWAP');
   if (trade && rng.chance(0.15)) return { uid: trade.uid, cardId: trade.cardId };
 
-  // 14. TIC TAC BOOM! é de graça (custo 0) e o resultado é imprevisível para
+  // 21. DESLIZAR oportunista (carta nova) — sem vitória garantida (item 5 já
+  // pegou esse caso), só reposiciona uma peça própria quando não há nada
+  // melhor a fazer. `resolveCpuInteraction` decide o destino.
+  if (slide) {
+    const slidable = getPieceIndexes(state.board, CPU).find((index) =>
+      adjacentIndexes(index).some((n) => state.board[n] === null && !isCellUnavailable(state, n)),
+    );
+    if (slidable !== undefined && rng.chance(0.15)) {
+      return { uid: slide.uid, cardId: slide.cardId, targetIndex: slidable };
+    }
+  }
+
+  // 22. TIC TAC BOOM! é de graça (custo 0) e o resultado é imprevisível para
   // os dois lados — sem leitura estratégica clara, só entra ocasionalmente
   // como uma última cartada em vez de deixar a energia sobrando sem uso.
   const roulette = find('CHAOS_ROULETTE');
@@ -366,10 +483,12 @@ export function chooseCpuMove(state: GameState, positionalBias = true): CpuDecis
  * `BOARD_TARGET` nunca chega aqui: a CPU sempre resolve o alvo sozinha ANTES
  * de jogar a carta (`chooseCpuCardPlay` devolve `targetIndex` de antemão),
  * então essa carta nunca abre uma interação pra CPU resolver depois. Os
- * outros 4 `kind`s ganham um ramo cada, cobertos por completude — hoje só
- * `PICK_ONE_FROM_HAND` é de fato alcançável pela CPU.
+ * outros 5 `kind`s ganham um ramo cada — `PICK_BOARD_CELL` (DESLIZAR, carta
+ * nova) é a exceção à heurística ingênua do resto da função: quando algum
+ * destino elegível fecha uma linha, escolhe ele em vez de sortear (mesma
+ * checagem de `findWinningSlide`, reaproveitando `simulateSlide`).
  */
-function resolveCpuInteraction(pending: PendingInteraction, actions: CpuActions): void {
+function resolveCpuInteraction(pending: PendingInteraction, actions: CpuActions, state: GameState): void {
   const rng = getChannel('AI');
 
   switch (pending.kind) {
@@ -390,6 +509,23 @@ function resolveCpuInteraction(pending: PendingInteraction, actions: CpuActions)
       if (pending.eligibleUids.length < 2) return;
       const [first, second] = rng.shuffle(pending.eligibleUids);
       actions.resolveInteraction({ kind: 'SACRIFICE_DRAG', uids: [first, second] });
+      return;
+    }
+    case 'PICK_BOARD_CELL': {
+      const origin = pending.priorSelections[0];
+      const originIndex = origin?.kind === 'BOARD_TARGET' ? origin.index : undefined;
+      const winning =
+        originIndex !== undefined
+          ? pending.eligibleIndexes.find(
+              (destination) =>
+                findWinner(simulateSlide(state.board, originIndex, destination))?.winner === pending.caster,
+            )
+          : undefined;
+
+      actions.resolveInteraction({
+        kind: 'PICK_BOARD_CELL',
+        index: winning ?? rng.pick(pending.eligibleIndexes),
+      });
       return;
     }
   }
@@ -450,7 +586,7 @@ export async function playCPUTurn(
      aberta e cai aqui. */
   if (fresh.pendingInteraction !== null) {
     if (fresh.pendingInteraction.caster !== CPU) return null; // humano mirando/escolhendo
-    resolveCpuInteraction(fresh.pendingInteraction, actions);
+    resolveCpuInteraction(fresh.pendingInteraction, actions, fresh);
     fresh = getState ? getState() : fresh;
     if (fresh.status !== 'PLAYING' || fresh.turn !== CPU || fresh.pendingAcknowledgement !== null) {
       return null;
@@ -458,9 +594,14 @@ export async function playCPUTurn(
   }
 
   /* --- Cartas antes do tabuleiro -------------------------------------------
-     No máximo uma por turno (ver `chooseCpuCardPlay`). A mensagem de log já
-     sai de graça: `playCard`/`playMachineCard` chamam `pushLog` com a
-     `message` do efeito, então nenhuma plumbing extra é necessária aqui.    */
+     Uma tentativa por CHAMADA — mas o hook (`useCpuOpponent`) re-invoca esta
+     função a cada "Entendi" confirmado (ver o comentário logo abaixo), então
+     a CPU pode acabar jogando várias cartas no mesmo turno, uma de cada vez,
+     cada uma com o próprio anúncio. `chooseCpuCardPlay` decide cada tentativa
+     com o estado FRESCO — energia/mão já refletem qualquer carta anterior. A
+     mensagem de log já sai de graça: `playCard`/`playMachineCard` chamam
+     `pushLog` com a `message` do efeito, então nenhuma plumbing extra é
+     necessária aqui. */
   const cardPlay = chooseCpuCardPlay(fresh);
   if (cardPlay) {
     const played = actions.playCard(cardPlay.uid, cardPlay.targetIndex);
@@ -481,9 +622,12 @@ export async function playCPUTurn(
          `canPlaceAt` recusaria, fazendo a CPU perder a jogada em silêncio.
 
          Abortar é seguro porque o hook da CPU tem `pendingAcknowledgement`
-         nas dependências: quando o jogador confirma, o turno recomeça, e
-         `machineCardTurn` garante que ele siga direto para o tabuleiro em vez
-         de jogar uma segunda carta. */
+         nas dependências: quando o jogador confirma, o turno recomeça — esta
+         função é chamada de novo do zero, com o estado já refletindo a carta
+         que acabou de resolver. Nessa nova chamada `chooseCpuCardPlay` decide
+         de novo: pode escolher OUTRA carta (se ainda sobrar energia/mão útil)
+         ou devolver `null` e seguir direto para o tabuleiro — sem precisar de
+         nenhum rastreamento de "já joguei uma carta este turno". */
       if (fresh.pendingAcknowledgement !== null) return null;
     }
   }

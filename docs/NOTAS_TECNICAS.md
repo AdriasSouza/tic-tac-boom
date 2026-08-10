@@ -370,56 +370,75 @@ desempate por ordem de `WIN_LINES` deixar de parecer proporcional — nesse pont
 decidir uma regra explícita (ex: nenhum dos dois vence, ou os dois vencem) em vez de
 continuar dependendo da ordem do array.
 
-## Cobertura de `chooseCpuCardPlay` pelas 29 cartas (Fase 7a)
-
-**Diagnóstico, sem mudança de comportamento** — `chooseCpuCardPlay`/`chooseCpuMove`/
-`playCPUTurn` (`src/engine/ai/cpu.ts`) não foram alterados nesta sessão. A tabela abaixo é
-o mapa de cobertura que a próxima fase (ajuste de heurística) usa como ponto de partida.
+## Cobertura de `chooseCpuCardPlay` (Fase 7a, atualizada no patch pós-Fase 7a de multi-carta + cartas novas)
 
 `chooseCpuCardPlay` tem uma lista de prioridade fixa, primeira condição que casa vence.
 Nenhuma carta hoje é "avaliada mas nunca vence prioridade" — toda carta marcada como "Não"
 abaixo é porque `find(id)` nem existe pra ela na função (nunca chega a ser avaliada).
 
+**Patch pós-Fase 7a (multi-carta + 9 cartas):** a função deixou de estar limitada a "no
+máximo uma carta por turno" (`machineCardTurn` — campo e guarda foram REMOVIDOS por
+completo, não só relaxados; ver a seção seguinte) e ganhou prioridades para as 9 cartas
+adicionadas nas duas rodadas anteriores (`RENEW_PIECE`/`MULLIGAN`/`SLIDE_PIECE`/
+`SCRY_DECK`/`BACKUP_BATTERY`/`TIME_CAPSULE`/`TRIPWIRE`/`BLACKOUT`/`PARADOX`), que até então
+nunca eram consideradas. Os 9 gaps PRÉ-EXISTENTES da baseline de 29 cartas (linha "Não"
+abaixo) continuam de fora — fora do escopo desta rodada, não um esquecimento novo.
+
 | Carta (id) | Considerada? | Condição / motivo |
 |---|---|---|
-| LIMPAR (`CLEAR_BLOCK`) | Sim | Prioridade 3 — `activeRule === 'BLOCKED_CELL'` e a célula bloqueada é conhecida. |
-| PURIFICAR (`CLEANSE`) | Sim | Prioridade 3 — alvo é `blockedCell` ou `lockedCell`, o que estiver ativo. |
-| TRAVAR (`LOCK_CELL`) | Sim | Prioridade 8 — trava uma célula vazia aleatória (disrupção de baixo custo). |
-| DEMOLIR (`BREAK_PIECE`) | Sim | Prioridade 6 — só dispara quando o HUMANO já tem 3 peças no tabuleiro (`getOldestPieceIndex` exige `>= MAX_PIECES_PER_PLAYER`; com menos de 3, a condição nunca fecha). |
-| ESPIADA (`PEEK_RANDOM`) | Sim | Prioridade 12 — só se a mão do humano não estiver vazia; sem chance/condição além disso. |
-| ESTUDAR (`STUDY`) | Sim | Prioridade 11 — mão não cheia; verificada DEPOIS de ESTUDAR II. |
-| SAQUE (`HAND_RAID`) | Sim | Prioridade 7 — mão do humano não vazia E `rng.chance(0.5)` (probabilística, não garantida mesmo com condição satisfeita). |
-| PERMUTA CAÓTICA (`HAND_SWAP`) | Sim | Prioridade 13 — `rng.chance(0.15)`, sem outra condição (alto risco, propositalmente raro). |
-| OBSOLESCÊNCIA (`OBSOLESCENCE`) | Sim | Prioridade 9 — mira a peça mais NOVA do humano (`getPieceIndexes(...).at(-1)`); dispara sempre que ele tiver >=1 peça. **Achado:** o comentário da prioridade 9 ainda diz "VIDENTE agora DESTRÓI a peça marcada" — nome antigo, pré-Fase 2; o `find('OBSOLESCENCE')` está correto, só o comentário ficou desatualizado. |
-| SABOTAGEM (`SABOTAGE`) | Sim | Prioridade 7 — mesma forma de SAQUE: mão do humano não vazia E `rng.chance(0.5)`. |
-| ESTUDAR II (`STUDY_II`) | Sim | Prioridade 11 — mão não cheia; checada ANTES de ESTUDAR (prioridade "mais cartas primeiro"). |
-| VIDENTE (`HIGHLIGHT_OLDEST`) | **Não** | Nunca referenciada. Fase 2 (redesenho — virou leitura pura, sem efeito mecânico) — a lista de prioridade nunca ganhou uma entrada pra ela. |
-| ANOMALIA (`QUEUE_SHUFFLE`) | **Não** | Nunca referenciada. Fase 2 (carta nova). |
-| TROCAR (`SINGLE_CARD_TRADE`) | **Não** | Nunca referenciada. Fase 2 (carta nova). |
-| ESPIONAGEM (`INTEL_REVEAL`) | **Não** | Nunca referenciada. Fase 2/rebalanceada (Fase C) — mesmo depois do ajuste de raridade/custo, segue invisível pra CPU. |
-| PROCRASTINAR (`CARD_DRAFT`) | **Não** | Nunca referenciada. Fase 2 (carta nova). |
-| ATAQUE (`DIRECT_DAMAGE`) | Sim | Prioridade 2 — abate garantido: `hpOf(HUMAN) <= 2`. |
-| SAQUE II (`HAND_RAID_II`) | **Não** | Nunca referenciada — só a versão I (`HAND_RAID`) está na lista. Fase 2 (carta nova). |
-| PROCRASTINAR II (`CARD_DRAFT_TIERED`) | **Não** | Nunca referenciada. Fase 2 (carta nova). |
-| CURA (`HEAL_SELF`) | Sim | Prioridade 1 (crítica, `hpOf(CPU) <= 2`) e prioridade 10 (não-crítica, joga se sobrar na mão). |
-| TURNO EXTRA (`TURNO_EXTRA`) | Sim | Prioridade 4 — sempre boa, sem alvo; só verifica `extraTurnPending !== CPU` (não duplicar concessão). |
-| VISÃO ABSOLUTA (`FULL_INTEL`) | Sim | Prioridade 12 — só se a mão do humano não estiver vazia; puramente informativa. |
-| MINA (`BOMB_TRAP`) | Sim (genérico) | Prioridade 5 — `TRAP_CARD_IDS.includes(...)`, arma a PRIMEIRA armadilha da mão nessa ordem; nenhuma preferência pelo tipo (Lendária ou não). |
-| PROTEÇÃO (`SHIELD_TRAP`) | Sim (genérico) | Mesma prioridade 5, mesma falta de diferenciação por tipo. |
-| ANTIMAGIA (`ANTI_SPELL_TRAP`) | Sim (genérico) | Mesma prioridade 5. |
-| RICOCHETE (`REFLECT_TRAP`) | Sim (genérico) | Mesma prioridade 5. |
-| TIC TAC BOOM! (`CHAOS_ROULETTE`) | Sim | Prioridade 14 — `rng.chance(0.2)`, sem condição além do custo 0. |
-| ALTAR DE SACRIFÍCIO (`ALTAR_OF_SACRIFICE`) | **Não** | Nunca referenciada. Fase 6b (carta mais recente do baralho). |
-| REBOBINAR (`REBOBINAR`) | **Não** (jogar) / Sim (respeitar) | A CPU nunca ESCOLHE jogar REBOBINAR — mas `chooseCpuMove` RESPEITA corretamente a punição quando o HUMANO a joga contra ela (`state.machinePlacementBlocked`, checado antes de qualquer simulação de jogada). "Jogar a carta" e "respeitar o efeito dela" são coisas diferentes; só a primeira está zerada aqui. |
+| CURA (`HEAL_SELF`) | Sim | Prioridade 1 (crítica, `hpOf(CPU) <= 2`) e prioridade 15 (não-crítica, joga se sobrar na mão). |
+| BATERIA RESERVA (`BACKUP_BATTERY`, carta nova) | Sim | Prioridade 2 — `hpOf(CPU) <= 3` e ainda sem escudo ativo. |
+| CÁPSULA DO TEMPO (`TIME_CAPSULE`, carta nova) | Sim | Prioridade 3 (crítica, `hpOf(CPU) <= 2` e ainda não armada) — dá timing de verdade, além da cobertura genérica de armadilha (prioridade 8) que ela também recebe fora do caso crítico. |
+| ATAQUE (`DIRECT_DAMAGE`) | Sim | Prioridade 4 — abate garantido: `hpOf(HUMAN) <= 2`. |
+| DESLIZAR (`SLIDE_PIECE`, carta nova) | Sim | Prioridade 5 (fecha linha na hora, `findWinningSlide` — mesma urgência de uma vitória por colocação) e prioridade 21 (oportunista, `rng.chance(0.15)`, reposiciona sem garantia de vitória). |
+| LIMPAR (`CLEAR_BLOCK`) | Sim | Prioridade 6 — `activeRule === 'BLOCKED_CELL'` e a célula bloqueada é conhecida. |
+| PURIFICAR (`CLEANSE`) | Sim | Prioridade 6 — alvo é `blockedCell` ou `lockedCell`, o que estiver ativo. |
+| TURNO EXTRA (`TURNO_EXTRA`) | Sim | Prioridade 7 — sempre boa, sem alvo; só verifica `extraTurnPending !== CPU` (não duplicar concessão). |
+| MINA (`BOMB_TRAP`) | Sim (genérico) | Prioridade 8 — `TRAP_CARD_IDS.includes(...)`, arma a PRIMEIRA armadilha da mão nessa ordem; nenhuma preferência pelo tipo (Lendária ou não). |
+| PROTEÇÃO (`SHIELD_TRAP`) | Sim (genérico) | Mesma prioridade 8, mesma falta de diferenciação por tipo. |
+| ANTIMAGIA (`ANTI_SPELL_TRAP`) | Sim (genérico) | Mesma prioridade 8. |
+| RICOCHETE (`REFLECT_TRAP`) | Sim (genérico) | Mesma prioridade 8. |
+| FIO DE ARAME (`TRIPWIRE`, carta nova) | Sim (genérico) | Mesma prioridade 8 — sem regra própria, entra igual às outras 3 armadilhas antigas. |
+| PARADOXO (`PARADOX`, carta nova) | Sim (genérico) | Mesma prioridade 8 — idem; é uma "arma e esquece", não precisa de timing especial. |
+| DEMOLIR (`BREAK_PIECE`) | Sim | Prioridade 9 — só dispara quando o HUMANO já tem 3 peças no tabuleiro (`getOldestPieceIndex` exige `>= MAX_PIECES_PER_PLAYER`; com menos de 3, a condição nunca fecha). |
+| RENOVAR (`RENEW_PIECE`, carta nova) | Sim | Prioridade 10 — com 2+ peças próprias no tabuleiro, renova a mais antiga (jogada de atraso tática). |
+| SAQUE (`HAND_RAID`) | Sim | Prioridade 11 — mão do humano não vazia E `rng.chance(0.5)` (probabilística, não garantida mesmo com condição satisfeita). |
+| SABOTAGEM (`SABOTAGE`) | Sim | Prioridade 11 — mesma forma de SAQUE. |
+| APAGÃO (`BLACKOUT`, carta nova) | Sim | Prioridade 12 — só quando `energyOf(HUMAN) >= 2` (denial que não denega quase nada não vale o custo). |
+| TRAVAR (`LOCK_CELL`) | Sim | Prioridade 13 — trava uma célula vazia aleatória (disrupção de baixo custo). |
+| OBSOLESCÊNCIA/AMALDIÇOAR (`OBSOLESCENCE`) | Sim | Prioridade 14 — mira a peça mais NOVA do humano (`getPieceIndexes(...).at(-1)`); dispara sempre que ele tiver >=1 peça. |
+| ESTUDAR (`STUDY`) | Sim | Prioridade 16 — mão não cheia; verificada DEPOIS de ESTUDAR II. |
+| ESTUDAR II (`STUDY_II`) | Sim | Prioridade 16 — mão não cheia; checada ANTES de ESTUDAR (prioridade "mais cartas primeiro"). |
+| VISÃO ABSOLUTA (`FULL_INTEL`) | Sim | Prioridade 17 — só se a mão do humano não estiver vazia; puramente informativa. |
+| ESPIADA (`PEEK_RANDOM`) | Sim | Prioridade 17 — só se a mão do humano não estiver vazia; sem chance/condição além disso. |
+| PRESSÁGIO (`SCRY_DECK`, carta nova) | Sim | Prioridade 18 — `rng.chance(0.2)`, sem outra condição. Zero ganho MECÂNICO pra CPU (ela decide sempre com o `state` inteiro à vista, não "lembra" do que viu) — só evita a carta apodrecer na mão, mesmo racional de VISÃO ABSOLUTA/ESPIADA. |
+| RECICLAR (`MULLIGAN`, carta nova) | Sim | Prioridade 19 — `hand.length > 1` E `rng.chance(0.2)`; a escolha de QUAL carta descartar cai na heurística ingênua existente (`PICK_ONE_FROM_HAND`). |
+| PERMUTA CAÓTICA (`HAND_SWAP`) | Sim | Prioridade 20 — `rng.chance(0.15)`, sem outra condição (alto risco, propositalmente raro). |
+| TIC TAC BOOM! (`CHAOS_ROULETTE`) | Sim | Prioridade 22 — `rng.chance(0.2)`, sem condição além do custo 0. |
+| VIDENTE (`HIGHLIGHT_OLDEST`) | **Não** | Nunca referenciada. Pré-existente à baseline de 29 cartas — fora do escopo desta rodada. |
+| ANOMALIA (`QUEUE_SHUFFLE`) | **Não** | Nunca referenciada. Pré-existente — fora do escopo desta rodada. |
+| TROCAR (`SINGLE_CARD_TRADE`) | **Não** | Nunca referenciada. Pré-existente — fora do escopo desta rodada. |
+| ESPIONAGEM (`INTEL_REVEAL`) | **Não** | Nunca referenciada. Pré-existente — fora do escopo desta rodada. |
+| PROCRASTINAR (`CARD_DRAFT`) | **Não** | Nunca referenciada. Pré-existente — fora do escopo desta rodada. |
+| SAQUE II (`HAND_RAID_II`) | **Não** | Nunca referenciada — só a versão I (`HAND_RAID`) está na lista. Pré-existente — fora do escopo desta rodada. |
+| PROCRASTINAR II (`CARD_DRAFT_TIERED`) | **Não** | Nunca referenciada. Pré-existente — fora do escopo desta rodada. |
+| ALTAR DE SACRIFÍCIO (`ALTAR_OF_SACRIFICE`) | **Não** | Nunca referenciada. Pré-existente — fora do escopo desta rodada. |
+| REBOBINAR (`REBOBINAR`) | **Não** (jogar) / Sim (respeitar) | A CPU nunca ESCOLHE jogar REBOBINAR — mas `chooseCpuMove` RESPEITA corretamente a punição quando o HUMANO a joga contra ela (`state.machinePlacementBlocked`, checado antes de qualquer simulação de jogada). "Jogar a carta" e "respeitar o efeito dela" são coisas diferentes; só a primeira está zerada aqui. Pré-existente. |
 
-**Resumo:** 9 das 29 cartas nunca são consideradas para jogo pela CPU —
-`HIGHLIGHT_OLDEST`, `QUEUE_SHUFFLE`, `SINGLE_CARD_TRADE`, `INTEL_REVEAL`, `CARD_DRAFT`,
-`HAND_RAID_II`, `CARD_DRAFT_TIERED`, `ALTAR_OF_SACRIFICE`, `REBOBINAR` — todas cartas das
-Fases 2/4/6, exatamente como suspeitado: a lista de prioridade foi escrita antes delas
-existirem. As 4 armadilhas são "consideradas" só genericamente (primeira da mão, sem
-diferenciação por raridade/efeito). Confirmado empiricamente pelo harness de auto-jogo (ver
-próxima seção): nas 300 partidas rodadas, nenhuma das 9 cartas nunca-referenciadas aparece
-na tabela de frequência — zero jogadas, dos dois lados, o lote inteiro.
+**Novo achado deste patch, corrigido:** `resolveCpuInteraction` (o resolvedor do 2º passo de
+uma interação que a PRÓPRIA CPU abriu) tinha um `switch` sem `case` para `kind:
+'PICK_BOARD_CELL'` (o 2º passo de DESLIZAR) — como a função devolve `void`, isso NÃO era
+erro de compilação, era um soft-lock LATENTE: se a CPU algum dia propusesse DESLIZAR sem
+esse caso, o turno travaria pra sempre (nada resolveria a interação pendente). Adicionado
+junto da cobertura de DESLIZAR — escolhe, entre os destinos elegíveis, o que fecha linha
+(reaproveitando a mesma checagem de `findWinningSlide`), senão sorteia.
+
+**Resumo:** 8 das 38 cartas atuais nunca são consideradas para jogo pela CPU — todas
+pré-existentes à baseline de 29 cartas (nenhum gap NOVO nesta rodada). As 6 armadilhas
+(MINA/PROTEÇÃO/ANTIMAGIA/RICOCHETE/FIO DE ARAME/PARADOXO) são "consideradas" só
+genericamente pela regra de prioridade 8 (primeira da mão, sem diferenciação por
+raridade/efeito) — exceto CÁPSULA DO TEMPO, que também ganhou uma regra PRÓPRIA de
+prioridade alta pro caso crítico.
 
 ## Harness de auto-jogo determinístico CPU x CPU (Fase 7a)
 
@@ -441,14 +460,14 @@ tradução de volta — nenhum dos dois é combatant-específico — só as AÇ�
 estado real usam `combatant` explícito (`placeMark`/`endTurn`/`resolveInteraction`, que já
 aceitam isso; só `playCard`/`playMachineCard` são pré-vinculadas por lado).
 
-**Assimetria conhecida, documentada, não escondida:** `machineCardTurn` não tem par do lado
-`PLAYER` no `GameState` (existe só pra evitar a CPU jogar 2 cartas no mesmo turno depois de
-um re-entry assíncrono pós-modal — o humano nunca teve esse problema). `mirrorForDecision`
-NÃO troca esse campo — inventar um valor sem correspondente real quebraria a propriedade de
-involução que o teste da função verifica (`mirrorForDecision(mirrorForDecision(s)) === s`).
-Seguro porque `turnCount` avança a cada meio-turno e o harness nunca chama
-`chooseCpuCardPlay`/`playCPUTurn` mais de uma vez por turno por lado — a guarda nunca
-precisaria bloquear nada de qualquer forma.
+**Assimetria resolvida no patch pós-Fase 7a (multi-carta):** esta seção documentava
+`machineCardTurn` como um campo assimétrico (sem par do lado `PLAYER`) que
+`mirrorForDecision` deliberadamente não trocava. O patch que permitiu a CPU jogar mais de
+uma carta por turno REMOVEU o campo inteiro — a guarda que ele sustentava
+(`chooseCpuCardPlay` recusando uma 2ª carta no mesmo `turnCount`) deixou de fazer sentido
+assim que múltiplas cartas por turno passaram a ser o comportamento desejado, e nada mais no
+código consultava o campo (confirmado por busca antes de remover). `mirrorForDecision` não
+precisou de nenhum ajuste — a lista de campos que ela troca já não incluía isso.
 
 **Testado isoladamente** (`src/engine/ai/cpuMirror.test.ts`, sem depender do harness de
 partidas): involução com estado variado e com campos nulos, e conferência célula-a-célula
@@ -557,3 +576,47 @@ cronograma) em vez do `isSpinning` LOCAL de cada célula.
 `resumeMatch`/`acknowledgementQueue` acima passa a valer a pena perseguir de verdade (exigiria
 serializar a fila de anúncios pendentes, ou reprocessar o log de ações como o multiplayer já
 faz via `resyncFromActionLog` — não uma mudança pequena).
+
+## As duas vias de aplicação de TRAP convergiram para `applyCardEffectResult` (patch de defesa — PARADOXO)
+
+**Contexto:** antes deste patch existiam DOIS caminhos que aplicam o resultado de uma `TRAP`,
+e eles JÁ tinham divergido silenciosamente:
+- `resolveCounterTraps` (veto síncrono — ANTIMAGIA/PROTEÇÃO/RICOCHETE, reage a
+  `CARD_ABOUT_TO_RESOLVE`) já delegava para o pipeline completo desde a Fase 3:
+  `applyCardEffectResult(defender, trap.cardId, result, { [trapsKey]: remaining })` —
+  entende `patch`/`log`/`notice`/`damage`/`heal`/`draw`/`acknowledge`/`triggersChaosGlitch`,
+  re-checa `findWinner`.
+- `dispatchEvent` (reativo — hoje MINA, `PIECE_PLACED`) tinha uma aplicação MANUAL mais
+  estreita, escrita antes dessa unificação: só entendia `patch`/`log`/`notice`/`damage`. Um
+  resquício que nunca doeu porque nenhuma trap reativa até então precisava de mais que isso.
+
+**Por que isso importava para este patch:** FIO DE ARAME (`energyDrain`, campo novo) e,
+principalmente, PARADOXO (que reexecuta o `effect()` de QUALQUER carta de custo 3⚡ copiada —
+`heal` de CURA, `draw` de ESTUDAR II, `acknowledge` de SABOTAGEM) precisavam de campos que a
+via reativa nunca soube tratar. Sem a unificação, MINA continuaria funcionando (o resultado
+dela sempre coube no subconjunto antigo) mas PARADOXO copiando CURA silenciosamente perderia a
+cura — `heal` cairia no chão, sem erro nenhum, só o efeito não acontecendo.
+
+**Ação:** a aplicação manual dentro do loop de `dispatchEvent` (`gameStore.ts`) foi trocada por
+uma chamada a `applyCardEffectResult`, idêntica à que `resolveCounterTraps` já fazia — mesma
+assinatura, mesmo `basePatch` vazio (a remoção do array de armadilhas já acontece antes, fora
+do pipeline, porque a carta "vira pra cima" na mesa imediatamente, independente de quando o
+jogador confirma o "Entendi"). Confirmado que isso não reabre o risco de recursão que o
+`isDraining`/fila de `dispatchEvent` existe pra evitar: `applyCardEffectResult` nunca dispara
+`dispatchEvent` sozinha — quem publica `CARD_PLAYED` é sempre o CHAMADOR (`resolveCardPlay`/
+`finishInteractionStep`), nunca essa função — então uma MINA ou um PARADOXO disparando não gera
+um novo `CARD_PLAYED` capaz de re-acionar outro PARADOXO em cascata.
+
+**Restrição herdada, ainda válida:** `applyCardEffectResult` continua documentada como "nunca
+chamada com `result.interaction` presente" — PARADOXO respeita isso por construção: quando a
+carta copiada pede uma interação (SABOTAGEM, o ramo de escolha de SAQUE II), o próprio
+`effect()` do PARADOXO resolve o passo sozinho, via RNG (`autoResolveInteraction`,
+`registry.ts`), ANTES de devolver um resultado — o que chega até `dispatchEvent`/
+`applyCardEffectResult` é sempre um resultado FINAL. Ver a entrada de PARADOXO em
+`docs/CARTAS.md` para o porquê de não dar pra abrir um modal de verdade pro dono da armadilha
+(`resolveInteraction` exige `state.turn === combatant`, e ele está fora da própria vez).
+
+**Regressão coberta:** a suíte e2e de MINA (`gameStore.test.ts`, Fase 5) já exercitava o
+caminho `dispatchEvent → queueAcknowledgement(TRAP_TRIGGERED) → apply()` ponta a ponta e
+continuou passando sem nenhuma alteração de asserção — sinal de que a troca de pipeline é
+estritamente aditiva pro que já existia.

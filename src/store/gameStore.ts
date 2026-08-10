@@ -22,6 +22,7 @@ import {
   canPlaceAt,
   createEmptyBoard,
   energyKeyFor,
+  energyOf,
   findWinner,
   getOldestPieceIndex,
   getPieceIndexes,
@@ -40,6 +41,7 @@ import {
   pickFreeCell,
   placementBlockedKeyFor,
   regenEnergy,
+  shieldKeyFor,
   trapsKeyFor,
   type AcknowledgementCode,
   type AcknowledgementKind,
@@ -219,6 +221,9 @@ export interface GameActions {
   /** Aumenta o HP do alvo. Faz clamp em `INITIAL_HP` — cura não excede o teto. */
   healTarget: (target: Combatant, amount: number) => void;
 
+  /** Drena energia do alvo. Faz clamp em 0 — nunca fica negativa. */
+  drainEnergy: (target: Combatant, amount: number) => void;
+
   /** Troca a regra caótica ativa. `payload.cell` só é usado por BLOCKED_CELL. */
   applyChaosRule: (rule: ChaosRule, payload?: { cell?: number }) => void;
 
@@ -396,6 +401,8 @@ const createInitialState = (): GameState => ({
   // que `turn` passar a valer `'MACHINE'`.
   playerEnergy: STARTING_ENERGY,
   machineEnergy: STARTING_ENERGY,
+  playerShield: false,
+  machineShield: false,
   activeRule: 'NORMAL',
   blockedCell: null,
   lockedCell: null,
@@ -415,7 +422,6 @@ const createInitialState = (): GameState => ({
   pendingAcknowledgement: null,
   nextAcknowledgementId: 0,
   machineHand: [],
-  machineCardTurn: null,
   // `null`: NORMAL não expira sozinho. O 1º surto vem naturalmente quando
   // `turnCount` alcançar `CHAOS_SURGE_INTERVAL_TURNS` (ver `tickGlobalClock`).
   ruleExpiresAtTurn: null,
@@ -439,6 +445,15 @@ const createInitialState = (): GameState => ({
   matchWinner: null,
   matchOverReason: null,
   lastVanishedIndex: null,
+  nextVanishedIndexId: 0,
+  lastShieldAbsorbed: null,
+  nextShieldAbsorbedId: 0,
+  lastTimeCapsuleSave: null,
+  nextTimeCapsuleSaveId: 0,
+  lastEnergyDrain: null,
+  nextEnergyDrainId: 0,
+  lastParadoxMirror: null,
+  nextParadoxMirrorId: 0,
   matchSeed: getMatchSeed(),
 });
 
@@ -719,9 +734,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
    * Unificado agora que um TERCEIRO consumidor ia duplicar de novo.
    *
    * `basePatch` é o que o CHAMADOR já monta (remoção de mão + débito de
-   * energia + `machineCardTurn`, cada um variando por chamador) — esta
-   * função só soma o `patch` do efeito por cima e decide o que fazer com o
-   * resultado.
+   * energia, cada um variando por chamador) — esta função só soma o `patch`
+   * do efeito por cima e decide o que fazer com o resultado.
    *
    * **Restrição:** armadilha reativa (`resolveCounterTraps`) NUNCA chama isto
    * com um `result.interaction` presente — um contra-ataque pausando o jogo
@@ -815,6 +829,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     if (result.notice) get().pushNotice(result.notice);
     if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
     if (result.heal) get().healTarget(result.heal.target, result.heal.amount);
+    if (result.energyDrain) get().drainEnergy(result.energyDrain.target, result.energyDrain.amount);
     if (result.draw) drawCardsFor(result.draw.target, result.draw.count);
     // TIC TAC BOOM!: mesma roleta do surto automático do relógio global, só
     // que provocada pelo jogador. `triggerTerminalGlitch` não é pura (lê
@@ -903,7 +918,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
     pending: PendingInteraction,
     selection: InteractionSelection,
     result: CardEffectResult | null,
-    combatant: Combatant,
   ): boolean {
     if (!result) {
       set(refundInteraction(pending));
@@ -928,7 +942,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
     applyCardEffectResult(pending.caster, pending.cardId, result, {
       pendingInteraction: null,
-      ...(combatant === 'MACHINE' ? { machineCardTurn: get().turnCount } : null),
     });
     get().dispatchEvent({ type: 'CARD_PLAYED', player: pending.caster, cardId: pending.cardId });
     return true;
@@ -1052,7 +1065,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
         set({
           [handKey]: hand,
           ...energySpend,
-          ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
         });
         return true;
       }
@@ -1061,7 +1073,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
         [handKey]: hand,
         [trapsKey]: [...state[trapsKey], { uid, cardId }],
         ...energySpend,
-        ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
       });
 
       /* O `cardId` viaja no evento mas a APRESENTAÇÃO esconde de quem não é
@@ -1108,7 +1119,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
           [handKey]: hand,
           ...energySpend,
           pendingInteraction: { kind: 'BOARD_TARGET', caster, cardId, cardUid: uid, handIndex, priorSelections: [] },
-          ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
         });
       };
 
@@ -1135,10 +1145,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
       set({
         [handKey]: hand,
         ...energySpend,
-        // A carta da máquina foi gasta, ainda que anulada — sem marcar o
-        // turno aqui, a IA voltaria do "Entendi" da armadilha achando que
-        // ainda não jogou e queimaria uma segunda carta.
-        ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
       });
       return true;
     }
@@ -1162,10 +1168,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
       [handKey]: defaultCasterHand,
       ...energySpend,
       pendingInteraction: null,
-      // Marca que a máquina já gastou a carta deste turno. Sem isto ela
-      // recomeçaria a decisão do zero depois do "Entendi" do anúncio e
-      // jogaria uma segunda carta no mesmo turno.
-      ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
     };
 
     /**
@@ -1186,7 +1188,6 @@ export const useGameStore = create<GameStore>()((set, get) => {
             { caster, cardId, cardUid: uid, handIndex, priorSelections: [] },
             result.interaction,
           ),
-          ...(caster === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
         });
         return;
       }
@@ -1243,6 +1244,22 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // esperando o overflow acontecer num turno futuro.
     const nextForcedVanish =
       state.forcedVanish?.owner === owner && vanishingIndex !== null ? null : state.forcedVanish;
+    // Efêmero com `id` monotônico (mesmo padrão de `lastDamageEvent`) — só
+    // avança quando uma peça de fato sumiu; sem vanish nesta jogada, o campo
+    // não é tocado (o consumidor reage à MUDANÇA de `id`, não à presença).
+    // `owner` vem do tabuleiro ORIGINAL (antes do `board[vanishingIndex] =
+    // null` acima) — depois disso a peça já não existe mais pra capturar.
+    const lastVanishedIndexPatch: Partial<GameState> =
+      vanishingIndex !== null
+        ? {
+            lastVanishedIndex: {
+              index: vanishingIndex,
+              owner: state.board[vanishingIndex]!.owner,
+              id: state.nextVanishedIndexId,
+            },
+            nextVanishedIndexId: state.nextVanishedIndexId + 1,
+          }
+        : {};
 
     // --- 2. Posiciona a nova peça ------------------------------------------
     board[index] = {
@@ -1258,7 +1275,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
       set({
         board,
         turnCount: nextTurnCount,
-        lastVanishedIndex: vanishingIndex,
+        ...lastVanishedIndexPatch,
         forcedVanish: nextForcedVanish,
         status: 'ROUND_OVER',
         roundWinner: result.winner,
@@ -1305,7 +1322,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     set({
       board,
       turnCount: nextTurnCount,
-      lastVanishedIndex: vanishingIndex,
+      ...lastVanishedIndexPatch,
       forcedVanish: nextForcedVanish,
       turn: nextTurnHolder,
       ...nextTurnInfo.patch,
@@ -1350,10 +1367,56 @@ export const useGameStore = create<GameStore>()((set, get) => {
     if (amount <= 0) return;
 
     const state = get();
+
+    /* --- BATERIA RESERVA -----------------------------------------------------
+       Absorve o golpe INTEIRO, qualquer que seja a origem (ATAQUE, MINA, SAQUE
+       II refletido, dano de rodada perdida) — checado antes de qualquer outra
+       coisa, inclusive antes da CÁPSULA DO TEMPO: um escudo ativo nunca deixa
+       o HP se mexer, então a Cápsula nem chega a ter o que interceptar. */
+    const shieldKey = shieldKeyFor(target);
+    if (state[shieldKey]) {
+      set({
+        [shieldKey]: false,
+        // Efêmero com `id` monotônico — mesmo padrão de `lastDamageEvent`,
+        // alimenta o pulso de absorção no `<HpTracker />` (`HUD.tsx`).
+        lastShieldAbsorbed: { target, id: state.nextShieldAbsorbedId },
+        nextShieldAbsorbedId: state.nextShieldAbsorbedId + 1,
+      });
+      get().pushLog({ code: 'CARD_SHIELD_ABSORBED', subject: target });
+      get().pushNotice({ code: 'CARD_SHIELD_ABSORBED', subject: target, tone: 'NEUTRAL' });
+      return;
+    }
+
     const key = target === 'PLAYER' ? 'playerHp' : 'machineHp';
     const nextHp = Math.max(0, state[key] - amount);
 
     if (nextHp === state[key]) return;
+
+    /* --- CÁPSULA DO TEMPO -----------------------------------------------------
+       Intercepta o golpe que zeraria o HP, direto aqui — não existe evento de
+       "dano prestes a ser letal" no barramento (`DAMAGE_TAKEN` nunca é
+       disparado, de propósito, ver `events.ts`), então é a ÚNICA armadilha do
+       jogo cuja regra vive fora do formato "reage a um `GameEvent`". */
+    if (nextHp === 0) {
+      const trapsKey = trapsKeyFor(target);
+      const capsule = state[trapsKey].find((t) => t.cardId === 'TIME_CAPSULE');
+      if (capsule) {
+        set({
+          [key]: 1,
+          [trapsKey]: state[trapsKey].filter((t) => t.uid !== capsule.uid),
+          lastDamageEvent: { target, amount, id: state.nextDamageEventId },
+          nextDamageEventId: state.nextDamageEventId + 1,
+          // Efêmero próprio, além do flash de dano acima — alimenta
+          // `<TimeCapsuleBanner />` (`app/game/[mode].tsx`).
+          lastTimeCapsuleSave: { target, id: state.nextTimeCapsuleSaveId },
+          nextTimeCapsuleSaveId: state.nextTimeCapsuleSaveId + 1,
+        });
+        get().pushLog({ code: 'CARD_TIME_CAPSULE', subject: target });
+        get().pushNotice({ code: 'CARD_TIME_CAPSULE', subject: target, tone: 'NEUTRAL' });
+        drawCardsFor(target, 2);
+        return;
+      }
+    }
 
     set({
       [key]: nextHp,
@@ -1370,6 +1433,27 @@ export const useGameStore = create<GameStore>()((set, get) => {
             matchWinner: (target === 'PLAYER' ? 'MACHINE' : 'PLAYER') as Combatant,
           }
         : null),
+    });
+  },
+
+  /**
+   * Drena energia do alvo, clampada em 0. Mesmo racional de `takeDamage`/
+   * `healTarget`: `applyCardEffectResult` retira `playerEnergy`/`machineEnergy`
+   * de qualquer `patch` de propósito, então um efeito que precisa mexer na
+   * energia do ALVO (APAGÃO, FIO DE ARAME) passa por aqui.
+   */
+  drainEnergy: (target, amount) => {
+    if (amount <= 0) return;
+    const state = get();
+    const key = energyKeyFor(target);
+    const next = Math.max(0, state[key] - amount);
+    if (next === state[key]) return;
+    set({
+      [key]: next,
+      // Efêmero com `id` monotônico — alimenta o burst nos `<EnergyPip />`
+      // do lado drenado (`HUD.tsx`).
+      lastEnergyDrain: { target, amount: state[key] - next, id: state.nextEnergyDrainId },
+      nextEnergyDrainId: state.nextEnergyDrainId + 1,
     });
   },
 
@@ -1473,6 +1557,10 @@ export const useGameStore = create<GameStore>()((set, get) => {
       lastChaosRoulette: null,
       lastNotice: null,
       lastVanishedIndex: null,
+      lastShieldAbsorbed: null,
+      lastTimeCapsuleSave: null,
+      lastEnergyDrain: null,
+      lastParadoxMirror: null,
     });
 
     // Uma interação a meio caminho (mira, escolha, sacrifício) também
@@ -1662,10 +1750,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
          numa função própria porque abrir e resolver deixaram de ser a
          MESMA chamada. */
       if (resolveCounterTraps({ type: 'CARD_ABOUT_TO_RESOLVE', player: combatant, cardId: pending.cardId })) {
-        set({
-          pendingInteraction: null,
-          ...(combatant === 'MACHINE' ? { machineCardTurn: state.turnCount } : null),
-        });
+        set({ pendingInteraction: null });
         return true;
       }
 
@@ -1676,10 +1761,10 @@ export const useGameStore = create<GameStore>()((set, get) => {
         targetIndex: selection.index,
         rng: getChannel('CARDS'),
       });
-      return finishInteractionStep(pending, selection, result, combatant);
+      return finishInteractionStep(pending, selection, result);
     }
 
-    // Os outros 4 `kind`s: `effect` é a própria continuação — chamado de novo
+    // Os outros 5 `kind`s: `effect` é a própria continuação — chamado de novo
     // com o histórico de escolhas (ver `CardEffectContext.interaction`).
     const result = card.effect({
       state,
@@ -1688,7 +1773,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
       rng: getChannel('CARDS'),
       interaction: { selection, priorSelections: pending.priorSelections },
     });
-    return finishInteractionStep(pending, selection, result, combatant);
+    return finishInteractionStep(pending, selection, result);
   },
 
   cancelInteraction: (combatant) => {
@@ -1787,16 +1872,26 @@ export const useGameStore = create<GameStore>()((set, get) => {
              — nunca depois de um timer fixo, que não garante leitura nenhuma. */
           queueAcknowledgement(
             { code: 'TRAP_TRIGGERED', subject: defender, target: actor, cardId: trap.cardId },
+            // Mesmo pipeline COMPLETO que `resolveCounterTraps`/`resolveCardPlay`
+            // já usam (`applyCardEffectResult`) — antes desta unificação (via
+            // reativa de PARADOXO/FIO DE ARAME) esta via só entendia um
+            // subconjunto manual (`patch`/`log`/`notice`/`damage`), incapaz de
+            // `heal`/`draw`/`energyDrain`/`acknowledge` que uma armadilha
+            // copiada pelo PARADOXO pode devolver. A remoção do array de
+            // armadilhas já aconteceu (linha acima) — `basePatch` vazio.
             () => {
-              // Mesma blindagem de `resolveCardPlay`: uma armadilha também não
-              // tem por que mexer no relógio global.
-              const { turnCount: _clockIsNotTrapBusiness, ...trapPatch } = result.patch ?? {};
-              set({ ...trapPatch });
-              if (result.log) get().pushLog(result.log);
-              if (result.notice) get().pushNotice(result.notice);
-              // Dano passa por takeDamage: clamp em 0, fim de partida e a
-              // animação do HUD vivem lá, num lugar só.
-              if (result.damage) get().takeDamage(result.damage.target, result.damage.amount);
+              applyCardEffectResult(defender, trap.cardId, result, {});
+              // Efêmero próprio, além do que a cópia em si já aplicou —
+              // alimenta `<ParadoxEchoOverlay />` (`app/game/[mode].tsx`).
+              // Só PARADOXO gera este eco; as outras traps reativas (MINA,
+              // FIO DE ARAME) não tocam este campo.
+              if (trap.cardId === 'PARADOX') {
+                const fresh = get();
+                set({
+                  lastParadoxMirror: { subject: defender, id: fresh.nextParadoxMirrorId },
+                  nextParadoxMirrorId: fresh.nextParadoxMirrorId + 1,
+                });
+              }
             },
           );
 
@@ -1970,6 +2065,25 @@ export const selectLastExtraTurn = (s: GameStore) => s.lastExtraTurn;
  * cronograma de `<Cell />` e `<ChaosRouletteBanner />`. */
 export const selectLastChaosRoulette = (s: GameStore) => s.lastChaosRoulette;
 
+/**
+ * Última peça a sumir (overflow natural, DEMOLIR ou ANOMALIA/RANDOM_FADE),
+ * com `id` monotônico. Alimenta a animação de saída em `<Cell />` — a célula
+ * do `index` compara contra o próprio, o resto ignora.
+ */
+export const selectLastVanishedIndex = (s: GameStore) => s.lastVanishedIndex;
+
+/** Absorção de dano de BATERIA RESERVA mais recente, com `id` monotônico. */
+export const selectLastShieldAbsorbed = (s: GameStore) => s.lastShieldAbsorbed;
+
+/** Disparo de CÁPSULA DO TEMPO mais recente, com `id` monotônico. Alimenta `<TimeCapsuleBanner />`. */
+export const selectLastTimeCapsuleSave = (s: GameStore) => s.lastTimeCapsuleSave;
+
+/** Dreno de energia (FIO DE ARAME/APAGÃO) mais recente, com `id` monotônico. */
+export const selectLastEnergyDrain = (s: GameStore) => s.lastEnergyDrain;
+
+/** Cópia de PARADOXO mais recente, com `id` monotônico. Alimenta `<ParadoxEchoOverlay />`. */
+export const selectLastParadoxMirror = (s: GameStore) => s.lastParadoxMirror;
+
 /** O giro ainda está em cascata? Trava `<Cell />`/`<CardHand />` enquanto a
  * apresentação não termina (ver comentário de `chaosRouletteSpinning` no
  * `GameState`). */
@@ -2062,6 +2176,9 @@ export const selectHp = (target: Combatant) => (s: GameStore) =>
 
 /** Energia (⚡) atual de um combatente específico. */
 export const selectEnergy = (target: Combatant) => (s: GameStore) => s[energyKeyFor(target)];
+
+/** Escudo de BATERIA RESERVA ativo de um combatente específico. */
+export const selectShield = (target: Combatant) => (s: GameStore) => s[shieldKeyFor(target)];
 
 /**
  * Quantos pips de energia (⚡) de `target` estão "reservados" agora — já

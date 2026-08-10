@@ -39,20 +39,6 @@ import {
  * (o harness só verifica não-nulo, nunca campo a campo), `nextCardUid`,
  * `playerRevealedUids`/`machineRevealedUids`, `status`, vencedores,
  * `turnCount`, `matchSeed`.
- *
- * **`machineCardTurn` também fica de fora, deliberadamente.** É assimétrico
- * no `GameState` real — não existe `playerCardTurn` (a guarda existe só pra
- * `MACHINE` não jogar 2 cartas no mesmo turno depois de um re-entry
- * assíncrono pós-modal; humano nunca teve esse problema). Trocar exigiria
- * inventar um valor sem correspondente real, o que quebraria a propriedade
- * de involução (aplicar a função duas vezes devolve o estado original) que
- * o teste desta função verifica. Deixar como está é seguro: `turnCount`
- * avança pelo menos +1 a cada meio-turno (`TURNS_PER_GLOBAL_ROUND`), então
- * `machineCardTurn` (carimbado no turno em que a MACHINE real jogou por
- * último) nunca coincide com o `turnCount` atual durante o turno do
- * `PLAYER` — e o harness nunca chama `chooseCpuCardPlay`/`playCPUTurn` mais
- * de uma vez por turno por lado, então a guarda nunca precisaria bloquear
- * nada de qualquer forma.
  */
 export function mirrorForDecision(state: GameState): GameState {
   return {

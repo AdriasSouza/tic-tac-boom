@@ -4,7 +4,9 @@ import {
   HAND_LIMIT,
   INITIAL_HP,
   MAX_PIECES_PER_PLAYER,
+  TRAP_LIMIT,
   adjacentIndexes,
+  energyOf,
   getPieceIndexes,
   handKeyFor,
   hasAdjacentEmpty,
@@ -14,13 +16,21 @@ import {
   opponentOf,
   placementBlockedKeyFor,
   revealedKeyFor,
+  shieldKeyFor,
+  trapsKeyFor,
 } from '@/engine/rules';
 import { getChannel, snapshotRng, restoreRng } from '@/engine/rng';
 import { fuseRarity, RARITY_DRAW_WEIGHT } from './definitions';
 import type { Rng } from '@/engine/rng';
 import { createEmptyBoard } from '@/engine/rules';
-import type { Board, Combatant, GameState, HandCard, Piece } from '@/engine/rules';
-import type { CardDefinition, CardEffectResult, CardId, CardRarity } from './definitions';
+import type { Board, Combatant, GameState, HandCard, InteractionSelection, Piece } from '@/engine/rules';
+import type {
+  CardDefinition,
+  CardEffectResult,
+  CardId,
+  CardRarity,
+  PendingInteractionRequest,
+} from './definitions';
 
 /* -------------------------------------------------------------------------- */
 /*                              QUEM É A MÁQUINA?                              */
@@ -192,13 +202,18 @@ const BREAK_PIECE: CardDefinition = {
     // (IA, testes) que não passam pelo fluxo de mira da UI.
     if (targetIndex === undefined) return null;
     if (targetIndex < 0 || targetIndex > 8) return null;
-    if (state.board[targetIndex] === null) return null;
+    const doomed = state.board[targetIndex];
+    if (doomed === null) return null;
 
     const board = [...state.board];
     board[targetIndex] = null;
 
     return {
-      patch: { board, lastVanishedIndex: targetIndex },
+      patch: {
+        board,
+        lastVanishedIndex: { index: targetIndex, owner: doomed.owner, id: state.nextVanishedIndexId },
+        nextVanishedIndexId: state.nextVanishedIndexId + 1,
+      },
       log: { code: 'CARD_BREAK_PIECE', subject: caster, value: targetIndex },
     };
   },
@@ -477,6 +492,32 @@ const SCRY_DECK: CardDefinition = {
         : { code: 'CARD_SCRY_DECK', kind: 'INTEL_FLIP', subject: caster, revealedCards: upcoming },
     };
   },
+};
+
+/**
+ * Carta nova. Escudo de 1 uso: absorve o PRÓXIMO dano que o dono sofreria,
+ * qualquer que seja a origem (ATAQUE, MINA, SAQUE II refletido, dano de
+ * rodada perdida). A absorção em si vive em `takeDamage` (`gameStore.ts`),
+ * não aqui — dano pode vir de fontes que nunca chamam `effect()` nenhum.
+ * `canPlay` bloqueia uma 2ª Bateria enquanto a 1ª ainda está ativa: não
+ * empilha, jogar a segunda seria desperdício.
+ */
+const BACKUP_BATTERY: CardDefinition = {
+  id: 'BACKUP_BATTERY',
+  name: 'BATERIA RESERVA',
+  type: 'ACTION',
+  description: 'Ativa um escudo: o próximo dano que você sofreria é absorvido por completo.',
+  targeting: 'NONE',
+  rarity: 'COMMON',
+  weight: 3,
+  cost: 1,
+
+  canPlay: ({ state, caster }) => !state[shieldKeyFor(caster)],
+
+  effect: ({ caster }) => ({
+    patch: { [shieldKeyFor(caster)]: true },
+    log: { code: 'CARD_BACKUP_BATTERY', subject: caster },
+  }),
 };
 
 /* -------------------------------------------------------------------------- */
@@ -904,6 +945,37 @@ const QUEUE_SHUFFLE: CardDefinition = {
     const event = { code: 'CARD_QUEUE_SHUFFLE', subject: caster, target } as const;
     return {
       patch: { forcedVanish: { owner: target, mode: 'RANDOM' } },
+      log: event,
+      notice: event,
+    };
+  },
+};
+
+/**
+ * Carta nova. Denial puro: zera a energia do oponente na hora.
+ * `targetsOpponentResource: true` habilita RICOCHETE — sem a flag, a
+ * armadilha nem consultaria esta carta. A inversão (`RICOCHET_INVERSIONS`,
+ * abaixo) zera a energia de quem LANÇOU em vez de quem receberia.
+ */
+const BLACKOUT: CardDefinition = {
+  id: 'BLACKOUT',
+  name: 'APAGÃO',
+  type: 'ACTION',
+  description: 'Drena toda a energia do oponente.',
+  targeting: 'NONE',
+  rarity: 'EPIC',
+  weight: 2,
+  cost: 2,
+  targetsOpponentResource: true,
+
+  canPlay: ({ state, caster }) => energyOf(state, opponentOf(caster)) > 0,
+
+  effect: ({ state, caster }) => {
+    const target = opponentOf(caster);
+    const event = { code: 'CARD_BLACKOUT', subject: caster, target } as const;
+
+    return {
+      energyDrain: { target, amount: energyOf(state, target) },
       log: event,
       notice: event,
     };
@@ -1471,6 +1543,56 @@ const ANTI_SPELL_TRAP: CardDefinition = {
 };
 
 /**
+ * Carta nova. "Última chance": SEM `triggerCondition` — não participa do
+ * barramento de eventos, porque não existe um evento de "dano prestes a ser
+ * letal" (`DAMAGE_TAKEN` nunca é disparado, de propósito, ver `events.ts`).
+ * A regra em si vive direto em `takeDamage` (`gameStore.ts`) — a ÚNICA
+ * interceptação de dano letal do jogo, e por isso a única armadilha que não
+ * se encaixa no formato "reage a um `GameEvent`" das outras. Este `effect`
+ * nunca é chamado pelo fluxo normal — existe só porque `CardDefinition.effect`
+ * é campo obrigatório.
+ */
+const TIME_CAPSULE: CardDefinition = {
+  id: 'TIME_CAPSULE',
+  name: 'CÁPSULA DO TEMPO',
+  type: 'TRAP',
+  description: 'Virada na mesa. Se seu HP chegar a 0, você sobrevive com 1 e compra 2 cartas.',
+  targeting: 'NONE',
+  rarity: 'RARE',
+  weight: 2,
+  cost: 1,
+
+  effect: () => null,
+};
+
+/**
+ * Carta nova. Pune a PRÓXIMA peça que o oponente colocar, onde quer que seja
+ * — mesmo evento que MINA já consome (`PIECE_PLACED`), sem restringir a
+ * `CENTER_INDEX`. Drena até 2⚡ de quem colocou, clampado ao que ele tem.
+ */
+const TRIPWIRE: CardDefinition = {
+  id: 'TRIPWIRE',
+  name: 'FIO DE ARAME',
+  type: 'TRAP',
+  description: 'Virada na mesa. Drena até 2⚡ do oponente na próxima vez que ele colocar uma peça.',
+  targeting: 'NONE',
+  rarity: 'RARE',
+  weight: 2,
+  cost: 1,
+
+  triggerCondition: (event) => event.type === 'PIECE_PLACED',
+
+  effect: ({ state, caster, event }) => {
+    if (!event || event.type !== 'PIECE_PLACED') return null;
+    const target = event.player;
+    const amount = Math.min(2, energyOf(state, target));
+    const drained = { code: 'CARD_TRIPWIRE', subject: caster, target, value: amount } as const;
+
+    return { energyDrain: { target, amount }, log: drained, notice: { ...drained, tone: 'NEUTRAL' } };
+  },
+};
+
+/**
  * Inversões bem definidas para RICOCHETE, por `cardId` — a categoria
  * (`targetsOpponentResource`) decide SE a armadilha dispara; esta tabela
  * decide COMO inverter, e só existe para os efeitos onde isso tem sentido
@@ -1522,6 +1644,12 @@ const RICOCHET_INVERSIONS: Partial<
 > = {
   DIRECT_DAMAGE: ({ attacker }) => ({ damage: { target: attacker, amount: 1 } }),
 
+  // APAGÃO: em vez de anular, a inversão zera a energia de quem LANÇOU —
+  // mesmo desenho de `DIRECT_DAMAGE`, o efeito volta pro próprio autor.
+  BLACKOUT: ({ state, attacker }) => ({
+    energyDrain: { target: attacker, amount: energyOf(state, attacker) },
+  }),
+
   HAND_RAID: stealRandomFromAttacker,
   HAND_RAID_II: stealRandomFromAttacker,
 
@@ -1567,6 +1695,134 @@ const REFLECT_TRAP: CardDefinition = {
       log: { code: 'TRAP_RICOCHET', subject: caster, target: attacker, value: event.cardId },
       ...inverted,
     };
+  },
+};
+
+/**
+ * Sorteia uma `InteractionSelection` válida pra qualquer `kind` de
+ * `PendingInteractionRequest`, sem abrir modal — usado só pelo PARADOXO
+ * (abaixo) pra resolver sozinho a escolha de uma carta copiada que pediria
+ * interação (SABOTAGEM, o ramo de escolha de SAQUE II): `resolveInteraction`
+ * (`gameStore.ts`) exige `state.turn === combatant`, e o dono do PARADOXO
+ * está fora da própria vez no instante em que o gatilho dispara — nunca
+ * teria como responder um modal de verdade.
+ */
+function autoResolveInteraction(request: PendingInteractionRequest, rng: Rng): InteractionSelection {
+  switch (request.kind) {
+    case 'PICK_ONE_FROM_HAND':
+      return { kind: 'PICK_ONE_FROM_HAND', uid: rng.pick(request.optionUids) };
+    case 'PICK_MANY_FROM_HAND': {
+      const count = Math.min(request.count, request.optionUids.length);
+      return { kind: 'PICK_MANY_FROM_HAND', uids: rng.shuffle(request.optionUids).slice(0, count) };
+    }
+    case 'PICK_ONE_REVEALED':
+      return { kind: 'PICK_ONE_REVEALED', cardId: rng.pick(request.options) };
+    case 'SACRIFICE_DRAG': {
+      const [a, b] = rng.shuffle(request.eligibleUids);
+      return { kind: 'SACRIFICE_DRAG', uids: [a, b] };
+    }
+    case 'PICK_BOARD_CELL':
+      return { kind: 'PICK_BOARD_CELL', index: rng.pick(request.eligibleIndexes) };
+  }
+}
+
+/**
+ * Carta nova, a mais complexa do baralho: copia de graça o efeito da
+ * PRÓXIMA carta de custo 3⚡ que o oponente jogar — sem tabela por carta
+ * (`docs/CARTAS.md`). A distinção é só por `type`:
+ *
+ * - Original é `TRAP` (hoje só MINA): armar nunca chama `effect()`
+ *   (`resolveCardPlay`, `gameStore.ts`), então não existe efeito nenhum para
+ *   "copiar" — só a arma em si. A cópia é armar uma armadilha idêntica pro
+ *   dono do PARADOXO, respeitando `TRAP_LIMIT`.
+ * - Original é `ACTION`: chama o MESMO `effect()` da carta, com `caster`
+ *   invertido pro dono do PARADOXO — produz sozinho, sem tabela: CURA cura
+ *   ele, ATAQUE acerta quem jogou, ESTUDAR II compra pra ele, PERMUTA
+ *   CAÓTICA desfaz a própria troca (operação simétrica entre as duas mãos,
+ *   rodar 2x cancela). Se esse resultado pedir uma `interaction` (SABOTAGEM,
+ *   o ramo de escolha de SAQUE II), `autoResolveInteraction` decide sozinha
+ *   — o PARADOXO NUNCA devolve `.interaction` pra fora: do ponto de vista do
+ *   laço de armadilhas reativas (`dispatchEvent`, `gameStore.ts`), ele é uma
+ *   trap comum, de resultado único.
+ *
+ * Imune a ser anulada ao armar E ao disparar: automático via
+ * `isImmuneToTraps` (Lendária), mesmo mecanismo que já protege PERMUTA
+ * CAÓTICA/MINA — zero código extra.
+ */
+const PARADOX: CardDefinition = {
+  id: 'PARADOX',
+  name: 'PARADOXO',
+  type: 'TRAP',
+  description: 'Virada na mesa. Copia de graça o efeito da próxima carta de custo 3⚡ que o oponente jogar.',
+  targeting: 'NONE',
+  rarity: 'LEGENDARY',
+  weight: 2,
+  cost: 2,
+
+  triggerCondition: (event) => event.type === 'CARD_PLAYED' && getCard(event.cardId).cost === 3,
+
+  effect: ({ state, caster, event, rng }) => {
+    if (!event || event.type !== 'CARD_PLAYED') return null;
+    const original = getCard(event.cardId);
+    const originalCaster = event.player;
+    const mirrorLog = {
+      code: 'CARD_PARADOX',
+      subject: caster,
+      target: originalCaster,
+      value: event.cardId,
+    } as const;
+
+    // TRAP original: não tem `effect()` pra copiar ao armar — a cópia É armar
+    // uma equivalente. Sem espaço, o PARADOXO ainda dispara (é consumido),
+    // só a cópia em si não cabe.
+    if (original.type === 'TRAP') {
+      const trapsKey = trapsKeyFor(caster);
+      if (state[trapsKey].length >= TRAP_LIMIT) return { log: mirrorLog };
+
+      return {
+        patch: {
+          [trapsKey]: [
+            ...state[trapsKey],
+            { uid: `paradox-mirror#${state.nextCardUid}`, cardId: event.cardId },
+          ],
+          nextCardUid: state.nextCardUid + 1,
+        },
+        log: mirrorLog,
+        notice: { ...mirrorLog, tone: 'NEUTRAL' },
+      };
+    }
+
+    // ACTION original: reexecuta o MESMO `effect()`, com `caster` invertido.
+    // Qualquer `interaction` que ele peça é resolvida sozinha, via RNG — o
+    // dono do PARADOXO nunca teria como responder um modal de verdade nesse
+    // instante (ver `autoResolveInteraction`).
+    const mirrorUid = `paradox-mirror#${state.nextCardUid}`;
+    let interactionCtx: { selection: InteractionSelection; priorSelections: InteractionSelection[] } | undefined;
+    let mirrored = original.effect({ state, caster, uid: mirrorUid, targetIndex: undefined, rng });
+
+    while (mirrored?.interaction) {
+      const selection = autoResolveInteraction(mirrored.interaction, rng);
+      const priorSelections = interactionCtx
+        ? [...interactionCtx.priorSelections, interactionCtx.selection]
+        : [];
+      interactionCtx = { selection, priorSelections };
+      mirrored = original.effect({
+        state,
+        caster,
+        uid: mirrorUid,
+        targetIndex: undefined,
+        rng,
+        interaction: interactionCtx,
+      });
+    }
+
+    if (!mirrored) return null;
+
+    // O `log`/`notice` do efeito espelhado é substituído pelo do PARADOXO —
+    // mais informativo aqui do que "curou 1 hp" sem contexto, já que o dono
+    // não jogou carta nenhuma neste turno. `patch`/`damage`/`heal`/`draw`/
+    // `energyDrain`/`interaction` (já resolvida) do resultado interno seguem.
+    return { ...mirrored, log: mirrorLog, notice: { ...mirrorLog, tone: 'NEUTRAL' } };
   },
 };
 
@@ -1817,6 +2073,11 @@ export const CARD_REGISTRY: Record<CardId, CardDefinition> = {
   MULLIGAN,
   SLIDE_PIECE,
   SCRY_DECK,
+  BACKUP_BATTERY,
+  TIME_CAPSULE,
+  TRIPWIRE,
+  BLACKOUT,
+  PARADOX,
 };
 
 export const CARD_IDS = Object.keys(CARD_REGISTRY) as CardId[];

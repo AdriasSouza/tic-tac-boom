@@ -30,6 +30,9 @@ export const colors = {
   winGlow: '#facc15',
   danger: '#ff2e63',
   terminalGreen: '#39ff7a',
+  shield: '#2dd4bf', // BATERIA RESERVA — glow persistente + pulso de absorção
+  energyDrain: '#fb923c', // FIO DE ARAME/APAGÃO — burst nos pips drenados
+  paradoxEcho: '#a855f7', // PARADOXO — flash de tela cheia ao copiar
 
   /* Texto */
   text: '#e8eef5',

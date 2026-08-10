@@ -143,7 +143,25 @@ export type LogCode =
   /** `subject` descartou 1 carta própria e comprou outra (RECICLAR). Sem `value`. */
   | 'CARD_MULLIGAN'
   /** `subject` deslizou 1 peça própria para uma célula vizinha. `value` = índice de destino. */
-  | 'CARD_SLIDE_PIECE';
+  | 'CARD_SLIDE_PIECE'
+  /** `subject` ativou o escudo de BATERIA RESERVA. Sem `value`. */
+  | 'CARD_BACKUP_BATTERY'
+  /** O escudo de `subject` absorveu um dano que zeraria/reduziria o HP dele. Sem `value`. */
+  | 'CARD_SHIELD_ABSORBED'
+  /** A CÁPSULA DO TEMPO de `subject` disparou: sobreviveu com 1 HP e comprou 2 cartas. Sem `value`. */
+  | 'CARD_TIME_CAPSULE'
+  /**
+   * O FIO DE ARAME de `subject` disparou contra a colocação de peça de
+   * `target`, drenando energia dele. `value` = quantidade drenada.
+   */
+  | 'CARD_TRIPWIRE'
+  /** `subject` drenou toda a energia de `target` (APAGÃO). Sem `value`. */
+  | 'CARD_BLACKOUT'
+  /**
+   * O PARADOXO de `subject` copiou de graça o efeito da carta que `target`
+   * acabou de jogar. `value` = `CardId` copiada.
+   */
+  | 'CARD_PARADOX';
 
 /**
  * O fato, sem identidade. É o que os produtores (store, cartas) emitem.

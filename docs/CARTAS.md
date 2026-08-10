@@ -170,6 +170,21 @@
     pelo próprio pedido do patch: "o que é ótimo e caótico".
   - **Nota de migração:** carta NOVA.
 
+  ### BATERIA RESERVA (`BACKUP_BATTERY`, novo — patch de defesa)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Utilidade / Combate · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Ativa um escudo de 1 uso: o PRÓXIMO dano que o jogador ativo sofreria —
+    qualquer que seja a origem (ATAQUE, MINA, SAQUE II refletido, dano de rodada perdida) — é
+    absorvido por completo em vez de reduzir o HP. A checagem vive direto em `takeDamage`
+    (`gameStore.ts`), antes de qualquer clamp de HP: contraparte barata de CURA (3⚡, conserta dano
+    já sofrido) — esta previne 1 dano futuro por 1⚡.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
+  - **Casos de borda:**
+    - Jogável mesmo com HP cheio — o escudo protege dano futuro, não repõe HP perdido.
+    - **Indisponível com o escudo já ativo** — não empilha, uma 2ª Bateria enquanto a 1ª está de pé
+      seria desperdício. `canPlay` bloqueia em vez de deixar jogar e desperdiçar.
+  - **Nota de migração:** carta NOVA.
+
   ---
 
   ## Raras — 25%
@@ -423,6 +438,37 @@
     Revelar 2 cartas sem descartar nada destoava do resto das épicas (dano, cura, punições
     severas) — nivelada para o tier de informação/manipulação onde ESPIADA e SAQUE já estão.
 
+  ### CÁPSULA DO TEMPO (`TIME_CAPSULE`, novo — patch de defesa)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
+  - **Efeito exato:** Virada na mesa. Gatilho passivo: se o HP do dono chegar a 0, a armadilha
+    intercepta ANTES de encerrar a partida — ele sobrevive com 1 HP, compra 2 cartas imediatamente,
+    e a armadilha é consumida no processo.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA, no momento de ARMAR.
+  - **Casos de borda:**
+    - Não protege contra perder a RODADA por linha fechada — o resultado da rodada continua valendo
+      normalmente, a Cápsula só impede o HP de chegar a 0 (mesmo que o dano daquela rodada seja
+      exatamente o que zeraria).
+  - **Nota de migração:** carta NOVA. **Mecanismo (única exceção arquitetural do baralho):** não
+    tem `triggerCondition` nem participa do barramento de eventos (`dispatchEvent`) que as outras
+    armadilhas usam — não existe um `GameEvent` de "dano prestes a ser letal" (`DAMAGE_TAKEN` nunca
+    é disparado, de propósito, para uma armadilha não reagir ao próprio estrago). A regra vive
+    direto em `takeDamage` (`gameStore.ts`), a ÚNICA interceptação de dano letal do jogo — mora
+    onde é garantida (`AGENTS.md`, "Invariantes de domínio"), não forçada num evento que nunca
+    existiu de verdade.
+
+  ### FIO DE ARAME (`TRIPWIRE`, novo — patch de defesa)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
+  - **Efeito exato:** Virada na mesa. Dispara contra a PRÓXIMA peça que o oponente colocar,
+    qualquer célula (mesmo evento que MINA consome, `PIECE_PLACED`, sem restringir à casa central).
+    A peça é colocada normalmente, mas quem a colocou perde 2⚡ — ou toda a energia restante, se
+    tiver menos que isso.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA, no momento de ARMAR.
+  - **Casos de borda:** reativa, sem edge case de mão/tabuleiro próprio — o clamp da energia
+    drenada (nunca abaixo de 0) já cobre o caso do oponente ter menos de 2⚡.
+  - **Nota de migração:** carta NOVA.
+
   ---
 
   ## Épicas — 15%
@@ -579,6 +625,18 @@
     - Mão do oponente vazia / mão cheia / tabuleiro — não se aplicam.
   - **Nota de migração:** sem mudança. MANTIDA.
 
+  ### APAGÃO (`BLACKOUT`, novo — patch de defesa)
+  - **Custo:** 2⚡ · **Categoria (PDF):** Combate / Defesa · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Drena toda a energia restante do oponente no exato momento em que a carta é
+    jogada — denial puro. É a resposta a um oponente guardando 3⚡ para VISÃO ABSOLUTA/CURA no
+    próximo turno.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
+  - **Anulável por armadilha:** Sim, por RICOCHETE (drenar energia do oponente é um efeito
+    direcionado — a inversão zera a energia de quem LANÇOU em vez do alvo original) e por
+    ANTIMAGIA (cobertura universal).
+  - **Casos de borda:** indisponível se o oponente já estiver com 0⚡ — nada para drenar.
+  - **Nota de migração:** carta NOVA.
+
   ---
 
   ## Lendárias — 6%
@@ -668,6 +726,46 @@
     ela sendo, ela própria, uma armadilha.
   - **Casos de borda:** reativa, sem edge case de mão/tabuleiro próprio.
   - **Nota de migração:** sem mudança na mecânica. Dano rebaixado de 2 para 1 no patch pós-Fase 7a.
+
+  ### PARADOXO (`PARADOX`, novo — patch de defesa, a carta mais complexa do baralho)
+  - **Custo:** 2⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
+  - **Efeito exato:** Virada na mesa. Se o oponente jogar uma carta de custo 3⚡ (hoje: ATAQUE,
+    CURA, SAQUE II, ESTUDAR II, PERMUTA CAÓTICA, SABOTAGEM, TURNO EXTRA, REBOBINAR, VISÃO
+    ABSOLUTA, MINA), o efeito dele acontece normalmente e o PARADOXO copia o MESMO efeito de
+    graça para o próprio dono — gatilha DEPOIS do efeito original terminar de resolver, não ao
+    armar.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
+  - **Anulável por armadilha:** Não (Lendária, imune ao armar E ao disparar).
+  - **Casos de borda:**
+    - Se a carta copiada for ATAQUE (dano): o Paradoxo inverte o alvo da cópia — quem jogou também
+      toma o dano, além do dono do Paradoxo já ter tomado o original.
+    - Se a carta copiada for uma ARMADILHA (MINA): armar nunca executa efeito nenhum — a cópia é
+      armar uma equivalente para o dono do Paradoxo, respeitando o limite de 3 armadilhas na mesa.
+      Sem espaço, o Paradoxo ainda dispara (é consumido), só a cópia em si não cabe.
+  - **Nota de migração:** carta NOVA.
+  - **Mecanismo — sem tabela por carta:** a distinção de "como copiar" é só por `type` do motor, não
+    por identidade da carta (nenhuma lista tipo `RICOCHET_INVERSIONS` para manter):
+    - Original `TRAP` → arma uma cópia idêntica no array de armadilhas do dono do Paradoxo.
+    - Original `ACTION` → chama o MESMO `effect()` da carta original de novo, com o `caster`
+      invertido para o dono do Paradoxo. Isso já produz sozinho, sem nenhum código específico por
+      carta: CURA cura o dono do Paradoxo; ATAQUE acerta quem jogou; ESTUDAR II compra 3 para ele;
+      PERMUTA CAÓTICA desfaz a própria troca (é uma operação simétrica entre as duas mãos — rodar
+      2× cancela); VISÃO ABSOLUTA revela a mão de quem jogou para o dono do Paradoxo.
+  - **Mecanismo — cópia de carta que abriria modal (SABOTAGEM, o ramo de escolha de SAQUE II):** o
+    Paradoxo NUNCA abre um modal de verdade para o próprio dono. `resolveInteraction`
+    (`gameStore.ts`) exige que quem responde a uma interação seja `state.turn` — e o dono do
+    Paradoxo está fora da própria vez no instante em que o gatilho dispara (é a vez de quem jogou a
+    carta de 3⚡). Em vez disso, um helper genérico (`autoResolveInteraction`) sorteia uma escolha
+    válida via RNG e reexecuta o `effect()` internamente — do lado de fora, o Paradoxo nunca devolve
+    uma interação pendente, é uma armadilha reativa comum, de resultado único.
+  - **Pré-requisito de engine (afeta MINA também):** antes deste patch, a via que aplica o
+    resultado de uma armadilha REATIVA (`dispatchEvent`, diferente do veto síncrono de
+    ANTIMAGIA/PROTEÇÃO) só entendia um subconjunto manual (`patch`/`log`/`notice`/`damage`) —
+    incapaz de `heal`/`draw`/`energyDrain`/`acknowledge`, que uma cópia de CURA/ESTUDAR
+    II/FIO DE ARAME/SABOTAGEM produz. Essa via passou a reusar o mesmo pipeline completo
+    (`applyCardEffectResult`) que o veto síncrono e a jogada normal já usavam — MINA não muda de
+    comportamento (o resultado dela já cabia no subconjunto antigo), só ganha a mesma robustez das
+    outras duas vias de graça.
 
   ---
 

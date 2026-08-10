@@ -184,7 +184,6 @@ describe('mirrorForDecision', () => {
       fullIntelRevealFor: 'MACHINE',
       status: 'PLAYING',
       turnCount: 17,
-      machineCardTurn: 16,
     });
 
     const mirrored = mirrorForDecision(state);
@@ -202,7 +201,5 @@ describe('mirrorForDecision', () => {
     expect(mirrored.fullIntelRevealFor).toBe('MACHINE');
     expect(mirrored.status).toBe('PLAYING');
     expect(mirrored.turnCount).toBe(17);
-    // machineCardTurn fica de propósito sem par — ver JSDoc de `mirrorForDecision`.
-    expect(mirrored.machineCardTurn).toBe(16);
   });
 });

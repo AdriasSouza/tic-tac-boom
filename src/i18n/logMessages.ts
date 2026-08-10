@@ -175,6 +175,18 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
       return `reciclar :: ${who} descartou 1 carta e comprou outra`;
     case 'CARD_SLIDE_PIECE':
       return `deslizar :: ${who} moveu uma peça para ${cellLabel(entry.value)}`;
+    case 'CARD_BACKUP_BATTERY':
+      return `bateria reserva :: ${who} ativou um escudo contra o próximo dano`;
+    case 'CARD_SHIELD_ABSORBED':
+      return `bateria reserva :: o escudo ${whose === 'sua' ? 'de você' : whose} absorveu um golpe`;
+    case 'CARD_TIME_CAPSULE':
+      return `cápsula do tempo :: ${who} sobreviveu com 1 hp e comprou 2 cartas`;
+    case 'CARD_TRIPWIRE':
+      return `fio de arame :: a armadilha de ${who} drenou ${entry.value}⚡ ${whose === 'sua' ? 'de você' : whose}`;
+    case 'CARD_BLACKOUT':
+      return `apagão :: ${who} drenou toda a energia ${whose === 'sua' ? 'de você' : whose}`;
+    case 'CARD_PARADOX':
+      return `paradoxo :: ${who} copiou de graça ${cardName(entry.value).toLowerCase()} ${whose === 'sua' ? 'de você' : whose}`;
   }
 }
 
@@ -224,6 +236,16 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
       return `${who} RECEBEU: ${cardName(entry.value)}`;
     case 'CARD_DRAFT_PICK':
       return `${who} ESCOLHEU: ${cardName(entry.value)}`;
+    case 'CARD_SHIELD_ABSORBED':
+      return 'ESCUDO ABSORVEU O GOLPE';
+    case 'CARD_TIME_CAPSULE':
+      return 'CÁPSULA DO TEMPO ATIVOU — SOBREVIVEU COM 1 HP';
+    case 'CARD_BLACKOUT':
+      return `${who} DRENOU TODA A ENERGIA`;
+    case 'CARD_TRIPWIRE':
+      return `${who} DRENOU ${entry.value}⚡ COM FIO DE ARAME`;
+    case 'CARD_PARADOX':
+      return `${who} COPIOU: ${cardName(entry.value)}`;
     default:
       return formatLogEntry(entry, p).toUpperCase();
   }

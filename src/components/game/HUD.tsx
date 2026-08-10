@@ -21,9 +21,12 @@ import {
   ENERGY_CAP,
   INITIAL_HP,
   selectEnergy,
+  selectLastEnergyDrain,
+  selectLastShieldAbsorbed,
   selectMachineHp,
   selectPlayerHp,
   selectReservedEnergy,
+  selectShield,
   selectStatus,
   selectTurn,
   useGameStore,
@@ -290,9 +293,40 @@ const HpTracker = memo(function HpTracker({
     [damage, shake],
   );
 
+  /* --- BATERIA RESERVA: glow persistente + pulso de absorção -------------- */
+  const shieldActive = useGameStore(useMemo(() => selectShield(target), [target]));
+  const lastShieldAbsorbed = useGameStore(selectLastShieldAbsorbed);
+  const shieldGlow = useSharedValue(0); // 0..1 — glow persistente enquanto o escudo está de pé
+  const shieldPulse = useSharedValue(0); // 0..1 — pico rápido no instante da absorção
+
+  useEffect(() => {
+    shieldGlow.value = withTiming(shieldActive ? 1 : 0, { duration: 220 });
+  }, [shieldActive, shieldGlow]);
+
+  useEffect(() => {
+    if (lastShieldAbsorbed?.target !== target) return;
+    shieldPulse.value = 0;
+    shieldPulse.value = withSequence(
+      withTiming(1, { duration: 70, easing: Easing.out(Easing.quad) }),
+      withTiming(0, { duration: 280, easing: Easing.in(Easing.quad) }),
+    );
+    if (hapticsEnabled) {
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só o `id` decide se é um evento NOVO
+  }, [lastShieldAbsorbed?.id, target, shieldPulse]);
+
+  useEffect(() => () => cancelAnimation(shieldGlow), [shieldGlow]);
+  useEffect(() => () => cancelAnimation(shieldPulse), [shieldPulse]);
+
   /* --- Estilos animados --------------------------------------------------- */
   const containerStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: shake.value }],
+  }));
+
+  const shieldOverlayStyle = useAnimatedStyle(() => ({
+    opacity: Math.max(shieldGlow.value * 0.5, shieldPulse.value),
+    borderColor: colors.shield,
   }));
 
   const labelStyle = useAnimatedStyle(() => ({
@@ -302,6 +336,24 @@ const HpTracker = memo(function HpTracker({
   const blocks = useMemo(() => Array.from({ length: INITIAL_HP }, (_, i) => i), []);
 
   const energy = useGameStore(useMemo(() => selectEnergy(target), [target]));
+
+  /* --- FIO DE ARAME/APAGÃO: burst nos pips que acabaram de esvaziar --------
+     `lastEnergyDrain` só carrega o TOTAL drenado, não quais pips — mas como
+     `energy` já reflete o valor PÓS-dreno (o efeito dispara depois do drenar
+     de verdade), os pips que esvaziaram agora são exatamente o intervalo
+     `[energy, energy + amount)` — mesmo raciocínio de `breakingIndex` acima,
+     adaptado de HP pra energia. */
+  const lastEnergyDrain = useGameStore(selectLastEnergyDrain);
+  const [drainingRange, setDrainingRange] = useState<{ from: number; to: number } | null>(null);
+
+  useEffect(() => {
+    if (lastEnergyDrain?.target !== target) return;
+    setDrainingRange({ from: energy, to: energy + lastEnergyDrain.amount - 1 });
+    const timer = setTimeout(() => setDrainingRange(null), BREAK_DURATION);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só o `id` decide se é um evento NOVO
+  }, [lastEnergyDrain?.id, target]);
+
   // Pips logo acima de `energy` que só estão vazios porque uma interação
   // pendente DESTE combatente já debitou o custo ao abrir (timing unificado,
   // Fase 3) — voltam a `energy` se ele cancelar. Ganham contorno tracejado em
@@ -320,6 +372,12 @@ const HpTracker = memo(function HpTracker({
     <Animated.View
       style={[styles.tracker, align === 'right' && styles.trackerRight, containerStyle]}
     >
+      {/* Escudo de BATERIA RESERVA: contorno sempre montado (opacidade 0 =
+          invisível) — permanece sutilmente aceso enquanto o escudo está de
+          pé (`shieldGlow`) e pisca forte no instante em que absorve um golpe
+          (`shieldPulse`, o maior dos dois vence via `Math.max`). */}
+      <Animated.View style={[styles.shieldOverlay, shieldOverlayStyle]} pointerEvents="none" />
+
       <View
         style={[
           styles.trackerHeader,
@@ -358,6 +416,7 @@ const HpTracker = memo(function HpTracker({
           <EnergyPip
             key={i}
             state={i < energy ? 'FILLED' : i < energy + reserved ? 'RESERVED' : 'EMPTY'}
+            draining={!!drainingRange && i >= drainingRange.from && i <= drainingRange.to}
             size={energyPipSize}
           />
         ))}
@@ -438,16 +497,40 @@ type EnergyPipState = 'FILLED' | 'RESERVED' | 'EMPTY';
 
 interface EnergyPipProps {
   state: EnergyPipState;
+  /** `true` durante a janela de burst logo depois de FIO DE ARAME/APAGÃO
+   * drenarem exatamente ESTE pip — ver `drainingRange` em `HpTracker`. */
+  draining: boolean;
   /** Lado do pip em dp — sempre <= `blockSize` (ver `energyPipSize` em `HpTracker`). */
   size: number;
 }
 
 /**
- * Ficha de energia — mesmo desenho do `<HpBlock />` (slot + miolo), sem a
- * animação de dano/quebra: energia não tem evento de "perder" digno de flash,
- * só sobe e desce em silêncio a cada turno.
+ * Ficha de energia — mesmo desenho do `<HpBlock />` (slot + miolo). Sem
+ * animação de perda própria até FIO DE ARAME/APAGÃO (`draining`) — o resto
+ * do tempo só sobe e desce em silêncio a cada turno, mesmo comportamento de
+ * sempre.
  */
-const EnergyPip = memo(function EnergyPip({ state, size }: EnergyPipProps) {
+const EnergyPip = memo(function EnergyPip({ state, draining, size }: EnergyPipProps) {
+  const burst = useSharedValue(0);
+
+  useEffect(() => {
+    if (!draining) {
+      burst.value = 0;
+      return;
+    }
+    burst.value = 0;
+    burst.value = withSequence(
+      withTiming(1, { duration: 110, easing: Easing.out(Easing.back(2)) }),
+      withTiming(0, { duration: BREAK_DURATION - 110, easing: Easing.in(Easing.quad) }),
+    );
+    return () => cancelAnimation(burst);
+  }, [draining, burst]);
+
+  const burstStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(burst.value, [0, 1], [0, 1]),
+    transform: [{ scale: interpolate(burst.value, [0, 1], [0.6, 1.45]) }],
+  }));
+
   return (
     <View style={[styles.blockSlot, { width: size, height: size }]}>
       <View
@@ -463,6 +546,16 @@ const EnergyPip = memo(function EnergyPip({ state, size }: EnergyPipProps) {
           style={[
             styles.energyPipFill,
             { width: Math.round(size * 0.66), height: Math.round(size * 0.66) },
+          ]}
+          pointerEvents="none"
+        />
+      )}
+      {draining && (
+        <Animated.View
+          style={[
+            styles.energyPipDrain,
+            { width: Math.round(size * 0.66), height: Math.round(size * 0.66) },
+            burstStyle,
           ]}
           pointerEvents="none"
         />
@@ -646,6 +739,13 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: 6,
   },
+  shieldOverlay: {
+    ...StyleSheet.absoluteFill,
+    borderWidth: 2,
+    // Folga pra fora do conteúdo, sem empurrar o layout — o tracker não tem
+    // padding próprio, então a borda cola exatamente na borda dos filhos.
+    margin: -4,
+  },
   trackerRight: {
     alignItems: 'flex-end',
   },
@@ -682,6 +782,9 @@ const styles = StyleSheet.create({
   },
   energyPipFill: {
     backgroundColor: colors.winGlow,
+  },
+  energyPipDrain: {
+    backgroundColor: colors.energyDrain,
   },
   // Só troca o traço da borda (tracejado) — herda largura/cor/opacidade de
   // `blockEmpty`, então não pode mudar o tamanho do pip nem a altura da

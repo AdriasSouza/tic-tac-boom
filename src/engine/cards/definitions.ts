@@ -56,7 +56,12 @@ export type CardId =
   | 'RENEW_PIECE'
   | 'MULLIGAN'
   | 'SLIDE_PIECE'
-  | 'SCRY_DECK';
+  | 'SCRY_DECK'
+  | 'BACKUP_BATTERY'
+  | 'TIME_CAPSULE'
+  | 'TRIPWIRE'
+  | 'BLACKOUT'
+  | 'PARADOX';
 
 /**
  * - `ACTION`  — resolve imediatamente ao ser jogada.
@@ -234,6 +239,15 @@ export interface CardEffectResult {
    * aqui e o store executa via o canal `CARDS` do RNG.
    */
   draw?: { target: Combatant; count: number };
+  /**
+   * Dreno de energia a aplicar depois do patch. Mesma razão de existir de
+   * `damage`/`heal`: `applyCardEffectResult` retira `playerEnergy`/
+   * `machineEnergy` de qualquer `patch` de propósito (energia só muda via
+   * `energySpend`/`regenEnergy`) — um efeito que precisa drenar a energia do
+   * ALVO (APAGÃO, FIO DE ARAME) declara aqui, e o store aplica via
+   * `drainEnergy` (clamp em 0).
+   */
+  energyDrain?: { target: Combatant; amount: number };
   /**
    * `true` quando este efeito é de uma TRAP de contra-ataque e a carta do
    * oponente NÃO deve resolver. Só tem sentido dentro de

@@ -731,7 +731,7 @@ describe('forcedVanish não atravessa troca de rodada (bug encontrado limpando c
     // A peça mais antiga (índice 3) sumiu — comportamento normal do
     // "infinito", sem interferência de uma marca fantasma da rodada anterior.
     expect(afterOverflow.board[3]).toBeNull();
-    expect(afterOverflow.lastVanishedIndex).toBe(3);
+    expect(afterOverflow.lastVanishedIndex?.index).toBe(3);
     expect(afterOverflow.board[6]?.owner).toBe('MACHINE');
   });
 });
@@ -1175,7 +1175,11 @@ describe('resumeMatch — retomada de partida local/CPU após remount/relançame
         tone: 'NEUTRAL' as const,
         id: 1,
       },
-      lastVanishedIndex: 4,
+      lastVanishedIndex: { index: 4, owner: 'PLAYER' as const, id: 1 },
+      lastShieldAbsorbed: { target: 'PLAYER' as const, id: 1 },
+      lastTimeCapsuleSave: { target: 'PLAYER' as const, id: 1 },
+      lastEnergyDrain: { target: 'PLAYER' as const, amount: 2, id: 1 },
+      lastParadoxMirror: { subject: 'PLAYER' as const, id: 1 },
     };
 
     useGameStore.getState().resumeMatch(snapshot);
@@ -1194,6 +1198,10 @@ describe('resumeMatch — retomada de partida local/CPU após remount/relançame
     expect(state.lastChaosRoulette).toBeNull();
     expect(state.lastNotice).toBeNull();
     expect(state.lastVanishedIndex).toBeNull();
+    expect(state.lastShieldAbsorbed).toBeNull();
+    expect(state.lastTimeCapsuleSave).toBeNull();
+    expect(state.lastEnergyDrain).toBeNull();
+    expect(state.lastParadoxMirror).toBeNull();
   });
 
   it('reembolsa uma interação pendente em vez de tentar retomá-la', () => {
@@ -1241,5 +1249,128 @@ describe('resumeMatch — retomada de partida local/CPU após remount/relançame
     // dispara, em vez do tabuleiro ficar preso na rodada que já acabou.
     vi.advanceTimersByTime(10_000);
     expect(useGameStore.getState().status).toBe('PLAYING');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                5 CARTAS NOVAS — DEFESA (patch pós-Fase 7a)                  */
+/* -------------------------------------------------------------------------- */
+
+describe('BATERIA RESERVA / CÁPSULA DO TEMPO — takeDamage intercepta antes do clamp de HP', () => {
+  it('escudo ativo absorve o dano por completo e se consome — HP não se mexe', () => {
+    useGameStore.setState({ playerHp: 5, playerShield: true, nextShieldAbsorbedId: 7 });
+    useGameStore.getState().takeDamage('PLAYER', 3);
+
+    const state = useGameStore.getState();
+    expect(state.playerHp).toBe(5);
+    expect(state.playerShield).toBe(false);
+    // Efêmero com `id` monotônico — alimenta o pulso de absorção no HUD.
+    expect(state.lastShieldAbsorbed).toEqual({ target: 'PLAYER', id: 7 });
+    expect(state.nextShieldAbsorbedId).toBe(8);
+  });
+
+  it('um 2º dano, sem escudo, reduz o HP normalmente', () => {
+    useGameStore.setState({ playerHp: 5, playerShield: true });
+    useGameStore.getState().takeDamage('PLAYER', 3); // absorvido
+    useGameStore.getState().takeDamage('PLAYER', 2); // desta vez reduz
+
+    expect(useGameStore.getState().playerHp).toBe(3);
+  });
+
+  it('CÁPSULA DO TEMPO armada: o golpe que zeraria o HP sobrevive em 1, compra 2 cartas e consome a armadilha', () => {
+    useGameStore.setState({
+      playerHp: 1,
+      playerTraps: [{ uid: 'cap', cardId: 'TIME_CAPSULE' }],
+      playerHand: [],
+      nextTimeCapsuleSaveId: 4,
+    });
+    useGameStore.getState().takeDamage('PLAYER', 5);
+
+    const state = useGameStore.getState();
+    expect(state.playerHp).toBe(1);
+    expect(state.status).toBe('PLAYING'); // NÃO acabou a partida
+    expect(state.playerTraps).toEqual([]); // consumida
+    expect(state.playerHand).toHaveLength(2); // comprou 2
+    // Efêmero PRÓPRIO, além do flash de dano — alimenta `<TimeCapsuleBanner />`.
+    expect(state.lastTimeCapsuleSave).toEqual({ target: 'PLAYER', id: 4 });
+    expect(state.nextTimeCapsuleSaveId).toBe(5);
+  });
+
+  it('sem CÁPSULA DO TEMPO armada, o golpe letal continua encerrando a partida normalmente', () => {
+    useGameStore.setState({ playerHp: 1, playerTraps: [] });
+    useGameStore.getState().takeDamage('PLAYER', 5);
+
+    const state = useGameStore.getState();
+    expect(state.playerHp).toBe(0);
+    expect(state.status).toBe('MATCH_OVER');
+    expect(state.matchWinner).toBe('MACHINE');
+  });
+
+  it('escudo tem prioridade sobre a Cápsula: golpe letal absorvido não chega a interceptar nada — a armadilha continua armada', () => {
+    useGameStore.setState({
+      playerHp: 1,
+      playerShield: true,
+      playerTraps: [{ uid: 'cap', cardId: 'TIME_CAPSULE' }],
+    });
+    useGameStore.getState().takeDamage('PLAYER', 5);
+
+    const state = useGameStore.getState();
+    expect(state.playerHp).toBe(1);
+    expect(state.playerShield).toBe(false); // escudo consumido
+    expect(state.playerTraps).toEqual([{ uid: 'cap', cardId: 'TIME_CAPSULE' }]); // Cápsula intacta
+  });
+
+  it('drainEnergy: clampa em 0, nunca fica negativa, e registra o efêmero com a quantidade REAL drenada', () => {
+    useGameStore.setState({ machineEnergy: 1, nextEnergyDrainId: 2 });
+    useGameStore.getState().drainEnergy('MACHINE', 5); // pede 5, só existe 1
+    const state = useGameStore.getState();
+    expect(state.machineEnergy).toBe(0);
+    // `amount` é o que foi REALMENTE drenado (1), não o pedido (5) — o burst
+    // no HUD (`<EnergyPip />`) precisa saber quantos pips de fato esvaziaram.
+    expect(state.lastEnergyDrain).toEqual({ target: 'MACHINE', amount: 1, id: 2 });
+    expect(state.nextEnergyDrainId).toBe(3);
+  });
+
+  it('drainEnergy: amount<=0 não faz nada, nem seta o efêmero', () => {
+    useGameStore.setState({ machineEnergy: 0, nextEnergyDrainId: 9 });
+    useGameStore.getState().drainEnergy('MACHINE', 3); // não há o que drenar
+    const state = useGameStore.getState();
+    expect(state.lastEnergyDrain).toBeNull();
+    expect(state.nextEnergyDrainId).toBe(9);
+  });
+});
+
+describe('PARADOXO (PARADOX) — e2e pela store: MACHINE joga carta de custo 3⚡, o PARADOXO do PLAYER copia', () => {
+  it('MACHINE joga CURA (custo 3): a cura de MACHINE aplica no 1º "Entendi", a cópia do PARADOXO cura o PLAYER só no 2º', () => {
+    useGameStore.setState({
+      turn: 'MACHINE',
+      machineEnergy: 3,
+      machineHp: 3,
+      playerHp: 3,
+      machineHand: [{ uid: 'heal', cardId: 'HEAL_SELF' }],
+      playerTraps: [{ uid: 'px', cardId: 'PARADOX' }],
+    });
+
+    expect(useGameStore.getState().playMachineCard('heal')).toBe(true);
+
+    // 1º "Entendi": revela a jogada de MACHINE e aplica o efeito ORIGINAL —
+    // CURA cura quem jogou. O PARADOXO já disparou (a cópia é síncrona, via
+    // dispatchEvent, dentro do MESMO apply), mas fica atrás de um 2º
+    // TRAP_TRIGGERED — a armadilha já some da mesa aqui.
+    useGameStore.getState().acknowledgePending();
+    let state = useGameStore.getState();
+    expect(state.machineHp).toBe(4); // curou de verdade
+    expect(state.playerHp).toBe(3); // cópia ainda não aplicou
+    expect(state.playerTraps).toEqual([]); // consumida
+    expect(state.lastParadoxMirror).toBeNull(); // eco ainda não disparou
+
+    // 2º "Entendi": aplica a cópia do PARADOXO — o dono dela também cura.
+    useGameStore.getState().acknowledgePending();
+    state = useGameStore.getState();
+    expect(state.playerHp).toBe(4);
+    // Efêmero com `id` monotônico — alimenta `<ParadoxEchoOverlay />`. Só
+    // dispara PARA o dono da armadilha (`subject`), nunca pra quem jogou a
+    // carta original.
+    expect(state.lastParadoxMirror).toMatchObject({ subject: 'PLAYER' });
   });
 });

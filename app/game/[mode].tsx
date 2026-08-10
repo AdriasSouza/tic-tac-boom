@@ -21,6 +21,8 @@ import InteractionModal from '@/components/ui/InteractionModal';
 import ExtraTurnBanner from '@/components/ui/ExtraTurnBanner';
 import ChaosRouletteBanner from '@/components/ui/ChaosRouletteBanner';
 import NoticeToast from '@/components/ui/NoticeToast';
+import TimeCapsuleBanner from '@/components/ui/TimeCapsuleBanner';
+import ParadoxEchoOverlay from '@/components/ui/ParadoxEchoOverlay';
 import OpponentDisconnectedModal from '@/components/ui/OpponentDisconnectedModal';
 import OpponentLeftModal from '@/components/ui/OpponentLeftModal';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
@@ -291,8 +293,10 @@ export default function GameScreen() {
       </View>
 
       <DamageFlashOverlay />
+      <ParadoxEchoOverlay />
       <NoticeToast />
       <ExtraTurnBanner />
+      <TimeCapsuleBanner />
       <ChaosRouletteBanner />
       <AcknowledgementModal />
       {/* Abre sozinho ao ler `lastAltarPrompt` do store — só para quem jogou

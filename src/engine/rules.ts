@@ -300,6 +300,16 @@ export interface GameState {
   playerEnergy: number;
   machineEnergy: number;
 
+  /**
+   * Escudo de BATERIA RESERVA: absorve o PRÓXIMO dano que o dono sofreria,
+   * qualquer que seja a origem (ATAQUE, MINA, SAQUE II refletido, rodada
+   * perdida) — consumido em `takeDamage`, antes até do clamp de HP rodar.
+   * Não acumula: uma 2ª Bateria com o escudo já ativo é bloqueada por
+   * `canPlay` (ver `BACKUP_BATTERY`).
+   */
+  playerShield: boolean;
+  machineShield: boolean;
+
   /** Regra caótica em vigor no tabuleiro. */
   activeRule: ChaosRule;
   /** Célula interditada enquanto `activeRule === 'BLOCKED_CELL'`. */
@@ -454,18 +464,6 @@ export interface GameState {
   machineHand: HandCard[];
 
   /**
-   * Turno global em que a máquina já gastou sua carta do turno. `null` = ainda
-   * não jogou nenhuma.
-   *
-   * Existe porque o anúncio da jogada da CPU PAUSA o jogo até o jogador
-   * confirmar: a IA aborta o turno ali e o retoma depois do "Entendi". Sem
-   * esta marca ela recomeçaria a decisão do zero e jogaria uma segunda carta
-   * no mesmo turno. Compara com `turnCount`, então se invalida sozinha — não
-   * precisa de ninguém para limpá-la.
-   */
-  machineCardTurn: number | null;
-
-  /**
    * Turno global (`turnCount`) em que a regra caótica ATUAL reverte para
    * `NORMAL`. `null` enquanto `activeRule === 'NORMAL'` — o repouso não
    * expira sozinho, só é interrompido pelo próximo surto agendado (ver
@@ -582,8 +580,35 @@ export interface GameState {
    */
   matchOverReason: 'FORFEIT' | null;
 
-  /** Índice da peça removida na última jogada. Efêmero, só para animação. */
-  lastVanishedIndex: number | null;
+  /**
+   * Índice + dono da peça removida na última jogada — overflow natural da
+   * fila do "infinito", DEMOLIR ou ANOMALIA/RANDOM_FADE (mesmo campo pros
+   * três: do ponto de vista da UI é o MESMO fato, "uma peça sumiu aqui").
+   * `owner` viaja aqui (em vez da UI precisar "lembrar" a última peça vista
+   * na célula) porque a peça já não existe mais no `board` no instante em que
+   * este campo é lido — captura o dono ANTES de nulificar a célula. Efêmero,
+   * com `id` monotônico — mesmo padrão de `lastDamageEvent`/`lastExtraTurn`:
+   * sem o `id`, duas peças sumindo seguidas no MESMO índice (raro, mas
+   * possível) não disparariam uma 2ª animação de saída.
+   */
+  lastVanishedIndex: { index: number; owner: Combatant; id: number } | null;
+  nextVanishedIndexId: number;
+
+  /** Escudo de BATERIA RESERVA absorveu um dano. Efêmero, `id` monotônico. */
+  lastShieldAbsorbed: { target: Combatant; id: number } | null;
+  nextShieldAbsorbedId: number;
+
+  /** CÁPSULA DO TEMPO salvou o dono de zerar o HP. Efêmero, `id` monotônico. */
+  lastTimeCapsuleSave: { target: Combatant; id: number } | null;
+  nextTimeCapsuleSaveId: number;
+
+  /** FIO DE ARAME/APAGÃO drenaram energia. Efêmero, `id` monotônico. */
+  lastEnergyDrain: { target: Combatant; amount: number; id: number } | null;
+  nextEnergyDrainId: number;
+
+  /** PARADOXO copiou o efeito de uma carta. Efêmero, `id` monotônico. */
+  lastParadoxMirror: { subject: Combatant; id: number } | null;
+  nextParadoxMirrorId: number;
 
   /**
    * Seed que gerou toda a aleatoriedade desta partida. Exiba no fim de jogo:
@@ -759,6 +784,11 @@ export function energyKeyFor(combatant: Combatant): 'playerEnergy' | 'machineEne
 /** Energia atual de um combatente. */
 export function energyOf(state: GameState, combatant: Combatant): number {
   return state[energyKeyFor(combatant)];
+}
+
+/** Mesma ideia de `handKeyFor`, para o escudo de BATERIA RESERVA. */
+export function shieldKeyFor(combatant: Combatant): 'playerShield' | 'machineShield' {
+  return combatant === 'PLAYER' ? 'playerShield' : 'machineShield';
 }
 
 /**

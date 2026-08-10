@@ -35,10 +35,12 @@ import {
   selectIsVanishing,
   selectIsWinningCell,
   selectLastChaosRoulette,
+  selectLastVanishedIndex,
   useGameStore,
   CHAOS_ROULETTE_COLUMN_STOP_MS,
   CHAOS_ROULETTE_FADE_MS,
   CHAOS_ROULETTE_FLICKER_MS,
+  MARK_BY_COMBATANT,
   type Combatant,
   type Mark,
 } from '@/store/gameStore';
@@ -123,18 +125,20 @@ function CellComponent({ index, size }: CellProps) {
     highlighted?.index === index && (!isOnline || highlighted.caster === localCombatant);
 
   /**
-   * AMALDIÇOAR: o dono das peças marcadas (`forcedVanish.owner ===
-   * localCombatant`) precisa SENTIR que uma delas está condenada, sem saber
-   * QUAL — ao contrário do destaque de VIDENTE (que aponta a peça real só
-   * para o caster), aqui nenhuma célula lê `forcedVanish.index`. Toda peça
-   * PRÓPRIA do dono é candidata igual; o flicker (efeito abaixo) decide,
-   * localmente e sem RNG determinístico, quais acendem a cada instante.
+   * AMALDIÇOAR (`mode: 'CHOSEN'`) e ANOMALIA (`mode: 'RANDOM'`): o dono das
+   * peças (`forcedVanish.owner === localCombatant`) precisa SENTIR que uma
+   * delas está condenada, sem saber QUAL — mesma dúvida visual nas duas
+   * cartas, mesmo campo (`forcedVanish`). Ao contrário do destaque de
+   * VIDENTE (que aponta a peça real só para o caster), aqui nenhuma célula
+   * lê `forcedVanish.index`. Toda peça PRÓPRIA do dono é candidata igual; o
+   * flicker (efeito abaixo) decide, localmente e sem RNG determinístico,
+   * quais acendem a cada instante.
    */
   const forcedVanish = useGameStore(selectForcedVanish);
   const isDoubtCandidate =
     !!piece &&
     piece.owner === localCombatant &&
-    forcedVanish?.mode === 'CHOSEN' &&
+    (forcedVanish?.mode === 'CHOSEN' || forcedVanish?.mode === 'RANDOM') &&
     forcedVanish.owner === localCombatant;
 
   /* --- Shared values (rodam na UI thread, zero re-render) ----------------- */
@@ -149,6 +153,7 @@ function CellComponent({ index, size }: CellProps) {
   const clearShake = useSharedValue(0); // tremida ao limpar um bloqueio (LIMPAR/PURIFICAR)
   const clearFade = useSharedValue(1); // opacidade do glifo de bloqueio saindo
   const lockShake = useSharedValue(0); // tremida de entrada ao travar uma célula nova (TRAVAR)
+  const vanishFade = useSharedValue(1); // opacidade+escala da peça sumindo (overflow/DEMOLIR/ANOMALIA)
 
   // Leitura sempre fresca de `isWinning` dentro do timer do giro (abaixo) sem
   // precisar listar `isWinning` nas deps daquele efeito — ele é reagendado só
@@ -167,6 +172,9 @@ function CellComponent({ index, size }: CellProps) {
   /** Glifo de bloqueio em saída (depois de limpo) — precisa continuar
    * montado por cima do fade/shake antes de sumir de vez. */
   const [exitingGlyph, setExitingGlyph] = useState<{ locked: boolean } | null>(null);
+  /** Peça em saída (depois de sumir) — mesma ideia de `exitingGlyph`, mas
+   * pra peça em vez do glifo de bloqueio. */
+  const [exitingPiece, setExitingPiece] = useState<{ owner: Combatant } | null>(null);
 
   /* --- Pulso contínuo da peça condenada ----------------------------------- */
   useEffect(() => {
@@ -291,6 +299,23 @@ function CellComponent({ index, size }: CellProps) {
     }
   }, [isBlocked, isCardLocked, clearFade, clearShake, lockShake]);
 
+  /** --- Peça sumindo (overflow natural, DEMOLIR, ANOMALIA/RANDOM_FADE) -----
+   * `lastVanishedIndex` já carrega o `owner` da peça que sumiu (capturado no
+   * motor ANTES de nulificar a célula, ver `rules.ts`) — a UI não precisa
+   * "lembrar" a última peça vista aqui, só comparar o índice e desenhar um
+   * glifo fantasma saindo por cima do vazio que o `board` já mostra. */
+  const lastVanishedIndex = useGameStore(selectLastVanishedIndex);
+  useEffect(() => {
+    if (lastVanishedIndex?.index !== index) return;
+
+    setExitingPiece({ owner: lastVanishedIndex.owner });
+    vanishFade.value = 1;
+    vanishFade.value = withTiming(0, { duration: 260, easing: Easing.in(Easing.quad) });
+    const timer = setTimeout(() => setExitingPiece(null), 280);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só o `id` decide se é um evento NOVO
+  }, [lastVanishedIndex?.id, index, vanishFade]);
+
   /** --- Giro de TIC TAC BOOM! (CHAOS_ROULETTE) -----------------------------
    * Reage ao `id` (não ao payload), mesmo racional de `<ExtraTurnBanner />`:
    * sobrevive a double-invoke de efeito em dev e refaz mesmo em replay
@@ -377,6 +402,11 @@ function CellComponent({ index, size }: CellProps) {
       // Overshoot suave na entrada + respiração leve durante o pulso.
       { scale: interpolate(pop.value, [0, 1], [0.4, 1]) * interpolate(pulse.value, [PULSE_MIN_OPACITY, 1], [0.9, 1]) },
     ],
+  }));
+
+  const vanishStyle = useAnimatedStyle(() => ({
+    opacity: vanishFade.value,
+    transform: [{ scale: interpolate(vanishFade.value, [0, 1], [0.5, 1]) }],
   }));
 
   const surfaceStyle = useAnimatedStyle(() => ({
@@ -604,6 +634,21 @@ function CellComponent({ index, size }: CellProps) {
                   <MarkX size={size} color={colorFor(piece.owner)} />
                 ) : (
                   <MarkO size={size} color={colorFor(piece.owner)} />
+                )}
+              </Animated.View>
+            )}
+
+            {/* Peça em saída: a célula real já está vazia (`piece` é `null`
+                aqui) — este é só o fantasma dela esmaecendo por cima, no
+                mesmo lugar centralizado que a peça de verdade ocupava (a
+                mesma centralização por flex de `styles.surface`, sem estilo
+                de posicionamento próprio). */}
+            {!piece && exitingPiece && (
+              <Animated.View style={vanishStyle} pointerEvents="none">
+                {MARK_BY_COMBATANT[exitingPiece.owner] === 'X' ? (
+                  <MarkX size={size} color={colorFor(exitingPiece.owner)} />
+                ) : (
+                  <MarkO size={size} color={colorFor(exitingPiece.owner)} />
                 )}
               </Animated.View>
             )}
