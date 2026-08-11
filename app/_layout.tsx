@@ -1,3 +1,4 @@
+import { setAudioModeAsync } from 'expo-audio';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { Stack } from 'expo-router';
 import { useEffect } from 'react';
@@ -19,6 +20,20 @@ export default function RootLayout() {
    */
   useEffect(() => {
     void ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+  }, []);
+
+  /**
+   * Efeitos sonoros devem tocar mesmo com o switch de silêncio do iOS
+   * ligado (é um jogo, não uma notificação) e nunca competir por foco de
+   * áudio com outro app — `mixWithOthers` é o modo recomendado pelos docs
+   * do `expo-audio` para SFX curtos de UI, ao contrário de mídia longa.
+   */
+  useEffect(() => {
+    void setAudioModeAsync({
+      playsInSilentMode: true,
+      shouldPlayInBackground: false,
+      interruptionMode: 'mixWithOthers',
+    });
   }, []);
 
   return (

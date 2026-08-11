@@ -9,6 +9,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { playSound } from '@/audio/soundEngine';
 import { getCard } from '@/engine/cards/registry';
 import { RARITY_LABEL } from '@/engine/cards/definitions';
 import { RARITY_COLOR } from '@/theme/rarity';
@@ -93,6 +94,7 @@ function FlipCardComponent({ cardId, revealed, disabled = false, onPress }: Flip
   const handlePress = useCallback(() => {
     if (disabled) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid);
+    playSound('TAP_RIGID');
     onPress();
   }, [disabled, onPress]);
 

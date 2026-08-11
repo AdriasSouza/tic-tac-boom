@@ -207,8 +207,8 @@ describe('RICOCHETE — inverte dano de ponta a ponta (resolveCounterTraps proce
   });
 });
 
-describe('TROCAR (SINGLE_CARD_TRADE) x RICOCHETE — RICOCHETE cai no fallback (Fase 4, Achado 2)', () => {
-  it('RICOCHETE armada primeiro: dispara e SÓ ANULA (sem inverter) — TROCAR nunca abre pendingInteraction, ANTIMAGIA continua armada', () => {
+describe('TROCAR (SINGLE_CARD_TRADE) x RICOCHETE — fora do escopo de RICOCHETE (patch pós-Fase 7a, decisão do usuário)', () => {
+  it('RICOCHETE armada não intercepta TROCAR — a carta abre a interação normalmente, RICOCHETE continua armada', () => {
     useGameStore.setState({
       turn: 'MACHINE',
       machineEnergy: 3,
@@ -217,49 +217,19 @@ describe('TROCAR (SINGLE_CARD_TRADE) x RICOCHETE — RICOCHETE cai no fallback (
         { uid: 'o', cardId: 'HEAL_SELF' },
       ],
       playerHand: [{ uid: 'p1', cardId: 'DIRECT_DAMAGE' }],
-      // FIFO: RICOCHETE é a mais antiga (índice 0) — dispara primeiro.
-      playerTraps: [
-        { uid: 'r', cardId: 'REFLECT_TRAP' },
-        { uid: 'a', cardId: 'ANTI_SPELL_TRAP' },
-      ],
+      playerTraps: [{ uid: 'r', cardId: 'REFLECT_TRAP' }],
     });
 
     expect(useGameStore.getState().playMachineCard('t')).toBe(true);
+    // Jogada de MACHINE é sempre anunciada — o efeito só aplica depois do "Entendi".
+    useGameStore.getState().acknowledgePending();
 
     const state = useGameStore.getState();
-    // RICOCHETE disparou e se consumiu; ANTIMAGIA nunca chegou a ser consultada.
-    expect(state.playerTraps).toEqual([{ uid: 'a', cardId: 'ANTI_SPELL_TRAP' }]);
-    // TROCAR foi vetada antes do passo 1 — nenhuma interação chegou a abrir.
-    expect(state.pendingInteraction).toBeNull();
-    // Sem inversão (Achado 2, sem entrada em RICOCHET_INVERSIONS): as mãos
-    // não trocaram nada — só a própria TROCAR foi consumida.
-    expect(state.machineHand).toEqual([{ uid: 'o', cardId: 'HEAL_SELF' }]);
-    expect(state.playerHand).toEqual([{ uid: 'p1', cardId: 'DIRECT_DAMAGE' }]);
-  });
-
-  it('ANTIMAGIA armada primeiro: dispara ela — RICOCHETE continua armada intacta para o próximo gatilho', () => {
-    useGameStore.setState({
-      turn: 'MACHINE',
-      machineEnergy: 3,
-      machineHand: [
-        { uid: 't', cardId: 'SINGLE_CARD_TRADE' },
-        { uid: 'o', cardId: 'HEAL_SELF' },
-      ],
-      playerHand: [{ uid: 'p1', cardId: 'DIRECT_DAMAGE' }],
-      // FIFO: ANTIMAGIA é a mais antiga desta vez — dispara primeiro.
-      playerTraps: [
-        { uid: 'a', cardId: 'ANTI_SPELL_TRAP' },
-        { uid: 'r', cardId: 'REFLECT_TRAP' },
-      ],
-    });
-
-    expect(useGameStore.getState().playMachineCard('t')).toBe(true);
-
-    const state = useGameStore.getState();
+    // RICOCHETE nem foi consultada — `targetsOpponentResource` não cobre
+    // mais TROCAR — continua armada intacta.
     expect(state.playerTraps).toEqual([{ uid: 'r', cardId: 'REFLECT_TRAP' }]);
-    expect(state.pendingInteraction).toBeNull();
-    expect(state.machineHand).toEqual([{ uid: 'o', cardId: 'HEAL_SELF' }]);
-    expect(state.playerHand).toEqual([{ uid: 'p1', cardId: 'DIRECT_DAMAGE' }]);
+    // TROCAR resolveu normalmente: passo 1 (escolher carta própria) abriu.
+    expect(state.pendingInteraction?.kind).toBe('PICK_ONE_FROM_HAND');
   });
 });
 
@@ -537,8 +507,8 @@ describe('PROTEÇÃO (SHIELD_TRAP) x RICOCHETE — FIFO nos dois sentidos (Fase 
   });
 });
 
-describe('RICOCHETE — fallback e2e (só anula, sem inverter) para OBSOLESCÊNCIA e ANOMALIA (Fase 5)', () => {
-  it('OBSOLESCÊNCIA: RICOCHETE cancela — forcedVanish nunca é setado', () => {
+describe('RICOCHETE não intercepta AMALDIÇOAR nem ANOMALIA (patch pós-Fase 7a: fora do escopo, mexem em peças não em HP/energia/mão)', () => {
+  it('AMALDIÇOAR resolve normal — forcedVanish é setado, RICOCHETE continua armada', () => {
     const board = createEmptyBoard();
     // canPlay exige >=3 peças do oponente (patch pós-Fase 7a) — antes bastava 1.
     board[4] = { owner: 'PLAYER', mark: 'X', turnPlaced: 1 };
@@ -553,15 +523,15 @@ describe('RICOCHETE — fallback e2e (só anula, sem inverter) para OBSOLESCÊNC
     });
 
     expect(useGameStore.getState().playMachineCard('o', 4)).toBe(true);
+    useGameStore.getState().acknowledgePending();
 
     const state = useGameStore.getState();
-    expect(state.forcedVanish).toBeNull();
-    expect(state.playerTraps).toEqual([]);
+    expect(state.forcedVanish).toEqual({ owner: 'PLAYER', mode: 'CHOSEN', index: 4, turnPlaced: 1 });
+    expect(state.playerTraps).toEqual([{ uid: 'r', cardId: 'REFLECT_TRAP' }]); // RICOCHETE nem foi consultada
     expect(state.machineHand).toEqual([]);
-    expect(state.board[4]).toEqual({ owner: 'PLAYER', mark: 'X', turnPlaced: 1 }); // intocado
   });
 
-  it('ANOMALIA: RICOCHETE cancela — forcedVanish nunca é setado', () => {
+  it('ANOMALIA resolve normal — forcedVanish é setado, RICOCHETE continua armada', () => {
     useGameStore.setState({
       turn: 'MACHINE',
       machineEnergy: 3,
@@ -570,10 +540,11 @@ describe('RICOCHETE — fallback e2e (só anula, sem inverter) para OBSOLESCÊNC
     });
 
     expect(useGameStore.getState().playMachineCard('q')).toBe(true);
+    useGameStore.getState().acknowledgePending();
 
     const state = useGameStore.getState();
-    expect(state.forcedVanish).toBeNull();
-    expect(state.playerTraps).toEqual([]);
+    expect(state.forcedVanish).toEqual({ owner: 'PLAYER', mode: 'RANDOM' });
+    expect(state.playerTraps).toEqual([{ uid: 'r', cardId: 'REFLECT_TRAP' }]);
     expect(state.machineHand).toEqual([]);
   });
 });
@@ -1372,5 +1343,45 @@ describe('PARADOXO (PARADOX) — e2e pela store: MACHINE joga carta de custo 3�
     // dispara PARA o dono da armadilha (`subject`), nunca pra quem jogou a
     // carta original.
     expect(state.lastParadoxMirror).toMatchObject({ subject: 'PLAYER' });
+  });
+});
+
+describe('DESLIZAR (SLIDE_PIECE) — e2e pela store com targetIndex JÁ pronto (bug relatado: CPU travava em loop)', () => {
+  it('completa o deslize quando quem joga já chega com targetIndex (caminho da CPU, nunca abre BOARD_TARGET)', () => {
+    const board = createEmptyBoard();
+    board[4] = { owner: 'MACHINE', mark: 'O', turnPlaced: 7 };
+
+    useGameStore.setState({
+      turn: 'MACHINE',
+      board,
+      machineEnergy: 1,
+      machineHand: [{ uid: 'slide', cardId: 'SLIDE_PIECE' }],
+    });
+
+    // Mesmo caminho que `playCPUTurn`/`chooseCpuCardPlay` usam de verdade:
+    // `targetIndex` (a origem) já vai junto na 1ª chamada — a CPU nunca
+    // passa pelo fluxo de mira (`BOARD_TARGET`) de um humano tocando a carta.
+    expect(useGameStore.getState().playMachineCard('slide', 4)).toBe(true);
+
+    // Anúncio da jogada ("A CPU JOGOU DESLIZAR") — só depois disso a
+    // interação do 2º passo (PICK_BOARD_CELL) abre de verdade.
+    useGameStore.getState().acknowledgePending();
+    const pending = useGameStore.getState().pendingInteraction;
+    expect(pending?.kind).toBe('PICK_BOARD_CELL');
+
+    const resolved = useGameStore
+      .getState()
+      .resolveInteraction('MACHINE', { kind: 'PICK_BOARD_CELL', index: 1 });
+    expect(resolved).toBe(true);
+
+    const state = useGameStore.getState();
+    // Antes da correção: `effect()` do 2º passo lia `priorSelections[0]`
+    // (sempre `[]` neste caminho), devolvia `null`, e a carta era
+    // REEMBOLSADA em vez de mover a peça — a CPU tentava de novo e travava
+    // em loop tentando a mesma jogada impossível.
+    expect(state.board[4]).toBeNull();
+    expect(state.board[1]).toEqual({ owner: 'MACHINE', mark: 'O', turnPlaced: 7 });
+    expect(state.machineHand).toEqual([]); // consumida de verdade, não reembolsada
+    expect(state.pendingInteraction).toBeNull();
   });
 });

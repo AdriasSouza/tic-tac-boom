@@ -230,6 +230,8 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
       return `${who} DESCARTOU: ${cardName(entry.value)}`;
     case 'CARD_INTEL_HAND':
       return `${who} LEU A MÃO INTEIRA`;
+    case 'CARD_INTEL_REVEAL':
+      return `${who} REVELOU ${entry.value} CARTA(S)`;
     case 'CARD_RAID_DESTROYED':
       return `${who} DESTRUIU: ${cardName(entry.value)}`;
     case 'CARD_SINGLE_TRADE':

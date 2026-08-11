@@ -13,6 +13,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { playSound } from '@/audio/soundEngine';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import {
   getLocalCombatant,
@@ -447,6 +448,7 @@ function CellComponent({ index, size }: CellProps) {
 
   const rejectFeedback = useCallback(() => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    playSound('NOTIFY_ERROR');
     shake.value = withSequence(
       withTiming(-5, { duration: 45 }),
       withTiming(5, { duration: 45 }),
@@ -499,6 +501,7 @@ function CellComponent({ index, size }: CellProps) {
       }
 
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      playSound('TAP_MEDIUM');
       // Pela facade da ponte, não pelo store direto: é ela que replica a
       // resolução para o oponente e resolve pelo combatente que este cliente
       // controla (`getLocalCombatant()`, dentro de `netResolveInteraction`).
@@ -517,6 +520,7 @@ function CellComponent({ index, size }: CellProps) {
       }
 
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      playSound('TAP_MEDIUM');
       if (!netResolveInteraction({ kind: 'PICK_BOARD_CELL', index })) rejectFeedback();
       return;
     }
@@ -528,6 +532,7 @@ function CellComponent({ index, size }: CellProps) {
     }
 
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playSound('TAP_MEDIUM');
     netPlaceMark(index);
   }, [index, rejectFeedback]);
 

@@ -6,6 +6,7 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
+import { playSound } from '@/audio/soundEngine';
 import {
   selectMultiplayerStatus,
   selectRoomCode,
@@ -50,6 +51,7 @@ export function OpponentLeftModal() {
     wasPlayingRef.current = false;
     setVisible(true);
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    playSound('NOTIFY_WARNING');
   }, [status]);
 
   const handleBackToLobby = useCallback(() => {

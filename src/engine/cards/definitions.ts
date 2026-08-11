@@ -416,12 +416,25 @@ export interface CardDefinition {
   readsOrRemovesFromHand?: boolean;
 
   /**
-   * Esta carta é um efeito direcionado ao OPONENTE ou aos recursos dele (mão,
-   * HP, peças, fila)? Categoria consultada pelo `triggerCondition` de
-   * RICOCHETE — mesma razão de `readsOrRemovesFromHand`. Não decide SOZINHA
-   * se o efeito é invertido ou só anulado ao disparar — isso é por carta (ver
-   * `RICOCHET_INVERSIONS` em `registry.ts`); esta tag só decide se RICOCHETE
-   * dispara.
+   * Esta carta é um efeito direcionado ao OPONENTE ou aos recursos DIRETOS
+   * dele — HP, energia ou mão/baralho? Categoria consultada pelo
+   * `triggerCondition` de RICOCHETE — mesma razão de `readsOrRemovesFromHand`.
+   *
+   * Escopo ESTREITADO no patch pós-Fase 7a (decisão do usuário): antes
+   * incluía peças/fila do "infinito" também — AMALDIÇOAR e ANOMALIA
+   * chegaram a usar esta tag, mas RICOCHETE nunca soube inverter esse tipo
+   * de efeito (só cancelava, sem devolver nada) e a categoria não se
+   * encaixava no espírito da carta ("dano/roubo que volta pro autor"). As
+   * duas foram destagueadas — mexer na fila de sumiço de peças não passa
+   * mais por RICOCHETE. TROCAR também fica de fora, apesar de mexer na mão:
+   * é interativa (escolha em 2 passos) e RICOCHETE dispara ANTES da escolha
+   * existir, então não haveria o que inverter sem inventar mecanismo novo.
+   *
+   * Não decide SOZINHA se o efeito é invertido ou só anulado ao disparar —
+   * isso é por carta (ver `RICOCHET_INVERSIONS` em `registry.ts`); esta tag
+   * só decide SE RICOCHETE dispara. Na prática, hoje, toda carta com esta
+   * tag TEM uma entrada em `RICOCHET_INVERSIONS` — o fallback "só anula" é
+   * rede de segurança, não um caminho vivo.
    */
   targetsOpponentResource?: boolean;
 

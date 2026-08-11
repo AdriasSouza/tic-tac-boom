@@ -6,6 +6,7 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 import { FLIP_CARD_HEIGHT, FLIP_CARD_WIDTH, FlipCard } from './FlipCard';
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
+import { playSound } from '@/audio/soundEngine';
 import { getCard } from '@/engine/cards/registry';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { netCancelInteraction, netResolveInteraction } from '@/services/syncBridge';
@@ -65,11 +66,13 @@ export function InteractionModal() {
 
   const cancel = () => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     netCancelInteraction();
   };
 
   const resolve = (selection: InteractionSelection) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playSound('TAP_MEDIUM');
     netResolveInteraction(selection);
   };
 
@@ -220,6 +223,7 @@ function HiddenSlot({
 }) {
   const handlePress = () => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid);
+    playSound('TAP_RIGID');
     onPress();
   };
   return (

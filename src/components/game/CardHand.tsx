@@ -14,6 +14,7 @@ import * as Haptics from 'expo-haptics';
 
 import { CardItem } from './CardItem';
 import { CardFocusModal } from '@/components/ui/CardFocusModal';
+import { playSound } from '@/audio/soundEngine';
 import { useCanPlayCardsNow, useIsLocalTurn } from '@/hooks/useLocalTurn';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
@@ -154,6 +155,7 @@ export function CardHand({ style }: CardHandProps) {
 
   const handleCancelFocus = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
+    playSound('TAP_SOFT');
     setFocusedUid(null);
   }, []);
 
@@ -170,6 +172,7 @@ export function CardHand({ style }: CardHandProps) {
     void Haptics.notificationAsync(
       played ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Error,
     );
+    playSound(played ? 'NOTIFY_SUCCESS' : 'NOTIFY_ERROR');
 
     setFocusedUid(null);
   }, [focusedEntry]);
@@ -246,6 +249,7 @@ export function CardHand({ style }: CardHandProps) {
 
   const handleCancelTargeting = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
+    playSound('TAP_SOFT');
     netCancelInteraction();
   }, []);
 

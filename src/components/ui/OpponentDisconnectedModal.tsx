@@ -5,6 +5,7 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
+import { playSound } from '@/audio/soundEngine';
 import { useIsOpponentConnected } from '@/hooks/useLocalTurn';
 import { netForfeit } from '@/services/syncBridge';
 import { selectStatus, useGameStore } from '@/store/gameStore';
@@ -58,12 +59,14 @@ export function OpponentDisconnectedModal() {
     }
 
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    playSound('NOTIFY_WARNING');
     const timer = setTimeout(() => setCanForfeit(true), FORFEIT_GRACE_MS);
     return () => clearTimeout(timer);
   }, [visible]);
 
   const handleForfeit = () => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    playSound('NOTIFY_SUCCESS');
     netForfeit();
   };
 

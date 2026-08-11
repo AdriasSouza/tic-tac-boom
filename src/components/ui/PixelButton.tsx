@@ -9,6 +9,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 
+import { playSound } from '@/audio/soundEngine';
 import { colors } from '@/theme/colors';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -74,6 +75,9 @@ function PixelButtonComponent({
 
   const handlePress = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    // Só aqui, não em `handlePressIn`: tátil duplo por toque é natural, bip
+    // duplo em CADA botão do jogo cansaria o ouvido rápido (ver plano).
+    playSound('TAP_MEDIUM');
     onPress();
   }, [onPress]);
 

@@ -322,10 +322,11 @@ describe('chooseCpuCardPlay — CÁPSULA DO TEMPO (carta nova): prioridade próp
 });
 
 describe('chooseCpuCardPlay — RENOVAR (carta nova)', () => {
-  it('renova a peça mais antiga com 2+ peças próprias no tabuleiro', () => {
+  it('renova a peça mais antiga com 3 peças próprias no tabuleiro (mesma exigência do canPlay)', () => {
     const board = boardWith({
       0: { owner: 'MACHINE', mark: 'O', turnPlaced: 1 },
       1: { owner: 'MACHINE', mark: 'O', turnPlaced: 2 },
+      2: { owner: 'MACHINE', mark: 'O', turnPlaced: 3 },
     });
     const state = createTestState({
       turn: 'MACHINE',
@@ -338,8 +339,11 @@ describe('chooseCpuCardPlay — RENOVAR (carta nova)', () => {
     expect(decision?.targetIndex).toBe(0); // a mais antiga (turnPlaced 1)
   });
 
-  it('não usa com só 1 peça própria no tabuleiro', () => {
-    const board = boardWith({ 0: { owner: 'MACHINE', mark: 'O', turnPlaced: 1 } });
+  it('não usa com só 2 peças próprias no tabuleiro (a fila do "infinito" ainda não ameaça)', () => {
+    const board = boardWith({
+      0: { owner: 'MACHINE', mark: 'O', turnPlaced: 1 },
+      1: { owner: 'MACHINE', mark: 'O', turnPlaced: 2 },
+    });
     const state = createTestState({
       turn: 'MACHINE',
       machineEnergy: 1,

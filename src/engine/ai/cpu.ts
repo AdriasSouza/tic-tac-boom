@@ -4,6 +4,7 @@ import {
   HAND_LIMIT,
   INITIAL_HP,
   MARK_BY_COMBATANT,
+  MAX_PIECES_PER_PLAYER,
   TRAP_LIMIT,
   adjacentIndexes,
   energyKeyFor,
@@ -308,12 +309,14 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (target !== null) return { uid: breakPiece.uid, cardId: breakPiece.cardId, targetIndex: target };
   }
 
-  // 10. RENOVAR (carta nova) — com 2+ peças próprias no tabuleiro, atrasa o
-  // sumiço da mais antiga (jogada de tempo, não de ataque).
+  // 10. RENOVAR (carta nova) — só a partir de 3 peças próprias no tabuleiro
+  // (mesma exigência do `canPlay` da carta, `registry.ts`) — a fila do
+  // "infinito" só ameaça a partir daí; com menos, renovar não atrasaria
+  // sumiço nenhum de verdade.
   const renew = find('RENEW_PIECE');
   if (renew) {
     const ownPieces = getPieceIndexes(state.board, CPU);
-    if (ownPieces.length >= 2) {
+    if (ownPieces.length >= MAX_PIECES_PER_PLAYER) {
       return { uid: renew.uid, cardId: renew.cardId, targetIndex: ownPieces[0] };
     }
   }

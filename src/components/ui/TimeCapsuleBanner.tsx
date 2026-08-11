@@ -12,6 +12,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { playSound } from '@/audio/soundEngine';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { colors } from '@/theme/colors';
 import { selectLastTimeCapsuleSave, useGameStore, type Combatant } from '@/store/gameStore';
@@ -71,11 +72,11 @@ export function TimeCapsuleBanner() {
     }
     setVisible(lastSave);
 
+    const isLocal = lastSave.target === localCombatant;
     void Haptics.notificationAsync(
-      lastSave.target === localCombatant
-        ? Haptics.NotificationFeedbackType.Success
-        : Haptics.NotificationFeedbackType.Warning,
+      isLocal ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning,
     );
+    playSound(isLocal ? 'NOTIFY_SUCCESS' : 'NOTIFY_WARNING');
 
     const timer = setTimeout(() => setVisible(null), VISIBLE_MS);
     return () => clearTimeout(timer);

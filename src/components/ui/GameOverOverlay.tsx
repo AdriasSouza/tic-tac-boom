@@ -13,6 +13,7 @@ import Animated, {
   withTiming
 } from 'react-native-reanimated';
 
+import { playSound } from '@/audio/soundEngine';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { INITIAL_HP, selectHp, selectMatchSeed, useGameStore } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
@@ -108,6 +109,8 @@ function GameOverContent({ haptics }: { haptics: boolean }) {
           : Haptics.NotificationFeedbackType.Error,
       );
     }
+    // Estingue próprio (não o notify_success/error genérico), gate independente do `haptics`.
+    playSound(playerWon ? 'MATCH_WIN' : 'MATCH_LOSE');
 
     return () => {
       cancelAnimation(enter);

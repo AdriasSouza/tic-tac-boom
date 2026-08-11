@@ -1185,7 +1185,30 @@ export const useGameStore = create<GameStore>()((set, get) => {
           [handKey]: hand,
           ...energySpend,
           pendingInteraction: openInteraction(
-            { caster, cardId, cardUid: uid, handIndex, priorSelections: [] },
+            {
+              caster,
+              cardId,
+              cardUid: uid,
+              handIndex,
+              /* Achado (patch pós-Fase 7a, bug relatado — CPU travava em loop
+                 tentando DESLIZAR): quando `targetIndex` já chega pronto (é
+                 SEMPRE o caso pra CPU, que nunca abre `BOARD_TARGET` — resolve
+                 o alvo sozinha antes de chamar `playCard`), o 1º "passo" da
+                 carta nunca passou por uma interação de verdade — mas ainda
+                 assim FOI uma escolha de célula, e o 2º passo de uma carta
+                 como DESLIZAR (`ctx.interaction.priorSelections[0]`, ver
+                 `SLIDE_PIECE` em `registry.ts`) espera encontrá-la ali. Sem
+                 isto, `priorSelections` chegava `[]` sempre, o 2º passo nunca
+                 achava a origem, `effect()` devolvia `null` toda vez, a carta
+                 era reembolsada, e a CPU tentava de novo — loop infinito
+                 (nunca acontecia pra jogada humana, que SEMPRE passa por
+                 `finishInteractionStep`, que já monta isto corretamente).
+                 `targetIndex === undefined` (cartas `targeting: 'NONE'` tipo
+                 MULLIGAN/SABOTAGEM) continua `[]` — nunca houve passo de
+                 tabuleiro nenhum pra sintetizar. */
+              priorSelections:
+                targetIndex !== undefined ? [{ kind: 'BOARD_TARGET', index: targetIndex }] : [],
+            },
             result.interaction,
           ),
         });

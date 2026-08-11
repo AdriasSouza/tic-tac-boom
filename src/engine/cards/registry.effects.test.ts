@@ -5,7 +5,7 @@ import { createRng, getChannel, seedMatch, type Rng } from '@/engine/rng';
 import { findWinner, getOldestPieceIndex, getVanishingIndex } from '@/engine/rules';
 import type { Board, Piece } from '@/engine/rules';
 import { createTestState } from '@/engine/testHelpers';
-import { drawCardId, getCard } from '@/engine/cards/registry';
+import { draftTieredCardIds, drawCardId, getCard } from '@/engine/cards/registry';
 
 const rng = createRng(1);
 
@@ -330,19 +330,25 @@ describe('ANTIMAGIA (ANTI_SPELL_TRAP) — carta nova: cobertura universal por ex
 /*                                  RICOCHETE                                  */
 /* -------------------------------------------------------------------------- */
 
-describe('RICOCHETE (REFLECT_TRAP) — carta nova: inverte quando bem definido, senão só anula', () => {
+describe('RICOCHETE (REFLECT_TRAP) — escopo estreitado (patch pós-Fase 7a): só HP/energia/mão-baralho, sempre inverte', () => {
   const card = getCard('REFLECT_TRAP');
   const state = createTestState();
 
-  it('dispara contra efeitos direcionados ao oponente (targetsOpponentResource)', () => {
+  it('dispara contra efeitos de HP/energia/mão diretos ao oponente (targetsOpponentResource)', () => {
     expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'DIRECT_DAMAGE' }, state)).toBe(true);
     expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'HAND_RAID' }, state)).toBe(true);
-    expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'OBSOLESCENCE' }, state)).toBe(true);
-    expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'QUEUE_SHUFFLE' }, state)).toBe(true);
+    expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'HAND_RAID_II' }, state)).toBe(true);
+    expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'BLACKOUT' }, state)).toBe(true);
   });
 
   it('NÃO dispara contra efeito não direcionado ao oponente (ex: STUDY)', () => {
     expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'STUDY' }, state)).toBe(false);
+  });
+
+  it('NÃO dispara mais contra AMALDIÇOAR/ANOMALIA (mexem em peças, não em HP/energia/mão) nem TROCAR (interativa, sem "carta oferecida" pra inverter no instante do veto)', () => {
+    expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'OBSOLESCENCE' }, state)).toBe(false);
+    expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'QUEUE_SHUFFLE' }, state)).toBe(false);
+    expect(card.triggerCondition?.({ type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'SINGLE_CARD_TRADE' }, state)).toBe(false);
   });
 
   it('inverte DIRECT_DAMAGE — dano atinge o próprio atacante, e nomeia a carta no log (patch pós-Fase 7a)', () => {
@@ -371,17 +377,17 @@ describe('RICOCHETE (REFLECT_TRAP) — carta nova: inverte quando bem definido, 
     expect(result?.patch?.machineHand).toEqual([]);
   });
 
-  it('OBSOLESCENCE/QUEUE_SHUFFLE: sem inversor registrado, só anula (fallback da spec)', () => {
+  it('inverte HAND_RAID_II — mesma inversão de HAND_RAID (rouba do atacante)', () => {
+    const raidState = createTestState({ machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }] });
     const result = card.effect({
-      state,
+      state: raidState,
       caster: 'PLAYER',
       uid: 'x',
       rng,
-      event: { type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'OBSOLESCENCE' },
+      event: { type: 'CARD_ABOUT_TO_RESOLVE', player: 'MACHINE', cardId: 'HAND_RAID_II' },
     });
-    expect(result?.cancelsAction).toBe(true);
-    expect(result?.patch).toBeUndefined();
-    expect(result?.damage).toBeUndefined();
+    expect(result?.patch?.playerHand).toEqual([{ uid: 'm1', cardId: 'HEAL_SELF' }]);
+    expect(result?.patch?.machineHand).toEqual([]);
   });
 
   it('inverte APAGÃO (carta nova, patch pós-Fase 7a) — a energia de quem lançou zera, não a do defensor', () => {
@@ -1242,6 +1248,23 @@ describe('PROCRASTINAR II (CARD_DRAFT_TIERED) — distribuição garantida 2 com
     });
     expect(result?.log).toMatchObject({ code: 'CARD_DRAFT_PICK', value: 'HAND_SWAP' });
   });
+
+  it('embaralha a ordem das 5 opções (exploit corrigido, patch pós-Fase 7a: a lendária não é sempre a última)', () => {
+    // Antes da correção, `draftTieredCardIds` sempre devolvia
+    // [comum, comum, épica, épica, lendária], nessa ordem — o jogador podia
+    // sempre escolher o último slot pra garantir a lendária. Com várias
+    // seeds diferentes, a posição da lendária no array precisa variar.
+    const legendaryPositions = new Set<number>();
+    for (let seed = 1; seed <= 12; seed++) {
+      const picks = draftTieredCardIds(createRng(seed));
+      expect(picks).toHaveLength(5);
+      // A distribuição continua garantida — só a ORDEM muda.
+      const rarities = picks.map((id) => getCard(id).rarity);
+      expect(rarities.filter((r) => r === 'LEGENDARY')).toHaveLength(1);
+      legendaryPositions.add(rarities.indexOf('LEGENDARY'));
+    }
+    expect(legendaryPositions.size).toBeGreaterThan(1);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1421,8 +1444,15 @@ describe('RENOVAR (RENEW_PIECE) — carta nova (patch pós-Fase 7a): peça próp
     expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
   });
 
-  it('canPlay: disponível com 2+ peças próprias', () => {
+  it('canPlay: indisponível com só 2 peças próprias (patch: a fila do "infinito" só ameaça a partir de 3)', () => {
     const state = createTestState({ board: boardWith({ 0: piece('PLAYER', 0), 1: piece('PLAYER', 1) }) });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível com 3 peças próprias', () => {
+    const state = createTestState({
+      board: boardWith({ 0: piece('PLAYER', 0), 1: piece('PLAYER', 1), 2: piece('PLAYER', 2) }),
+    });
     expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
   });
 

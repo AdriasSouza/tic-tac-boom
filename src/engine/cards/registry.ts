@@ -312,8 +312,11 @@ const RENEW_PIECE: CardDefinition = {
   requiresTarget: true,
   isValidTarget: ({ state, caster, index }) => state.board[index]?.owner === caster,
 
-  // Com 1 peça só, ela já é a mais nova de qualquer jeito — nada para renovar.
-  canPlay: ({ state, caster }) => occupiedIndexes(state, caster).length >= 2,
+  // A fila do "infinito" só ameaça a partir de 3 peças no tabuleiro — com
+  // menos que isso, a 4ª colocação (a que dispara o sumiço) nem é possível
+  // ainda, então renovar não protegeria nada de verdade (mesma exigência de
+  // AMALDIÇOAR/VIDENTE, ver abaixo).
+  canPlay: ({ state, caster }) => occupiedIndexes(state, caster).length >= MAX_PIECES_PER_PLAYER,
 
   effect: ({ state, caster, targetIndex }) => {
     if (targetIndex === undefined) return null;
@@ -717,7 +720,10 @@ const MARK_DOOMED: CardDefinition = {
   rarity: 'RARE',
   weight: 3,
   cost: 2,
-  targetsOpponentResource: true,
+  // SEM `targetsOpponentResource` de propósito (patch pós-Fase 7a — RICOCHETE
+  // estreitou o escopo pra HP/energia/mão-baralho): esta carta mexe na fila
+  // de sumiço de PEÇAS (`forcedVanish`), não nesses recursos — ver
+  // `targetsOpponentResource` em `definitions.ts`.
 
   requiresTarget: true,
   isValidTarget: ({ state, caster, index }) => state.board[index]?.owner === opponentOf(caster),
@@ -938,7 +944,8 @@ const QUEUE_SHUFFLE: CardDefinition = {
   rarity: 'RARE',
   weight: 2,
   cost: 2,
-  targetsOpponentResource: true,
+  // SEM `targetsOpponentResource` de propósito — mesma razão de OBSOLESCENCE
+  // acima: mexe na fila de sumiço de PEÇAS, fora do escopo novo de RICOCHETE.
 
   effect: ({ caster }) => {
     const target = opponentOf(caster);
@@ -991,12 +998,13 @@ const BLACKOUT: CardDefinition = {
  * que a fixture "TROCAR-shaped" da Fase 3 já provou (`pendingInteraction.test.ts`),
  * agora com carta real.
  *
- * RICOCHETE (Fase 4, Achado 2): `targetsOpponentResource: true` mantém o
- * VETO (a carta lê a mão do oponente antes de completar), mas SEM entrada em
- * `RICOCHET_INVERSIONS` — no instante em que o contra-ataque dispara (antes
- * do passo 1 abrir), não existe ainda "a carta que o atacante escolheria"
- * para inverter. Cai no mesmo fallback de ANTIMAGIA (só anula) — ver
- * `docs/NOTAS_TECNICAS.md`.
+ * RICOCHETE (decisão do usuário, patch pós-Fase 7a): FORA do escopo dela de
+ * propósito. No instante em que o contra-ataque dispara (antes do passo 1
+ * abrir), não existe ainda "a carta que o atacante escolheria" para
+ * inverter — em vez de inventar uma troca cega sem escolha nenhuma ou abrir
+ * uma interação nova dentro do veto síncrono de armadilha (arquitetura que
+ * não existe hoje), a carta simplesmente resolve normal contra RICOCHETE.
+ * ANTIMAGIA continua cobrindo (categoria própria, `!isImmuneToTraps`).
  */
 const SINGLE_CARD_TRADE: CardDefinition = {
   id: 'SINGLE_CARD_TRADE',
@@ -1008,7 +1016,6 @@ const SINGLE_CARD_TRADE: CardDefinition = {
   weight: 2,
   cost: 2,
   readsOrRemovesFromHand: true,
-  targetsOpponentResource: true,
 
   // Precisa de mais alguma carta na própria mão além da própria TROCAR
   // (senão não há o que oferecer) e de alguma carta do lado do oponente.
@@ -1653,18 +1660,25 @@ const RICOCHET_INVERSIONS: Partial<
   HAND_RAID: stealRandomFromAttacker,
   HAND_RAID_II: stealRandomFromAttacker,
 
-  // SINGLE_CARD_TRADE (TROCAR) fica de propósito FORA desta tabela — Fase 4,
-  // Achado 2: no instante em que o contra-ataque dispara (antes do passo 1
-  // da interação abrir), não existe ainda "a carta que o atacante ofereceria"
-  // pra inverter. Cai no fallback abaixo (`?? {}`) — RICOCHETE só anula,
-  // mesmo comportamento de ANTIMAGIA. Ver `docs/NOTAS_TECNICAS.md`.
+  // As 4 entradas acima são, hoje, as ÚNICAS 4 cartas que ainda disparam
+  // RICOCHETE (patch pós-Fase 7a — o escopo estreitou pra HP/energia/mão-
+  // baralho; ver `targetsOpponentResource` em `definitions.ts`). O fallback
+  // "só anula, sem inverter" (`?? {}`, no `effect` de `REFLECT_TRAP` abaixo)
+  // não é mais alcançável por NENHUMA carta atual — fica como rede de
+  // segurança pra uma carta futura tagueada `targetsOpponentResource` sem
+  // entrada aqui, não uma exceção viva.
 };
 
 /**
- * Carta nova. Dispara contra QUALQUER efeito do oponente direcionado ao
- * caster ou aos recursos dele (`targetsOpponentResource`) — categoria, não a
- * lista de 3 exemplos do PDF. Quando bem definida, a inversão vem de
- * `RICOCHET_INVERSIONS`; senão, só anula (mesmo fallback de ANTIMAGIA).
+ * Carta nova. Dispara contra efeitos do oponente direcionados ao caster ou
+ * aos recursos dele — categoria (`targetsOpponentResource`), não uma lista
+ * fixa de ids. Escopo ESTREITADO no patch pós-Fase 7a: só HP, energia ou
+ * mão/baralho (`ATAQUE`/`SAQUE`/`SAQUE II`/`APAGÃO` hoje) — efeitos que
+ * mexem em PEÇAS do tabuleiro (AMALDIÇOAR/ANOMALIA) ou que são interativos
+ * demais pra inverter no instante do veto (TROCAR) ficam de fora de
+ * propósito, sem tag nenhuma (ver cada carta). Sempre inverte quando disparar
+ * — as 4 cartas cobertas hoje têm entrada em `RICOCHET_INVERSIONS`; o
+ * fallback "só anula" é rede de segurança, não comportamento esperado.
  *
  * Inverter dano precisa que `resolveCounterTraps` (gameStore.ts) processe
  * `result.damage`/`result.heal` — antes disso nenhuma armadilha tinha
@@ -2178,5 +2192,12 @@ export function draftTieredCardIds(rng: Rng): CardId[] {
     }
     for (let i = 0; i < count; i++) picks.push(rng.pick(pool));
   }
-  return picks;
+  // Embaralha antes de devolver (achado/exploit corrigido, patch pós-Fase
+  // 7a): sem isto, `TIERED_DRAFT_PLAN` sempre produzia o array na MESMA
+  // ordem de raridade (2 comuns, 2 épicas, 1 lendária) — como o modal
+  // (`InteractionModal.tsx`, `PICK_ONE_REVEALED`) mostra as opções na ordem
+  // que chegam, o ÚLTIMO slot era sempre a lendária, todo sorteio, sem
+  // exceção. O sorteio em si continua garantido (2+2+1) — só a POSIÇÃO de
+  // cada carta no modal deixa de ser previsível.
+  return rng.shuffle(picks);
 }

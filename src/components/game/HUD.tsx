@@ -15,6 +15,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import HandTracker from './HandTracker';
+import { playSound } from '@/audio/soundEngine';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import {
@@ -280,6 +281,7 @@ const HpTracker = memo(function HpTracker({
     if (hapticsEnabled) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     }
+    playSound('NOTIFY_ERROR'); // gate próprio (settingsStore), independente de `hapticsEnabled`
 
     const timeout = setTimeout(() => setBreakingIndex(null), BREAK_DURATION);
     return () => clearTimeout(timeout);
@@ -313,6 +315,7 @@ const HpTracker = memo(function HpTracker({
     if (hapticsEnabled) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
+    playSound('NOTIFY_SUCCESS'); // gate próprio (settingsStore), independente de `hapticsEnabled`
     // eslint-disable-next-line react-hooks/exhaustive-deps -- só o `id` decide se é um evento NOVO
   }, [lastShieldAbsorbed?.id, target, shieldPulse]);
 

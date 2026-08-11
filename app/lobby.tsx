@@ -14,6 +14,7 @@ import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import PixelButton from '@/components/ui/PixelButton';
 import PixelPanel from '@/components/ui/PixelPanel';
+import { playSound } from '@/audio/soundEngine';
 import { isFirebaseConfigured } from '@/config/firebase';
 import { normalizeRoomCode } from '@/services/multiplayerService';
 import {
@@ -76,6 +77,7 @@ export default function LobbyScreen() {
     if (status !== 'MATCH_STARTED' || seed === null) return;
 
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    playSound('NOTIFY_SUCCESS');
     router.replace({
       pathname: '/game/[mode]',
       params: { mode: 'online', seed: String(seed) },
@@ -84,11 +86,13 @@ export default function LobbyScreen() {
 
   const handleCreate = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playSound('TAP_MEDIUM');
     void createRoom();
   }, [createRoom]);
 
   const handleJoin = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playSound('TAP_MEDIUM');
     void joinRoom(codeInput);
   }, [joinRoom, codeInput]);
 
@@ -105,17 +109,20 @@ export default function LobbyScreen() {
 
   const handleBack = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     void leaveRoom();
     router.back();
   }, [leaveRoom, router]);
 
   const handleReconnect = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playSound('TAP_MEDIUM');
     void reconnect();
   }, [reconnect]);
 
   const handleDismissReconnect = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
+    playSound('TAP_SOFT');
     dismissReconnect();
   }, [dismissReconnect]);
 

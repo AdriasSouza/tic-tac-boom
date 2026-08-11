@@ -6,6 +6,7 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 
 import { PixelButton } from '@/components/ui/PixelButton';
 import { PixelPanel } from '@/components/ui/PixelPanel';
+import { playSound } from '@/audio/soundEngine';
 import { useCanPlayCardsNow } from '@/hooks/useLocalTurn';
 import { netEndTurn } from '@/services/syncBridge';
 import {
@@ -50,6 +51,7 @@ function EndTurnButtonComponent() {
 
   const openConfirm = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     setConfirmVisible(true);
   }, []);
 
@@ -59,6 +61,7 @@ function EndTurnButtonComponent() {
 
   const confirmEndTurn = useCallback(() => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    playSound('NOTIFY_WARNING');
     netEndTurn();
     setConfirmVisible(false);
   }, []);

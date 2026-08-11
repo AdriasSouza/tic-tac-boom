@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, {
   Easing,
   runOnJS,
@@ -8,6 +8,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { CardFocusModal } from '@/components/ui/CardFocusModal';
 import { getCard } from '@/engine/cards/registry';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import {
@@ -146,38 +147,54 @@ export function HandTracker({ owner, revealed = false, style }: HandTrackerProps
 
   const viewportWidth = VISIBLE_SLOTS * miniCardWidth + (VISIBLE_SLOTS - 1) * SLOT_GAP;
 
-  return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={[{ height: handTrackerRowHeight, maxWidth: viewportWidth }, style]}
-      contentContainerStyle={styles.content}
-    >
-      {displayList.map((entry) => {
-        // Enquanto o uid segue na mão viva, a revelação é sempre reconsultada
-        // ao vivo (reage na hora a uma Espiada nova); uma vez "saindo", usa o
-        // que foi congelado — nunca as duas fontes ao mesmo tempo.
-        const live = {
-          faceUp: revealed || revealedUids.includes(entry.uid) || fullIntelActive,
-          exposed: revealed && (revealedUids.includes(entry.uid) || fullIntelActive),
-        };
-        const { faceUp, exposed } = entry.exiting ? entry.snapshot! : live;
+  /**
+   * Consulta só-leitura de uma carta em miniatura (patch pós-Fase 7a) —
+   * própria (sempre `faceUp`, `revealed=true`) ou do oponente já revelada
+   * (`faceUp` só quando `revealedUids`/VISÃO ABSOLUTA). Nunca disponível pra
+   * uma carta ainda de verso — `faceUp` já cobre isso.
+   */
+  const [focusedCardId, setFocusedCardId] = useState<CardId | null>(null);
 
-        return (
-          <TrackerSlot
-            key={entry.uid}
-            uid={entry.uid}
-            cardId={entry.cardId}
-            exiting={entry.exiting}
-            faceUp={faceUp}
-            exposed={exposed}
-            width={miniCardWidth}
-            height={miniCardHeight}
-            onExited={handleExited}
-          />
-        );
-      })}
-    </ScrollView>
+  return (
+    <>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={[{ height: handTrackerRowHeight, maxWidth: viewportWidth }, style]}
+        contentContainerStyle={styles.content}
+      >
+        {displayList.map((entry) => {
+          // Enquanto o uid segue na mão viva, a revelação é sempre
+          // reconsultada ao vivo (reage na hora a uma Espiada nova); uma vez
+          // "saindo", usa o que foi congelado — nunca as duas fontes ao
+          // mesmo tempo.
+          const live = {
+            faceUp: revealed || revealedUids.includes(entry.uid) || fullIntelActive,
+            exposed: revealed && (revealedUids.includes(entry.uid) || fullIntelActive),
+          };
+          const { faceUp, exposed } = entry.exiting ? entry.snapshot! : live;
+
+          return (
+            <TrackerSlot
+              key={entry.uid}
+              uid={entry.uid}
+              cardId={entry.cardId}
+              exiting={entry.exiting}
+              faceUp={faceUp}
+              exposed={exposed}
+              width={miniCardWidth}
+              height={miniCardHeight}
+              onExited={handleExited}
+              onPress={!entry.exiting && faceUp ? () => setFocusedCardId(entry.cardId) : undefined}
+            />
+          );
+        })}
+      </ScrollView>
+
+      {focusedCardId && (
+        <CardFocusModal cardId={focusedCardId} readOnly onCancel={() => setFocusedCardId(null)} />
+      )}
+    </>
   );
 }
 
@@ -197,6 +214,9 @@ interface TrackerSlotProps {
   width: number;
   height: number;
   onExited: (uid: string) => void;
+  /** Consulta só-leitura (patch pós-Fase 7a) — `undefined` enquanto a carta
+   * não está de face (verso do oponente ainda não revelado) ou saindo. */
+  onPress?: () => void;
 }
 
 const TrackerSlot = memo(function TrackerSlot({
@@ -208,6 +228,7 @@ const TrackerSlot = memo(function TrackerSlot({
   width,
   height,
   onExited,
+  onPress,
 }: TrackerSlotProps) {
   const card = getCard(cardId);
   const accent = faceUp ? RARITY_COLOR[card.rarity] : colors.boardFrameLight;
@@ -253,15 +274,29 @@ const TrackerSlot = memo(function TrackerSlot({
         animatedStyle,
       ]}
     >
-      <Text
-        numberOfLines={1}
-        style={[
-          styles.slotGlyph,
-          { color: faceUp ? accent : colors.winGlow, fontSize: Math.max(6, Math.round(height * 0.6)) },
-        ]}
-      >
-        {faceUp ? card.name.charAt(0) : '?'}
-      </Text>
+      {onPress ? (
+        <Pressable onPress={onPress} style={styles.pressableFill}>
+          <Text
+            numberOfLines={1}
+            style={[
+              styles.slotGlyph,
+              { color: faceUp ? accent : colors.winGlow, fontSize: Math.max(6, Math.round(height * 0.6)) },
+            ]}
+          >
+            {faceUp ? card.name.charAt(0) : '?'}
+          </Text>
+        </Pressable>
+      ) : (
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.slotGlyph,
+            { color: faceUp ? accent : colors.winGlow, fontSize: Math.max(6, Math.round(height * 0.6)) },
+          ]}
+        >
+          {faceUp ? card.name.charAt(0) : '?'}
+        </Text>
+      )}
     </Animated.View>
   );
 });
@@ -287,5 +322,10 @@ const styles = StyleSheet.create({
   },
   slotGlyph: {
     fontWeight: '900',
+  },
+  pressableFill: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

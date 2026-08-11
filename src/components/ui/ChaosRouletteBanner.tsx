@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeOut, ZoomIn } from 'react-native-reanimated';
 
+import { playSound } from '@/audio/soundEngine';
 import { useResponsiveLayout } from '@/hooks/useResponsiveLayout';
 import {
   CHAOS_ROULETTE_BANNER_HOLD_MS,
@@ -45,6 +46,7 @@ export function ChaosRouletteBanner() {
     const beats = STOPS.map(({ atMs, text: stopText }) => setTimeout(() => setText(stopText), atMs));
     const boom = setTimeout(() => {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      playSound('ROULETTE_BOOM'); // estingue próprio, não o tap_heavy genérico
     }, CHAOS_ROULETTE_COLUMN_STOP_MS[2]);
     const hide = setTimeout(
       () => setText(null),

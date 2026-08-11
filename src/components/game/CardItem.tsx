@@ -13,6 +13,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { playSound } from '@/audio/soundEngine';
 import { getCard } from '@/engine/cards/registry';
 import { useLayoutMode } from '@/hooks/useLayoutMode';
 import { netPlayCard } from '@/services/syncBridge';
@@ -197,11 +198,13 @@ function CardItemComponent({
 
   const handlePickUp = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     onDragStart(index);
   }, [onDragStart, index]);
 
   const handleReject = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
+    playSound('TAP_SOFT');
     onDragEnd();
   }, [onDragEnd]);
 
@@ -229,12 +232,14 @@ function CardItemComponent({
 
     if (played) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      playSound('NOTIFY_SUCCESS');
       // Sem springHome: a carta sai da mão e o `exiting` anima daqui mesmo.
       onDragEnd();
       return;
     }
 
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    playSound('NOTIFY_ERROR');
     springHome();
     onDragEnd();
   }, [uid, springHome, onDragEnd]);
@@ -246,6 +251,7 @@ function CardItemComponent({
    */
   const handleFocusTap = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     onFocus(uid);
   }, [onFocus, uid]);
 

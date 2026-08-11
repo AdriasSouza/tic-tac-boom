@@ -291,8 +291,8 @@
     (sem RNG).
   - **Abre modal:** Sim (seleção dos dois lados da troca). **Exige alvo no tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por PROTEÇÃO (categoria "lê/retira da mão" — a troca lê a mão
-    do oponente antes de completar), por RICOCHETE (só ANULA — fallback, não inversão; ver nota
-    abaixo) e por ANTIMAGIA (cobertura universal).
+    do oponente antes de completar) e por ANTIMAGIA (cobertura universal). **Não** por RICOCHETE
+    (ver nota abaixo).
   - **Casos de borda:**
     - **Mão do oponente vazia:** carta fica indisponível (nada para trocar).
     - Precisa de mais alguma carta na própria mão além da própria TROCAR — senão não há o que
@@ -301,14 +301,15 @@
   - **Nota de migração:** carta NOVA — o `CARD_TRADE` atual (troca 1 carta ALEATÓRIA de cada lado,
     sem modal) vira PERMUTA CAÓTICA, não esta. Ver a nota de "ressurreição de uid" na entrada de
     PERMUTA CAÓTICA.
-  - **RICOCHETE, correção fechada na Fase 4:** este documento originalmente descrevia uma inversão
-    ("os papéis se invertem, quem trocaria perde a própria carta escolhida"), mas a arquitetura não
-    sustenta isso — `resolveCounterTraps` dispara ANTES da interação abrir, antes até do passo 1
-    (escolher a própria carta a oferecer) acontecer, então não existe "a carta escolhida" nesse
-    instante para inverter. RICOCHETE cai no fallback já documentado ("quando a inversão exigiria
-    re-selecionar algo que ainda não existe, RICOCHETE apenas anula, como ANTIMAGIA") — sem entrada
-    em `RICOCHET_INVERSIONS`, `SINGLE_CARD_TRADE` só é vetada, nunca invertida. Ver
-    `docs/NOTAS_TECNICAS.md`.
+  - **RICOCHETE, fora do escopo (patch pós-Fase 7a):** este documento já descreveu, em versões
+    anteriores, uma inversão e depois um fallback "só anula" pra esta interação com RICOCHETE — a
+    arquitetura nunca sustentou a inversão de verdade (`resolveCounterTraps` dispara ANTES da
+    interação abrir, antes até do passo 1 acontecer, então não existe "a carta escolhida" nesse
+    instante para inverter), e o fallback "só anula, sem devolver nada" deixou de ser o
+    comportamento desejado de RICOCHETE em geral. Decisão do usuário: em vez de inventar uma troca
+    cega sem escolha nenhuma ou abrir uma interação nova dentro do veto síncrono de armadilha
+    (arquitetura que não existe hoje), TROCAR simplesmente **saiu do escopo de RICOCHETE** — a
+    carta resolve normal contra ela. Ver `docs/NOTAS_TECNICAS.md`.
 
   ### DEMOLIR (`BREAK_PIECE`)
   - **Custo:** 2⚡ · **Categoria (PDF):** Feitiço · **Tipo (motor):** `ACTION`
@@ -335,9 +336,9 @@
     a próxima da fila", parametrizado por índice aleatório vs. índice escolhido).
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não (afeta a fila inteira do oponente, não
     uma célula).
-  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Por RICOCHETE: sim, mas
-    só ANULA em vez de inverter — embaralhar a PRÓPRIA fila de quem lançou não tem um sentido
-    bem definido de "inversão" (ver a regra de fallback em "Regras transversais").
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). **Não** por RICOCHETE
+    (patch pós-Fase 7a: escopo estreitado pra HP/energia/mão-baralho — ANOMALIA mexe na fila de
+    sumiço de PEÇAS, fora disso; ver "Regras transversais").
   - **Casos de borda:**
     - Tabuleiro sem alvo válido (oponente com menos de 1 peça): sem peça nenhuma na fila,
       presumo que a carta ainda pode ser jogada (o efeito só passa a valer quando ele tiver peças
@@ -362,9 +363,9 @@
     mas só quem MIRA o oponente com VIDENTE, nunca o próprio defensor sobre si mesmo (VIDENTE só
     lê peças do oponente de quem a joga).
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim — 1 célula ocupada pelo oponente.
-  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). Por RICOCHETE: sim, mas
-    só ANULA — o oponente já escolheu uma peça seguinte SUA, e não há uma peça "sua" equivalente
-    óbvia pra inverter o alvo (ver a regra de fallback em "Regras transversais").
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal). **Não** por RICOCHETE
+    (patch pós-Fase 7a: mesma razão de ANOMALIA — mexe na fila de sumiço de PEÇAS, fora do escopo
+    novo; ver "Regras transversais").
   - **Casos de borda:**
     - **Tabuleiro sem alvo válido** (oponente com menos de 3 peças no tabuleiro): indisponível
       para jogar (patch pós-Fase 7a — antes bastava >=1 peça; marcar antes da fila do infinito
@@ -407,16 +408,22 @@
 
   ### RICOCHETE (`REFLECT_TRAP`, novo)
   - **Custo:** 2⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
-  - **Efeito exato:** Virada na mesa. Dispara contra QUALQUER efeito do oponente direcionado a
-    você ou aos seus recursos (categoria, não a lista de 3 exemplos do PDF — que era exaustiva só
-    enquanto o baralho era pequeno). Ver a regra de fallback (inverte quando bem definido, anula
-    quando não) em "Regras transversais" — não repetida aqui carta a carta.
+  - **Efeito exato:** Virada na mesa. Dispara contra efeitos do oponente direcionados a você ou
+    aos seus recursos DIRETOS — HP, energia ou mão/baralho (categoria, não uma lista fixa de
+    ids). Hoje cobre ATAQUE, SAQUE, SAQUE II e APAGÃO — sempre INVERTE (nunca só cancela; ver
+    "Regras transversais"). Efeitos que mexem em PEÇAS do tabuleiro (AMALDIÇOAR, ANOMALIA) ou
+    que são interativos demais pra inverter no instante do veto (TROCAR) ficam de fora do escopo
+    de propósito — escopo estreitado no patch pós-Fase 7a, decisão do usuário.
   - **Abre modal:** Não. **Exige alvo no tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal, no momento de armar).
   - **Casos de borda:** reativa, sem edge case de mão/tabuleiro próprio.
   - **Nota de migração:** carta NOVA.
   - **Rebalanceamento (análise de mesa):** RARA/1⚡ → RARA/2⚡. Mesma razão de ANTIMAGIA — resposta
     a quase qualquer efeito por 1⚡ destoava do resto do tier.
+  - **Escopo estreitado (patch pós-Fase 7a):** antes cobria "mão, HP, peças, fila" — na prática
+    cancelava (sem inverter) AMALDIÇOAR/ANOMALIA/TROCAR, o que destoava do espírito da carta
+    ("o efeito volta pro autor", não "só desperdiça a carta do oponente"). As 3 saíram do escopo;
+    as 4 que sobraram já tinham inversão definida — não sobra mais nenhum caso de "só cancela".
 
   ### ESPIONAGEM (`INTEL_REVEAL`, novo)
   - **Custo:** 2⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
@@ -943,19 +950,23 @@
   energia gasta mesmo com o efeito anulado. Cobre também outras armadilhas não-lendárias no
   momento de armar (ex: pode anular o armar de PROTEÇÃO, RICOCHETE, ou uma ANTIMAGIA adversária).
 
-  ### RICOCHETE — categoria com regra de fallback
-  Dispara contra qualquer efeito do oponente direcionado a você ou aos seus recursos (mão, HP,
-  peças, fila) — categoria, não uma lista fixa de exemplos.
-  - **Quando a inversão é bem definida** (dano, roubo de carta, destruição de carta, troca,
-    descarte, punição de turno): o efeito se inverte e atinge o próprio autor.
-  - **Quando a inversão exigiria re-selecionar um alvo** que o oponente já escolheu (ex:
-    AMALDIÇOAR — o oponente já marcou uma peça SUA; não existe uma peça "dele" óbvia para
-    redirecionar a marca) ou não faz sentido conceitualmente (ex: ANOMALIA embaralhando a PRÓPRIA
-    fila de quem a lançou): RICOCHETE apenas ANULA, como ANTIMAGIA — não tenta inverter.
+  ### RICOCHETE — categoria estreita, sempre inverte (escopo revisado no patch pós-Fase 7a)
+  Dispara contra efeitos do oponente direcionados a você ou aos seus recursos DIRETOS — HP,
+  energia ou mão/baralho (categoria, não uma lista fixa de exemplos). Hoje: ATAQUE, SAQUE,
+  SAQUE II, APAGÃO — as 4 sempre INVERTEM, o efeito volta pro próprio autor.
 
-  Esta regra de fallback existe para nenhuma carta futura ficar num estado indefinido quando
-  RICOCHETE for implementada. Documentada aqui, não repetida carta a carta — cada entrada acima só
-  diz "Sim, por RICOCHETE" (inversão) ou "Sim, por RICOCHETE — só anula" (fallback).
+  **Fora do escopo de propósito**, sem tag `targetsOpponentResource` nenhuma:
+  - **AMALDIÇOAR e ANOMALIA** — mexem na fila de sumiço de PEÇAS do tabuleiro, não em HP/energia/
+    mão. Resolvem normal contra RICOCHETE armada (ela nem é consultada).
+  - **TROCAR** — é interativa (escolha em 2 passos) e RICOCHETE dispara ANTES da escolha existir;
+    não haveria "a carta escolhida" pra inverter sem inventar uma troca cega sem escolha nenhuma
+    ou abrir uma interação nova dentro do veto síncrono de armadilha. Decisão do usuário: deixar
+    de fora em vez de qualquer uma das duas.
+
+  Antes deste patch a categoria era mais larga ("mão, HP, peças, fila") e existia uma regra de
+  fallback ("quando a inversão não é bem definida, RICOCHETE só anula, como ANTIMAGIA") que
+  cobria AMALDIÇOAR/ANOMALIA/TROCAR. O fallback foi removido junto — hoje toda carta que dispara
+  RICOCHETE tem inversão definida; não sobra nenhum caso de "só cancela, sem devolver nada".
 
   ### PROTEÇÃO/ANTIMAGIA/RICOCHETE nomeiam a carta anulada (patch pós-Fase 7a)
   Antes deste patch, disparar qualquer uma das três só dizia "uma armadilha disparou" — nem o

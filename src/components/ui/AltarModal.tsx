@@ -16,6 +16,7 @@ import Animated, {
 
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
+import { playSound } from '@/audio/soundEngine';
 import { RARITY_LABEL, fuseRarity } from '@/engine/cards/definitions';
 import { getCard } from '@/engine/cards/registry';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
@@ -127,6 +128,7 @@ const AltarSlot = memo(function AltarSlot({
 
   const handlePress = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     onPress(index);
   }, [index, onPress]);
 
@@ -205,6 +207,7 @@ const AltarHandChip = memo(function AltarHandChip({
   const handleDrop = useCallback(
     (index: 0 | 1) => {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      playSound('TAP_MEDIUM');
       onDrop(card.uid, index);
     },
     [card.uid, onDrop],
@@ -212,6 +215,7 @@ const AltarHandChip = memo(function AltarHandChip({
 
   const handleTap = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     onTap(card.uid);
   }, [card.uid, onTap]);
 
@@ -336,6 +340,7 @@ export function AltarModal() {
   const [rejectedIndex, setRejectedIndex] = useState<0 | 1 | null>(null);
   const triggerReject = useCallback((index: 0 | 1) => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    playSound('NOTIFY_ERROR');
     setRejectedIndex(index);
     setTimeout(() => setRejectedIndex((current) => (current === index ? null : current)), 260);
   }, []);
@@ -477,6 +482,7 @@ export function AltarModal() {
     const [uidA, uidB] = selection.slots;
     if (uidA === null || uidB === null) return;
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    playSound('FUSION_SUCCESS'); // estingue próprio, não o notify_success genérico
     // Único ponto de contato com a rede — ver o JSDoc do componente.
     netResolveInteraction({ kind: 'SACRIFICE_DRAG', uids: [uidA, uidB] });
     setVisible(false);
@@ -484,6 +490,7 @@ export function AltarModal() {
 
   const handleCancel = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
+    playSound('TAP_SOFT');
     // `netCancelInteraction` devolve o Altar para a mão e a energia gasta —
     // diferente do mecanismo antigo, que perdia a carta pra sempre ao cancelar.
     netCancelInteraction();

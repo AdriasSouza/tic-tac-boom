@@ -1,7 +1,8 @@
-import { memo, useMemo } from 'react';
-import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { memo, useMemo, useState } from 'react';
+import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, { FadeInDown, ZoomOut } from 'react-native-reanimated';
 
+import { CardFocusModal } from '@/components/ui/CardFocusModal';
 import { useLayoutMode } from '@/hooks/useLayoutMode';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { getCard } from '@/engine/cards/registry';
@@ -96,6 +97,16 @@ export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
   const slotStyle = { width: slotSize, height: slotSize };
   const slotHitSlop = hitSlop > 0 ? hitSlop : undefined;
 
+  /**
+   * Consulta só-leitura de uma armadilha PRÓPRIA já armada (patch pós-Fase
+   * 7a) — "dar uma espiada" na carta virada na mesa, pra quem esqueceu o que
+   * armou. Só possível quando `isFaceVisible` (é exatamente "é minha E estou
+   * autorizado a ver a face agora" — cobre hot-seat de graça: no turno do
+   * OUTRO lado, mesmo a própria armadilha de antes fica ilegível de novo,
+   * então também não é consultável nesse instante).
+   */
+  const [focusedCardId, setFocusedCardId] = useState<CardId | null>(null);
+
   return (
     <View style={[styles.root, { width: sidebarWidth }, style]}>
       {/* Sempre acima do bloco de slots, e sempre centralizado em relação a
@@ -115,6 +126,7 @@ export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
             faceVisible={isFaceVisible}
             size={slotStyle}
             hitSlop={slotHitSlop}
+            onPress={isFaceVisible ? () => setFocusedCardId(cardId) : undefined}
           />
         ))}
 
@@ -122,6 +134,10 @@ export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
           <View key={`empty-${i}`} style={[styles.emptySlot, slotStyle]} hitSlop={slotHitSlop} />
         ))}
       </View>
+
+      {focusedCardId && (
+        <CardFocusModal cardId={focusedCardId} readOnly onCancel={() => setFocusedCardId(null)} />
+      )}
     </View>
   );
 }
@@ -158,20 +174,25 @@ const TrapSlot = memo(function TrapSlot({
   faceVisible,
   size,
   hitSlop,
+  onPress,
 }: {
   cardId: CardId;
   faceVisible: boolean;
   size: { width: number; height: number };
   hitSlop?: number;
+  /** Consulta só-leitura (patch pós-Fase 7a) — `undefined` quando não é
+   * consultável agora (armadilha do OPONENTE, ou própria fora do turno em
+   * hot-seat — ver `isFaceVisible` em `<TrapZone />`). */
+  onPress?: () => void;
 }) {
   const card = getCard(cardId);
 
-  return (
+  const content = (
     <Animated.View
       entering={FadeInDown.springify().damping(14).mass(0.6)}
       exiting={ZoomOut.duration(240)}
       style={[styles.back, size]}
-      hitSlop={hitSlop}
+      hitSlop={onPress ? undefined : hitSlop}
     >
       {/* Bisel chapado, mesma linguagem do resto da UI — compartilhado pelos
           dois estados. */}
@@ -194,6 +215,16 @@ const TrapSlot = memo(function TrapSlot({
         </>
       )}
     </Animated.View>
+  );
+
+  // Sem `onPress`, devolve exatamente como antes — nenhum `Pressable` extra
+  // no meio pra armadilha do oponente (nunca consultável).
+  if (!onPress) return content;
+
+  return (
+    <Pressable onPress={onPress} hitSlop={hitSlop}>
+      {content}
+    </Pressable>
   );
 });
 

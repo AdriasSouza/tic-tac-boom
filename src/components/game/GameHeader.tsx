@@ -4,6 +4,7 @@ import { memo, useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import EndTurnButton from './EndTurnButton';
+import { playSound } from '@/audio/soundEngine';
 import { colors } from '@/theme/colors';
 
 export interface GameHeaderProps {
@@ -25,6 +26,7 @@ export interface GameHeaderProps {
 function GameHeaderComponent({ onPause }: GameHeaderProps) {
   const handlePause = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     onPause();
   }, [onPause]);
 

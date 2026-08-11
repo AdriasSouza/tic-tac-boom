@@ -12,6 +12,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
+import { playSound } from '@/audio/soundEngine';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { colors } from '@/theme/colors';
 import { selectLastExtraTurn, useGameStore, type Combatant } from '@/store/gameStore';
@@ -86,11 +87,11 @@ export function ExtraTurnBanner() {
     }
     setVisible(lastExtraTurn);
 
+    const isLocal = lastExtraTurn.target === localCombatant;
     void Haptics.notificationAsync(
-      lastExtraTurn.target === localCombatant
-        ? Haptics.NotificationFeedbackType.Success
-        : Haptics.NotificationFeedbackType.Warning,
+      isLocal ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Warning,
     );
+    playSound(isLocal ? 'NOTIFY_SUCCESS' : 'NOTIFY_WARNING');
 
     // Reagendado a cada `id` novo: se um segundo turno extra for concedido
     // enquanto o primeiro letreiro ainda está na tela, o cronômetro reinicia

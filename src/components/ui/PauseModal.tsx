@@ -6,8 +6,10 @@ import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 
 import { PixelButton } from './PixelButton';
 import { PixelPanel } from './PixelPanel';
+import { playSound } from '@/audio/soundEngine';
 import { clearMatchSnapshot } from '@/store/matchPersistence';
 import { useGameStore } from '@/store/gameStore';
+import { useSettingsStore } from '@/store/settingsStore';
 import { colors } from '@/theme/colors';
 
 export interface PauseModalProps {
@@ -23,14 +25,18 @@ export interface PauseModalProps {
 function PauseModalComponent({ visible, onClose }: PauseModalProps) {
   const router = useRouter();
   const startMatch = useGameStore((s) => s.startMatch);
+  const soundEnabled = useSettingsStore((s) => s.soundEnabled);
+  const toggleSound = useSettingsStore((s) => s.toggleSound);
 
   const handleResume = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     onClose();
   }, [onClose]);
 
   const handleRestart = useCallback(() => {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    playSound('NOTIFY_WARNING');
     // `startMatch()` já cuida de tudo — reseeda o RNG, zera o log do
     // terminal e distribui a mão inicial dos dois lados sozinha.
     startMatch();
@@ -39,6 +45,7 @@ function PauseModalComponent({ visible, onClose }: PauseModalProps) {
 
   const handleQuit = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    playSound('TAP_MEDIUM');
     onClose();
     // Saída deliberada pro menu: o snapshot desta partida (se houver — online
     // nunca escreve um, então isto é um no-op inofensivo lá) não deve
@@ -48,6 +55,12 @@ function PauseModalComponent({ visible, onClose }: PauseModalProps) {
     void clearMatchSnapshot();
     router.replace('/');
   }, [onClose, router]);
+
+  const handleToggleSound = useCallback(() => {
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT'); // toca ANTES do toggle — senão desligar nunca soa nada
+    toggleSound();
+  }, [toggleSound]);
 
   return (
     <Modal
@@ -68,6 +81,13 @@ function PauseModalComponent({ visible, onClose }: PauseModalProps) {
             <View style={styles.titleRule} />
 
             <View style={styles.actions}>
+              <PixelButton
+                label={soundEnabled ? 'SOM: LIGADO' : 'SOM: DESLIGADO'}
+                onPress={handleToggleSound}
+                variant="ghost"
+                accent={soundEnabled ? colors.terminalGreen : colors.textDim}
+                style={styles.action}
+              />
               <PixelButton
                 label="RETOMAR"
                 onPress={handleResume}

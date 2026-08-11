@@ -10,41 +10,52 @@ import { RARITY_COLOR } from '@/theme/rarity';
 import { type CardId } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
 
-export interface CardFocusModalProps {
+interface CardFocusModalBaseProps {
   cardId: CardId;
-  /** Se o botão de confirmar deve estar habilitado (turno, fase, `canPlay` da carta, espaço na mesa). */
-  canConfirm: boolean;
-  /**
-   * Motivo do botão estar desabilitado, já resolvido por `<CardHand />`
-   * (turno ➜ giro de TIC TAC BOOM ➜ energia ➜ condição específica da carta).
-   * `null` quando `canConfirm` é `true` — antes disto o botão só esmaecia
-   * sem dizer por quê.
-   */
-  disabledReason: string | null;
   onCancel: () => void;
-  onConfirm: () => void;
 }
 
 /**
- * Modo foco: alternativa ao arrastar, pensada para mouse/web.
+ * Modo `readOnly` (consulta, sem ação — armadilha própria já armada ou carta
+ * em miniatura): mesmo layout, mas SEM os botões de jogar a carta. Discriminado
+ * de propósito (não um `canConfirm`/`onConfirm` opcionais soltos) — o TS
+ * obriga a fornecer `canConfirm`/`disabledReason`/`onConfirm` sempre que
+ * `readOnly` não for `true`, então esquecê-los no modo de jogo por engano
+ * vira erro de compilação, não um botão USAR/ARMAR mudo em produção.
+ */
+export type CardFocusModalProps =
+  | (CardFocusModalBaseProps & { readOnly: true })
+  | (CardFocusModalBaseProps & {
+      readOnly?: false;
+      /** Se o botão de confirmar deve estar habilitado (turno, fase, `canPlay` da carta, espaço na mesa). */
+      canConfirm: boolean;
+      /**
+       * Motivo do botão estar desabilitado, já resolvido por `<CardHand />`
+       * (turno ➜ giro de TIC TAC BOOM ➜ energia ➜ condição específica da carta).
+       * `null` quando `canConfirm` é `true` — antes disto o botão só esmaecia
+       * sem dizer por quê.
+       */
+      disabledReason: string | null;
+      onConfirm: () => void;
+    });
+
+/**
+ * Modo foco: alternativa ao arrastar, pensada para mouse/web — E modo consulta
+ * só-leitura (armadilha própria armada, carta em miniatura própria/revelada
+ * do oponente — patch pós-Fase 7a).
  *
  * Um toque na carta (ver `<CardItem />`) abre isto em vez de exigir arrastar
  * até a metade superior da tela — arrastar com o cursor não é um gesto
- * natural fora de touch. Mostra a carta ampliada com a descrição completa e
- * dois botões:
+ * natural fora de touch. Mostra a carta ampliada com a descrição completa e:
  *
- * - **CANCELAR** — fecha sem gastar a carta.
- * - **USAR/ARMAR** — resolve a carta. Se ela exigir alvo, quem decide o que
- *   acontece a seguir é o `<CardHand />` (arma `pendingAction` e devolve o
- *   tabuleiro ao modo mira); TRAPs sempre armam direto.
+ * - **Modo jogo** (`readOnly` ausente/`false`): dois botões — CANCELAR (fecha
+ *   sem gastar a carta) e USAR/ARMAR (resolve a carta; se ela exigir alvo,
+ *   quem decide o que acontece a seguir é o `<CardHand />`).
+ * - **Modo consulta** (`readOnly: true`): um botão só, FECHAR — é só uma
+ *   espiada na carta, nunca joga/arma nada.
  */
-function CardFocusModalComponent({
-  cardId,
-  canConfirm,
-  disabledReason,
-  onCancel,
-  onConfirm,
-}: CardFocusModalProps) {
+function CardFocusModalComponent(props: CardFocusModalProps) {
+  const { cardId, onCancel } = props;
   const card = getCard(cardId);
   const accent = card.type === 'ACTION' ? colors.markX : colors.markO;
   const confirmLabel = card.type === 'TRAP' ? 'ARMAR' : 'USAR';
@@ -111,25 +122,37 @@ function CardFocusModalComponent({
 
             {/* Só aparece junto do botão desabilitado — antes disto o
                 jogador só via a opacidade reduzida, sem saber se era energia,
-                turno, ou outra coisa bloqueando. */}
-            {!canConfirm && disabledReason && (
-              <Text style={styles.disabledReason}>{disabledReason}</Text>
+                turno, ou outra coisa bloqueando. Não existe no modo consulta
+                (não há botão pra desabilitar). */}
+            {!props.readOnly && !props.canConfirm && props.disabledReason && (
+              <Text style={styles.disabledReason}>{props.disabledReason}</Text>
             )}
 
             <View style={styles.actions}>
-              <PixelButton
-                label="CANCELAR"
-                onPress={onCancel}
-                variant="ghost"
-                style={styles.action}
-              />
-              <PixelButton
-                label={confirmLabel}
-                onPress={onConfirm}
-                accent={accent}
-                disabled={!canConfirm}
-                style={styles.action}
-              />
+              {props.readOnly ? (
+                <PixelButton
+                  label="FECHAR"
+                  onPress={onCancel}
+                  variant="ghost"
+                  style={styles.action}
+                />
+              ) : (
+                <>
+                  <PixelButton
+                    label="CANCELAR"
+                    onPress={onCancel}
+                    variant="ghost"
+                    style={styles.action}
+                  />
+                  <PixelButton
+                    label={confirmLabel}
+                    onPress={props.onConfirm}
+                    accent={accent}
+                    disabled={!props.canConfirm}
+                    style={styles.action}
+                  />
+                </>
+              )}
             </View>
           </PixelPanel>
         </Animated.View>

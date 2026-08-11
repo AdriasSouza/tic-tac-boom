@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
+import { playSound } from '@/audio/soundEngine';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { formatLogEntry } from '@/i18n/logMessages';
 import {
@@ -627,6 +628,7 @@ export function ChaosTerminal({
 
   const handleToggleExpanded = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    playSound('TAP_LIGHT');
     setExpanded((prev) => !prev);
   }, []);
 
@@ -650,6 +652,7 @@ export function ChaosTerminal({
     // aparelho tremer duas vezes por ciclo de caos.
     if (hapticsEnabled && RULE_IS_SURGE[activeRule]) {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Rigid);
+      playSound('CHAOS_SURGE'); // estingue próprio, não o tap_rigid genérico
     }
   }, [activeRule, hapticsEnabled]);
 
