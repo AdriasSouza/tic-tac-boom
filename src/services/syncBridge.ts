@@ -1,4 +1,4 @@
-import { pushAction } from '@/services/multiplayerService';
+import { fetchRoom, pushAction } from '@/services/multiplayerService';
 import { useGameStore } from '@/store/gameStore';
 import { selectOpponentConnectionStatus, useMultiplayerStore } from '@/store/multiplayerStore';
 import type { Combatant, InteractionSelection } from '@/engine/rules';
@@ -149,6 +149,14 @@ export function resetSyncBridge(): void {
   processedActionIds = new Set<string>();
   isApplyingNetworkAction = false;
   lastActionAuthor = null;
+  outbox = [];
+  draining = false;
+  if (retryTimeoutId !== null) {
+    clearTimeout(retryTimeoutId);
+    retryTimeoutId = null;
+    resolveCurrentWait = null;
+  }
+  useMultiplayerStore.setState({ outboxStatus: 'idle' });
 }
 
 /**
@@ -185,6 +193,91 @@ export function canLocalAcknowledge(): boolean {
    direto. Fora do online elas são um repasse puro, então os modos local e CPU
    não pagam nada por existirem.                                              */
 
+interface OutboxEntry {
+  roomCode: string;
+  action: MultiplayerAction;
+  attempts: number;
+}
+
+/**
+ * Ações aplicadas localmente mas ainda não confirmadas pelo servidor,
+ * processadas em ORDEM ESTRITA — nunca duas em voo ao mesmo tempo.
+ *
+ * A razão de não paralelizar: a ordem que o OUTRO cliente lê é a ordem de
+ * ESCRITA no Firebase (a chave cronológica do `push()`), não a ordem em que
+ * este cliente PRETENDIA enviar. Se a ação #1 estivesse retentando enquanto a
+ * #2 já tivesse sido publicada com sucesso, a #2 chegaria ao servidor (e ao
+ * outro cliente) antes da #1 — corrompendo a sequência que o event sourcing
+ * depende para os dois lados chegarem ao mesmo estado.
+ */
+let outbox: OutboxEntry[] = [];
+let draining = false;
+let retryTimeoutId: ReturnType<typeof setTimeout> | null = null;
+let resolveCurrentWait: (() => void) | null = null;
+
+/** Backoff exponencial, com teto — não cresce sem limite. */
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+
+/**
+ * Depois de quantas tentativas malsucedidas o status reportado à UI vira
+ * `'stalled'` em vez de `'retrying'` — só muda o RÓTULO (comunica urgência
+ * crescente), nunca desiste de tentar de verdade: desistir permanentemente
+ * de publicar uma ação já aplicada localmente é uma dessincronia
+ * PERMANENTE sem saída — pior que continuar tentando em silêncio.
+ */
+const STALLED_AFTER_ATTEMPTS = 5;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    resolveCurrentWait = resolve;
+    retryTimeoutId = setTimeout(() => {
+      retryTimeoutId = null;
+      resolveCurrentWait = null;
+      resolve();
+    }, ms);
+  });
+}
+
+/**
+ * Corta a espera de backoff atual (se houver) e libera `drainOutbox` para
+ * tentar de novo imediatamente. É o que o botão "TENTAR AGORA" da UI chama —
+ * não cancela nem reordena nada, só encurta o tempo até a próxima tentativa.
+ */
+export function retryOutboxNow(): void {
+  if (retryTimeoutId === null || resolveCurrentWait === null) return;
+  clearTimeout(retryTimeoutId);
+  retryTimeoutId = null;
+  const resolve = resolveCurrentWait;
+  resolveCurrentWait = null;
+  resolve();
+}
+
+async function drainOutbox(): Promise<void> {
+  if (draining) return;
+  draining = true;
+
+  while (outbox.length > 0) {
+    const entry = outbox[0];
+    try {
+      await pushAction(entry.roomCode, entry.action);
+      outbox.shift();
+      if (outbox.length === 0) useMultiplayerStore.setState({ outboxStatus: 'idle' });
+    } catch (error) {
+      entry.attempts += 1;
+      console.warn('[syncBridge] falha ao publicar ação (tentativa', entry.attempts, '):', error);
+      useMultiplayerStore.setState({
+        outboxStatus: entry.attempts >= STALLED_AFTER_ATTEMPTS ? 'stalled' : 'retrying',
+      });
+      const waitMs = RETRY_DELAYS_MS[Math.min(entry.attempts - 1, RETRY_DELAYS_MS.length - 1)];
+      await delay(waitMs);
+      // Sem `shift()` aqui — o loop tenta a MESMA entrada de novo, nunca pula
+      // para a próxima enquanto esta não for confirmada (ver o porquê acima).
+    }
+  }
+
+  draining = false;
+}
+
 /** Publica a ação, se estivermos online e ela não tiver vindo da rede. */
 function broadcast(build: (by: PlayerSlot) => MultiplayerAction): void {
   if (isApplyingNetworkAction) return; // anti-loop, 2ª linha de defesa
@@ -195,13 +288,14 @@ function broadcast(build: (by: PlayerSlot) => MultiplayerAction): void {
 
   lastActionAuthor = playerId;
 
-  // Sem `await`: a jogada JÁ foi aplicada localmente e o jogo não pode
-  // congelar esperando a rede. Uma falha de publicação é registrada e não
-  // derruba a partida — o oponente vai perceber a dessincronia, e é melhor
-  // isso do que a UI travar no meio de um turno.
-  void pushAction(roomCode, build(playerId)).catch((error: unknown) => {
-    console.warn('[syncBridge] falha ao publicar ação:', error);
-  });
+  // A jogada JÁ foi aplicada localmente e o jogo não pode congelar esperando
+  // a rede — por isso a fila roda em segundo plano (`drainOutbox`,
+  // fire-and-forget aqui) em vez de bloquear o clique. Diferente da versão
+  // anterior, uma falha agora RETENTA sozinha (com backoff, ver acima) e
+  // reporta o status em `multiplayerStore.outboxStatus` para a UI — não fica
+  // mais só um `console.warn` que ninguém vê.
+  outbox.push({ roomCode, action: build(playerId), attempts: 0 });
+  void drainOutbox();
 }
 
 /**
@@ -522,5 +616,37 @@ export function resyncFromActionLog(seed: number, actions: StoredAction[]): void
     }
   } finally {
     isApplyingNetworkAction = false;
+  }
+}
+
+/**
+ * Sincronização manual, sob demanda — botão "SINCRONIZAR" da UI
+ * (`ConnectionSyncBanner`), para o lado que está PRESO ESPERANDO, não o que
+ * está falhando ao enviar (esse é o `retryOutboxNow` acima).
+ *
+ * Busca o log mais recente direto do servidor via `fetchRoom` — contorna um
+ * listener do RTDB que porventura tenha parado de entregar atualizações (o
+ * `onValue` de `listenToRoom` deveria reagir sozinho a qualquer mudança, mas
+ * não há garantia absoluta contra uma falha silenciosa do socket) — e
+ * reconstrói o estado local a partir dele com `resyncFromActionLog`, o mesmo
+ * caminho que já roda automaticamente ao entrar/reentrar numa sala. Nenhum
+ * mecanismo novo: só um gatilho manual para infraestrutura que já existia.
+ *
+ * Devolve `false` (sem lançar) se não houver sala ativa ou a busca falhar —
+ * a UI decide a mensagem, não precisa de um `try/catch` próprio.
+ */
+export async function manualResync(): Promise<boolean> {
+  const { roomCode } = useMultiplayerStore.getState();
+  if (roomCode === null) return false;
+
+  try {
+    const snapshot = await fetchRoom(roomCode);
+    if (snapshot === null) return false;
+
+    resyncFromActionLog(snapshot.seed, snapshot.actions);
+    return true;
+  } catch (error) {
+    console.warn('[syncBridge] falha ao sincronizar manualmente:', error);
+    return false;
   }
 }

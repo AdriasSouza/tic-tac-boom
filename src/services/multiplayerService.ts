@@ -135,12 +135,22 @@ function attachPresence(code: string, slot: PlayerSlot): void {
     // queda entre as duas escritas com a ordem invertida deixaria o status
     // preso em CONNECTED para sempre — o pior tipo de falha aqui, porque é
     // silenciosa.
-    onDisconnect(statusRef)
-      .set('DISCONNECTED' satisfies PlayerConnectionStatus)
-      .then(() => set(statusRef, 'CONNECTED' satisfies PlayerConnectionStatus))
-      .catch((error: unknown) => {
-        console.warn('[multiplayerService] falha ao armar presença:', error);
+    //
+    // Uma retentativa (não mais): é uma corrida rara (a conexão cair bem no
+    // meio destas duas escritas), não vale um backoff completo como o da
+    // fila de ações — só evitar que um único blip deixe o status errado até
+    // a PRÓXIMA reconexão (`.info/connected` só dispara de novo aí).
+    const arm = (): Promise<void> =>
+      onDisconnect(statusRef)
+        .set('DISCONNECTED' satisfies PlayerConnectionStatus)
+        .then(() => set(statusRef, 'CONNECTED' satisfies PlayerConnectionStatus));
+
+    arm().catch((error: unknown) => {
+      console.warn('[multiplayerService] falha ao armar presença, tentando de novo:', error);
+      arm().catch((retryError: unknown) => {
+        console.warn('[multiplayerService] falha ao armar presença (2ª tentativa):', retryError);
       });
+    });
   });
 
   activePresence = {

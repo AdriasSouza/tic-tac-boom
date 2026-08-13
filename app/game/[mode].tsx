@@ -1,11 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, StyleSheet, type LayoutChangeEvent } from 'react-native';
+import { Pressable, Text, View, StyleSheet, type LayoutChangeEvent } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { restoreRng } from '@/engine/rng';
 import { useMatchAutosave } from '@/hooks/useMatchAutosave';
 import { loadMatchSnapshot } from '@/store/matchPersistence';
 import { isOnlineMatch } from '@/services/syncBridge';
+import { selectError, useMultiplayerStore } from '@/store/multiplayerStore';
+import { colors } from '@/theme/colors';
 import ChaosTerminal from '@/components/game/ChaosTerminal';
 import GameHeader from '@/components/game/GameHeader';
 import HUD from '@/components/game/HUD';
@@ -25,6 +28,7 @@ import TimeCapsuleBanner from '@/components/ui/TimeCapsuleBanner';
 import ParadoxEchoOverlay from '@/components/ui/ParadoxEchoOverlay';
 import OpponentDisconnectedModal from '@/components/ui/OpponentDisconnectedModal';
 import OpponentLeftModal from '@/components/ui/OpponentLeftModal';
+import ConnectionSyncBanner from '@/components/ui/ConnectionSyncBanner';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useLayoutMode, type LayoutMode } from '@/hooks/useLayoutMode';
 import { GAME_MAX_WIDTH, useResponsiveLayout } from '@/hooks/useResponsiveLayout';
@@ -46,6 +50,14 @@ export default function GameScreen() {
   const resumeMatch = useGameStore(state => state.resumeMatch);
   const setPaused = useGameStore(state => state.setPaused);
   const [pauseVisible, setPauseVisible] = useState(false);
+
+  // Erro do listener de rede (`multiplayerStore`, escrito quando `onValue`
+  // falha em `listenToRoom`) — antes ficava só no store, invisível: nenhuma
+  // tela de partida lia `selectError`. Mudo pra sempre é o pior tipo de
+  // falha aqui, então mostrar isto (mesmo padrão dispensável por toque de
+  // `app/lobby.tsx`) fecha essa lacuna.
+  const multiplayerError = useMultiplayerStore(selectError);
+  const clearMultiplayerError = useMultiplayerStore((s) => s.clearError);
 
   // Fonte única do dimensionamento: terminal, tabuleiro e mão escalam a partir
   // do MESMO fator. Com cada um inventando sua própria conta, a soma das
@@ -292,9 +304,28 @@ export default function GameScreen() {
         <CardHand />
       </View>
 
+      {multiplayerError !== null && (
+        <Animated.View
+          entering={FadeIn.duration(160)}
+          exiting={FadeOut.duration(140)}
+          style={styles.errorLayer}
+          pointerEvents="box-none"
+        >
+          <Pressable
+            onPress={clearMultiplayerError}
+            style={styles.errorBox}
+            accessibilityRole="button"
+          >
+            <Text style={styles.errorText}>{multiplayerError}</Text>
+            <Text style={styles.errorDismiss}>TOQUE PARA FECHAR</Text>
+          </Pressable>
+        </Animated.View>
+      )}
+
       <DamageFlashOverlay />
       <ParadoxEchoOverlay />
       <NoticeToast />
+      <ConnectionSyncBanner />
       <ExtraTurnBanner />
       <TimeCapsuleBanner />
       <ChaosRouletteBanner />
@@ -432,5 +463,40 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  /**
+   * Erro do listener de rede — mais alto na tela que `<ConnectionSyncBanner
+   * />` (`paddingTop: '6%'` contra `'14%'` de lá) para os dois nunca se
+   * sobreporem visualmente no raro caso de aparecerem juntos.
+   */
+  errorLayer: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingTop: '6%',
+    paddingHorizontal: 24,
+  },
+  errorBox: {
+    maxWidth: 320,
+    borderWidth: 2,
+    borderColor: colors.danger,
+    backgroundColor: colors.bgPanel,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  errorText: {
+    color: colors.danger,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textAlign: 'center',
+  },
+  errorDismiss: {
+    marginTop: 4,
+    color: colors.textDim,
+    fontSize: 7,
+    letterSpacing: 2,
   },
 });

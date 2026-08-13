@@ -35,6 +35,17 @@ import type { PlayerConnectionStatus, PlayerSlot, RoomSnapshot } from '@/types/m
 
 export type MultiplayerStatus = 'DISCONNECTED' | 'IN_LOBBY' | 'MATCH_STARTED';
 
+/**
+ * Estado da fila de saída de ações (`syncBridge`'s `outbox`) — `'idle'` sem
+ * nada pendente, `'retrying'` tentando publicar de novo depois de uma falha,
+ * `'stalled'` depois de várias tentativas seguidas (só muda o RÓTULO pra UI
+ * comunicar urgência — a fila continua tentando, nunca desiste sozinha).
+ * Escrito de fora do corpo da store por `syncBridge.ts` (mesmo padrão que
+ * `pendingReconnectCode` já recebe de fora, abaixo) — é estado de REDE, não
+ * de partida, por isso mora aqui e não no `gameStore`.
+ */
+export type OutboxStatus = 'idle' | 'retrying' | 'stalled';
+
 export interface MultiplayerState {
   /** Código da sala atual, ou `null` fora de uma sala. */
   roomCode: string | null;
@@ -63,6 +74,8 @@ export interface MultiplayerState {
    * sozinho, sem nenhuma rota de rede nova.
    */
   pendingReconnectCode: string | null;
+  /** Ver `OutboxStatus`. */
+  outboxStatus: OutboxStatus;
 }
 
 export interface MultiplayerActions {
@@ -91,6 +104,7 @@ const INITIAL_STATE: MultiplayerState = {
   error: null,
   isBusy: false,
   pendingReconnectCode: null,
+  outboxStatus: 'idle',
 };
 
 /* -------------------------------------------------------------------------- */
@@ -314,6 +328,7 @@ export const selectOpponentConnectionStatus = (s: MultiplayerStore): PlayerConne
 };
 
 export const selectPendingReconnectCode = (s: MultiplayerStore) => s.pendingReconnectCode;
+export const selectOutboxStatus = (s: MultiplayerStore) => s.outboxStatus;
 
 /** Id anônimo deste cliente. Reexportado para a UI não importar o serviço. */
 export { getClientId };
