@@ -56,6 +56,7 @@ export type CardId =
   | 'RENEW_PIECE'
   | 'MULLIGAN'
   | 'SLIDE_PIECE'
+  | 'TRIP_PIECE'
   | 'SCRY_DECK'
   | 'BACKUP_BATTERY'
   | 'TIME_CAPSULE'

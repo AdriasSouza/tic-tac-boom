@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import Animated, {
   Easing,
@@ -22,6 +22,7 @@ import {
   ENERGY_CAP,
   INITIAL_HP,
   selectEnergy,
+  selectIsChaosRouletteSpinning,
   selectLastEnergyDrain,
   selectLastShieldAbsorbed,
   selectMachineHp,
@@ -241,6 +242,19 @@ const HpTracker = memo(function HpTracker({
   handTrackerRowHeight,
 }: HpTrackerProps) {
   const hp = useGameStore(target === 'PLAYER' ? selectPlayerHp : selectMachineHp);
+  // O reembaralhar do giro de TIC TAC BOOM! pode fechar uma linha e causar
+  // dano no mesmo instante síncrono em que começa (`applyCardEffectResult`,
+  // `gameStore.ts`) — sem esperar a revelação terminar, o shake/flash/haptic
+  // de dano disparava ANTES do jogador ver qual coluna fechou.
+  const chaosRouletteSpinning = useGameStore(selectIsChaosRouletteSpinning);
+  // Espelho em ref, lido de dentro do efeito de dano SEM entrar nas deps
+  // dele — `chaosRouletteSpinning` mudar sozinho (giro começando/terminando
+  // sem HP mudar) não pode re-rodar aquele efeito, senão ele recalcularia
+  // `lost` como 0 (HP não mudou) e apagaria uma reação pendente antes do
+  // efeito de baixo (que reage à MESMA mudança de `chaosRouletteSpinning`)
+  // ter a chance de lê-la — ordem de execução entre os dois não é garantida.
+  const chaosRouletteSpinningRef = useRef(chaosRouletteSpinning);
+  chaosRouletteSpinningRef.current = chaosRouletteSpinning;
 
   /* --- Detecção do evento de dano ----------------------------------------
      O store expõe o HP atual, não um evento. Comparar com o valor anterior
@@ -248,9 +262,41 @@ const HpTracker = memo(function HpTracker({
      com flags efêmeras que teriam de ser limpas depois.                     */
   const prevHp = useRef(hp);
   const [breakingIndex, setBreakingIndex] = useState<number | null>(null);
+  /** Bloco que quebrou enquanto o giro ainda revelava — a reação visual
+   * espera até `chaosRouletteSpinning` liberar (efeito logo abaixo). */
+  const pendingBreakRef = useRef<number | null>(null);
 
   const damage = useSharedValue(0); // 0 = normal, 1 = pico do flash
   const shake = useSharedValue(0);
+
+  const playDamageReaction = useCallback(
+    (breakIndex: number) => {
+      // O bloco que acabou de esvaziar é exatamente o de índice `breakIndex`.
+      setBreakingIndex(breakIndex);
+
+      damage.value = withSequence(
+        withTiming(1, { duration: 60, easing: Easing.out(Easing.quad) }),
+        withTiming(0, { duration: DAMAGE_FLASH - 60, easing: Easing.in(Easing.quad) }),
+      );
+
+      shake.value = withSequence(
+        withTiming(-SHAKE_AMPLITUDE, { duration: 42 }),
+        withTiming(SHAKE_AMPLITUDE, { duration: 42 }),
+        withTiming(-SHAKE_AMPLITUDE * 0.6, { duration: 42 }),
+        withTiming(SHAKE_AMPLITUDE * 0.4, { duration: 42 }),
+        withTiming(0, { duration: 42 }),
+      );
+
+      if (hapticsEnabled) {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      }
+      playSound('NOTIFY_ERROR'); // gate próprio (settingsStore), independente de `hapticsEnabled`
+
+      const timeout = setTimeout(() => setBreakingIndex(null), BREAK_DURATION);
+      return () => clearTimeout(timeout);
+    },
+    [damage, shake, hapticsEnabled],
+  );
 
   useEffect(() => {
     const lost = prevHp.current - hp;
@@ -259,33 +305,30 @@ const HpTracker = memo(function HpTracker({
     if (lost <= 0) {
       // Cura ou reset de partida: só limpa o estado visual.
       setBreakingIndex(null);
+      pendingBreakRef.current = null;
       return;
     }
 
-    // O bloco que acabou de esvaziar é exatamente o de índice `hp`.
-    setBreakingIndex(hp);
-
-    damage.value = withSequence(
-      withTiming(1, { duration: 60, easing: Easing.out(Easing.quad) }),
-      withTiming(0, { duration: DAMAGE_FLASH - 60, easing: Easing.in(Easing.quad) }),
-    );
-
-    shake.value = withSequence(
-      withTiming(-SHAKE_AMPLITUDE, { duration: 42 }),
-      withTiming(SHAKE_AMPLITUDE, { duration: 42 }),
-      withTiming(-SHAKE_AMPLITUDE * 0.6, { duration: 42 }),
-      withTiming(SHAKE_AMPLITUDE * 0.4, { duration: 42 }),
-      withTiming(0, { duration: 42 }),
-    );
-
-    if (hapticsEnabled) {
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    if (chaosRouletteSpinningRef.current) {
+      // Giro ainda revelando: guarda o bloco pendente, não anima ainda.
+      pendingBreakRef.current = hp;
+      return;
     }
-    playSound('NOTIFY_ERROR'); // gate próprio (settingsStore), independente de `hapticsEnabled`
 
-    const timeout = setTimeout(() => setBreakingIndex(null), BREAK_DURATION);
-    return () => clearTimeout(timeout);
-  }, [hp, damage, shake, hapticsEnabled]);
+    return playDamageReaction(hp);
+    // SEM `chaosRouletteSpinning` aqui de propósito — ver o comentário do
+    // `chaosRouletteSpinningRef` acima. Este efeito só deve reagir a `hp`
+    // mudando de verdade.
+  }, [hp, playDamageReaction]);
+
+  /* --- Giro liberou: dispara a reação pendente, se houver ------------------ */
+  useEffect(() => {
+    if (chaosRouletteSpinning) return;
+    if (pendingBreakRef.current === null) return;
+    const breakIndex = pendingBreakRef.current;
+    pendingBreakRef.current = null;
+    return playDamageReaction(breakIndex);
+  }, [chaosRouletteSpinning, playDamageReaction]);
 
   useEffect(
     () => () => {

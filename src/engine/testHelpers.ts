@@ -49,6 +49,8 @@ export function createTestState(overrides: Partial<GameState> = {}): GameState {
     chaosRouletteSpinning: false,
     lastNotice: null,
     nextNoticeId: 0,
+    lastCardsDrawnFor: { PLAYER: null, MACHINE: null },
+    nextCardsDrawnIdFor: { PLAYER: 0, MACHINE: 0 },
     isPaused: false,
     isOnline: false,
     terminalLog: [],

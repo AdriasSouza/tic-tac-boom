@@ -37,9 +37,11 @@ import {
   selectIsWinningCell,
   selectLastChaosRoulette,
   selectLastVanishedIndex,
+  selectTargetingCaster,
   useGameStore,
   CHAOS_ROULETTE_COLUMN_STOP_MS,
   CHAOS_ROULETTE_FADE_MS,
+  CHAOS_ROULETTE_FLICKER_DECEL_MS,
   CHAOS_ROULETTE_FLICKER_MS,
   MARK_BY_COMBATANT,
   type Combatant,
@@ -105,9 +107,22 @@ function CellComponent({ index, size }: CellProps) {
   // ver o comentário na seção do giro de TIC TAC BOOM! abaixo.
   const chaosRouletteSpinning = useGameStore(selectIsChaosRouletteSpinning);
   const isTargeting = useGameStore(selectIsTargeting);
-  const isValidTarget = useGameStore(useMemo(() => selectIsValidTarget(index), [index]));
   // Define qual peça é "minha" para efeito de cor — ver `colorFor`.
   const { localCombatant, isOnline } = useMatchPerspective();
+  const targetingCaster = useGameStore(selectTargetingCaster);
+  /**
+   * Brilho de "alvo válido" — informação TÁTICA (qual peça está em jogo,
+   * quais destinos ela pode tomar), não só "qual carta" (isso já é anunciado
+   * pra ambos via `CARD_PLAYED`, ver `gameStore.ts`). No online, só acende
+   * no tabuleiro de quem É o caster da mira — mesmo racional já usado pelo
+   * destaque de VIDENTE logo abaixo (`isHighlightedByVidente`). O motor já
+   * recusa um toque do lado errado (`resolveInteraction`/`cancelInteraction`,
+   * `caster !== combatant`) — isto aqui é só a UI parando de convidar o toque
+   * que o motor ia rejeitar de qualquer forma.
+   */
+  const isValidTarget =
+    useGameStore(useMemo(() => selectIsValidTarget(index), [index])) &&
+    (!isOnline || targetingCaster === localCombatant);
 
   /**
    * VIDENTE: "só para quem jogou" só faz sentido gatear por IDENTIDADE fixa
@@ -331,6 +346,7 @@ function CellComponent({ index, size }: CellProps) {
   const [isSpinning, setIsSpinning] = useState(false);
   const [spinGlyph, setSpinGlyph] = useState<Mark | null>(null);
   const chaosGlow = useSharedValue(0); // 0..1 — opacidade do destaque laranja
+  const spinRoll = useSharedValue(0); // 0..1 — "queda" do glifo entrando, reforça a sensação de rolo
 
   useEffect(() => {
     if (!lastChaosRoulette) return;
@@ -338,20 +354,41 @@ function CellComponent({ index, size }: CellProps) {
     setIsSpinning(true);
     chaosGlow.value = withTiming(1, { duration: CHAOS_ROULETTE_FADE_MS });
 
-    const flicker = setInterval(() => {
-      // Math.random() de propósito, não o canal do RNG determinístico: é
-      // ruído puramente cosmético — os dois clientes de uma partida online
-      // podem (e vão) "girar" com padrões diferentes, só o glifo TRAVADO
-      // precisa bater, e esse vem do board já sincronizado, não deste timer.
-      setSpinGlyph((['X', 'O', null] as const)[Math.floor(Math.random() * 3)]);
-    }, CHAOS_ROULETTE_FLICKER_MS);
+    const stopAt = CHAOS_ROULETTE_COLUMN_STOP_MS[column];
+    const startedAt = Date.now();
+    let flickerTimer: ReturnType<typeof setTimeout>;
+
+    /**
+     * Cadência que DESACELERA conforme a coluna se aproxima do próprio
+     * horário de travar (um `setTimeout` que se reagenda, não mais um
+     * `setInterval` de cadência fixa) — sensação de "rolo caindo até parar"
+     * em vez de um flicker constante que corta seco. `Date.now()` de
+     * propósito, não o canal do RNG determinístico: é ritmo puramente
+     * cosmético — os dois clientes de uma partida online podem (e vão)
+     * "girar" em ritmos levemente diferentes, só o glifo TRAVADO precisa
+     * bater, e esse vem do board já sincronizado (`piece`), não deste timer.
+     */
+    const scheduleNextFlicker = () => {
+      const elapsed = Date.now() - startedAt;
+      const remaining = stopAt - elapsed;
+      if (remaining <= CHAOS_ROULETTE_FLICKER_MS) return; // perto demais do fim — deixa o `stop` abaixo travar
+      const progress = Math.min(1, elapsed / stopAt);
+      const delay = CHAOS_ROULETTE_FLICKER_MS + progress * progress * CHAOS_ROULETTE_FLICKER_DECEL_MS;
+      flickerTimer = setTimeout(() => {
+        setSpinGlyph((['X', 'O', null] as const)[Math.floor(Math.random() * 3)]);
+        spinRoll.value = 0;
+        spinRoll.value = withTiming(1, { duration: 90 });
+        scheduleNextFlicker();
+      }, delay);
+    };
+    scheduleNextFlicker();
 
     const stop = setTimeout(() => {
-      clearInterval(flicker);
+      clearTimeout(flickerTimer);
       setIsSpinning(false);
       setSpinGlyph(null);
       chaosGlow.value = withTiming(0, { duration: CHAOS_ROULETTE_FADE_MS });
-    }, CHAOS_ROULETTE_COLUMN_STOP_MS[column]);
+    }, stopAt);
 
     /* --- Brilho intermitente da linha vencedora --------------------------
        Agendado pela ÚLTIMA coluna (`[2]`), não a própria — cada célula sabe
@@ -373,16 +410,20 @@ function CellComponent({ index, size }: CellProps) {
     }, CHAOS_ROULETTE_COLUMN_STOP_MS[2]);
 
     return () => {
-      clearInterval(flicker);
+      clearTimeout(flickerTimer);
       clearTimeout(stop);
       clearTimeout(winReveal);
       cancelAnimation(chaosGlow);
       cancelAnimation(winPulse);
+      cancelAnimation(spinRoll);
     };
-  }, [lastChaosRoulette?.id, column, chaosGlow, winPulse]);
+  }, [lastChaosRoulette?.id, column, chaosGlow, winPulse, spinRoll]);
 
   const chaosOverlayStyle = useAnimatedStyle(() => ({ opacity: chaosGlow.value }));
   const winPulseOverlayStyle = useAnimatedStyle(() => ({ opacity: winPulse.value }));
+  const spinRollStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: interpolate(spinRoll.value, [0, 1], [-8, 0]) }],
+  }));
 
   /* --- Entrada da peça ----------------------------------------------------
      Depende de `turnPlaced`, não da existência da peça: assim uma peça que
@@ -611,12 +652,15 @@ function CellComponent({ index, size }: CellProps) {
         <Animated.View style={[styles.winPulseOverlay, winPulseOverlayStyle]} pointerEvents="none" />
 
         {isSpinning ? (
-          spinGlyph &&
-          (spinGlyph === 'X' ? (
-            <MarkX size={size} color={colors.bgDeep} />
-          ) : (
-            <MarkO size={size} color={colors.bgDeep} />
-          ))
+          spinGlyph && (
+            <Animated.View style={spinRollStyle}>
+              {spinGlyph === 'X' ? (
+                <MarkX size={size} color={colors.bgDeep} />
+              ) : (
+                <MarkO size={size} color={colors.bgDeep} />
+              )}
+            </Animated.View>
+          )
         ) : (
           <>
             {(isBlocked || exitingGlyph) && (

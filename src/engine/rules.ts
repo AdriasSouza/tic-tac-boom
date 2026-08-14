@@ -262,6 +262,24 @@ export interface PendingAcknowledgement {
   revealedCards: CardId[];
 }
 
+/**
+ * Um lote de cartas recebido por um combatente via `drawCardsFor` (compra
+ * automática, ESTUDAR/ESTUDAR II, RECICLAR — PROCRASTINAR/PROCRASTINAR II
+ * ficam de fora: constroem a carta manualmente e já têm aviso próprio,
+ * `CARD_DRAFT_PICK`). Efêmero, `id` monotônico — mesmo padrão de `Notice`/
+ * `lastDamageEvent`, mas guardado UM POR COMBATENTE em
+ * `GameState.lastCardsDrawnFor` (não um slot único compartilhado): a compra
+ * automática credita os dois lados na MESMA pilha síncrona
+ * (`drawCardsFor('PLAYER',1); drawCardsFor('MACHINE',1);`, `gameStore.ts`),
+ * e um slot único faria a 2ª escrita apagar a 1ª antes de qualquer tela
+ * chegar a mostrá-la. Puramente informativo (alimenta um toast, não
+ * `pendingAcknowledgement`) — nunca bloqueia jogada nem toque no tabuleiro.
+ */
+export interface CardsDrawnNotice {
+  cardIds: CardId[];
+  id: number;
+}
+
 /* Os avisos efêmeros (toasts) seguem o mesmo modelo semântico do log e vivem
    em `./log`, reexportados no topo deste arquivo. */
 
@@ -466,14 +484,16 @@ export interface GameState {
   /**
    * Turno global (`turnCount`) em que a regra caótica ATUAL reverte para
    * `NORMAL`. `null` enquanto `activeRule === 'NORMAL'` — o repouso não
-   * expira sozinho, só é interrompido pelo próximo surto agendado (ver
-   * `isChaosSurgeTurn`).
+   * expira sozinho, só é interrompido pelo próximo surto sorteado (ver
+   * `CHAOS_SURGE_CHANCE`, checado a cada meio-turno em `tickGlobalClock`,
+   * `gameStore.ts`).
    *
-   * Duração fixa (`CHAOS_RULE_DURATION_TURNS`, não mais um intervalo
-   * aleatório): o modelo antigo sorteava 2–4 turnos e ponderava a escolha da
-   * regra fortemente a favor de `NORMAL`, o que na prática fazia o caos
-   * "sumir" com frequência e dava a impressão de que nada estava
-   * acontecendo. Cadência fixa e determinística elimina essa ambiguidade.
+   * Duração fixa (`CHAOS_RULE_DURATION_TURNS`) uma vez que o surto começa —
+   * só o GATILHO do surto é sorteado, não a duração dele. O modelo antigo
+   * (bem mais antigo que a versão determinística que isto substituiu)
+   * sorteava 2–4 turnos e ponderava a escolha da regra fortemente a favor de
+   * `NORMAL`, o que na prática fazia o caos "sumir" com frequência — daí a
+   * duração fixa ter sido mantida mesmo voltando o GATILHO a ser sorteado.
    */
   ruleExpiresAtTurn: number | null;
 
@@ -522,6 +542,10 @@ export interface GameState {
   /** Aviso mais recente. Efêmero — alimenta o toast sobre o tabuleiro. */
   lastNotice: Notice | null;
   nextNoticeId: number;
+
+  /** Um lote de cartas recebido por `drawCardsFor`, com `id` monotônico — ver `lastCardsDrawnFor`. */
+  lastCardsDrawnFor: Record<Combatant, CardsDrawnNotice | null>;
+  nextCardsDrawnIdFor: Record<Combatant, number>;
 
   /**
    * Partida pausada pelo menu de pause.
@@ -670,19 +694,16 @@ export const LOG_LIMIT = 40;
 export const TURNS_PER_GLOBAL_ROUND = 2;
 
 /**
- * Rodadas globais completas entre um surto de caos e o próximo.
- *
- * Antes o terminal "acendia" a cada 2 meios-turnos — o surto numa ponta e o
- * retorno a NORMAL na outra —, o que na prática era uma alteração de regra por
- * rodada e fazia o caos parecer constante e sem causa. Agora só o SURTO conta
- * como ativação (o retorno a NORMAL é uma calmaria silenciosa, ver
- * `ChaosTerminal`), e ele acontece uma vez a cada 2 rodadas globais.
+ * Chance de um novo surto de caos disparar a CADA meio-turno, enquanto
+ * calmo (`activeRule === 'NORMAL'`) — substitui a cadência fixa antiga
+ * (sempre a cada 2 rodadas globais, sem falha) por sorteio de verdade, pro
+ * caos ser genuinamente imprevisível: às vezes um turno de sorte, às vezes
+ * 10+ sem surto. `1 / CHAOS_SURGE_CHANCE = 4` meios-turnos é o intervalo
+ * MÉDIO entre surtos — igual à cadência fixa de antes, só que com variância
+ * real agora. Consumida no canal `RULES` (`tickGlobalClock`, `gameStore.ts`),
+ * o mesmo canal que já sorteia QUAL regra caótica ativa.
  */
-export const CHAOS_SURGE_INTERVAL_ROUNDS = 2;
-
-/** A cada quantos meios-turnos um novo surto de caos troca a regra ativa. */
-export const CHAOS_SURGE_INTERVAL_TURNS =
-  CHAOS_SURGE_INTERVAL_ROUNDS * TURNS_PER_GLOBAL_ROUND;
+export const CHAOS_SURGE_CHANCE = 0.25;
 
 /** Quantos turnos globais uma regra caótica dura antes de reverter a NORMAL. */
 export const CHAOS_RULE_DURATION_TURNS = 2;
@@ -703,8 +724,15 @@ export const CARD_RULE_MIN_DURATION_TURNS = 2;
 /** A cada quantas jogadas globais completas cada lado recebe 1 carta. */
 export const AUTO_DRAW_INTERVAL_TURNS = 6;
 
-/** Cartas na mão inicial de cada lado, distribuídas por `startMatch`. */
-export const OPENING_HAND_SIZE = 2;
+/**
+ * Cartas na mão inicial de cada lado, distribuídas por `startMatch`.
+ *
+ * Zero de propósito (era 2): começar sem cartas ensina o tabuleiro primeiro
+ * — só depois, via a 1ª compra automática (`AUTO_DRAW_INTERVAL_TURNS`), o
+ * jogador conhece o sistema de cartas. Melhora a progressão pra quem tá
+ * vendo o jogo pela primeira vez.
+ */
+export const OPENING_HAND_SIZE = 0;
 
 /** Combinações vencedoras no grid achatado. */
 export const WIN_LINES: readonly (readonly [number, number, number])[] = [
@@ -856,9 +884,26 @@ export function adjacentIndexes(index: number): number[] {
   return out;
 }
 
-/** `index` tem ao menos 1 vizinho ortogonal vazio no tabuleiro? (DESLIZAR) */
-export function hasAdjacentEmpty(board: Board, index: number): boolean {
-  return adjacentIndexes(index).some((neighbor) => board[neighbor] === null);
+/**
+ * Vizinhos ortogonais de `index` que estão vazios E disponíveis (não
+ * travados por TRAVAR nem interditados pela regra de caos `BLOCKED_CELL`) —
+ * destinos de verdade para DESLIZAR/TROPEÇAR. Antes desta função, os dois
+ * únicos call sites (`isValidTarget`/`canPlay`/o 1º passo de `effect` em
+ * `registry.ts`) só checavam `board[i] === null`, então uma célula vazia MAS
+ * travada/bloqueada contava como destino válido — o motor nunca sabia que
+ * essas duas travas existiam. `isCellUnavailable` (abaixo) é a mesma checagem
+ * que `canPlaceAt` já usa para jogada normal; centralizar aqui fecha o buraco
+ * nos dois lugares de uma vez, em vez de reimplementar a exclusão duas vezes.
+ */
+export function eligibleSlideDestinations(state: GameState, index: number): number[] {
+  return adjacentIndexes(index).filter(
+    (neighbor) => state.board[neighbor] === null && !isCellUnavailable(state, neighbor),
+  );
+}
+
+/** `index` tem ao menos 1 destino de deslize disponível? (DESLIZAR/TROPEÇAR) */
+export function hasAdjacentEmpty(state: GameState, index: number): boolean {
+  return eligibleSlideDestinations(state, index).length > 0;
 }
 
 /** Procura uma linha fechada. Retorna o vencedor e a linha, ou `null`. */
@@ -941,11 +986,6 @@ export function isValidTargetForCard(
  */
 export function isChaosRuleExpired(state: GameState): boolean {
   return state.ruleExpiresAtTurn !== null && state.turnCount >= state.ruleExpiresAtTurn;
-}
-
-/** É turno de um novo surto de caos (`CHAOS_SURGE_INTERVAL_TURNS` em turnos)? */
-export function isChaosSurgeTurn(turnCount: number): boolean {
-  return turnCount > 0 && turnCount % CHAOS_SURGE_INTERVAL_TURNS === 0;
 }
 
 /**

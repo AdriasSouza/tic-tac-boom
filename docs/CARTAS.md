@@ -150,10 +150,37 @@
     `effect()` de verdade, fluindo pelo mesmo caminho genérico de reentrada que os outros 4 `kind`s
     (`PICK_ONE_FROM_HAND` etc.) já usam.
 
+  ### TROPEÇAR (`TRIP_PIECE`, novo)
+  - **Custo:** 1⚡ · **Categoria (PDF):** Feitiço (Território) · **Tipo (motor):** `ACTION`
+  - **Efeito exato:** Espelho de DESLIZAR com o alvo invertido — move 1 peça do OPONENTE (não do
+    caster) para uma célula vazia ortogonalmente adjacente (sem diagonais). Não altera
+    `turnPlaced` — é posição, não idade na fila, igual DESLIZAR.
+  - **Abre modal:** Não. **Exige alvo no tabuleiro:** Sim, em 2 passos — primeiro a peça do
+    OPONENTE (só é alvo válido se tiver >=1 vizinho ortogonal vazio E disponível), depois a célula
+    de destino (vizinhos calculados no 1º passo). Reaproveita `eligibleSlideDestinations`
+    (`rules.ts`) que DESLIZAR também usa — as duas cartas nasceram já corrigidas para nunca
+    oferecer uma célula travada por TRAVAR ou interditada pela regra de caos `BLOCKED_CELL` como
+    destino (bug encontrado e corrigido nas duas ao mesmo tempo, ver Parte 1 do plano desta
+    entrega).
+  - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
+  - **Casos de borda:**
+    - **Indisponível se o oponente não tiver peças, ou se nenhuma delas tiver vizinho vazio
+      disponível.**
+    - Mirar a própria peça (em vez da do oponente) é sempre alvo inválido.
+  - **Nota de migração:** carta NOVA. Reaproveita o `kind: 'PICK_BOARD_CELL'` que DESLIZAR já abriu
+    — nenhum `pendingInteraction` novo. CPU: heurística DEFENSIVA e não ofensiva (`findDisruptiveTrip`,
+    `cpu.ts`) — TROPEÇAR nunca fecha linha pra CPU (move a peça do humano, não a própria), então o
+    gatilho é desarmar uma ameaça de vitória iminente do humano (2 peças na linha + 1 célula vazia),
+    tirando uma delas da linha.
+
   ### PRESSÁGIO (`SCRY_DECK`, novo — patch pós-Fase 7a)
   - **Custo:** 1⚡ · **Categoria (PDF):** Informação · **Tipo (motor):** `ACTION`
   - **Efeito exato:** Abre um modal mostrando as 3 próximas cartas do topo do baralho global, na
     ordem, SEM comprá-las — só uma olhada.
+  - **Não é garantia de posse:** o baralho é uma fila ÚNICA, compartilhada pelos dois lados (ver
+    "Mecanismo" abaixo) — não existe "a próxima carta DO jogador", só "a próxima carta a sair do
+    canal `CARDS`". O texto da carta e o modal deixam isso explícito para não insinuar que as 3
+    cartas mostradas necessariamente vão parar na mão de quem espiou.
   - **Abre modal:** Sim (visualização, sem seleção — botão único de confirmação). **Exige alvo no
     tabuleiro:** Não.
   - **Anulável por armadilha:** Sim, por ANTIMAGIA (cobertura universal).
@@ -446,7 +473,11 @@
     severas) — nivelada para o tier de informação/manipulação onde ESPIADA e SAQUE já estão.
 
   ### CÁPSULA DO TEMPO (`TIME_CAPSULE`, novo — patch de defesa)
-  - **Custo:** 1⚡ · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
+  > **Raridade/custo pós-Fase 7a: LENDÁRIA/3⚡** (era RARA/1⚡ — esta entrada segue listada em
+  > Raras por localização histórica do documento; ver "Lendárias", abaixo, para o resto das
+  > cartas dessa faixa). Driblar uma morte garantida e ainda sair com 2 cartas de bônus é forte
+  > demais pra entrar na mesa por 1⚡.
+  - **Custo:** 3⚡ (patch de ritmo — antes 1⚡) · **Categoria (PDF):** Armadilha · **Tipo (motor):** `TRAP`
   - **Efeito exato:** Virada na mesa. Gatilho passivo: se o HP do dono chegar a 0, a armadilha
     intercepta ANTES de encerrar a partida — ele sobrevive com 1 HP, compra 2 cartas imediatamente,
     e a armadilha é consumida no processo.

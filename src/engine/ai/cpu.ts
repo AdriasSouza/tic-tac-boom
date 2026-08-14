@@ -14,8 +14,10 @@ import {
   handKeyFor,
   hpOf,
   isCellUnavailable,
+  opponentOf,
   shieldKeyFor,
   trapsKeyFor,
+  WIN_LINES,
   type Board,
   type Combatant,
   type GameState,
@@ -193,6 +195,36 @@ function findWinningSlide(
   return null;
 }
 
+/**
+ * Peça do OPONENTE de `cpu` que faz parte de uma ameaça de vitória iminente
+ * dele (2 peças já na linha, 1 célula vazia) e tem para onde tropeçar —
+ * TROPEÇAR/`TRIP_PIECE`. Diferente de `findWinningSlide`, a urgência aqui é
+ * DEFENSIVA, não ofensiva: TROPEÇAR nunca fecha linha PRA CPU (move a peça
+ * do OUTRO lado), então o gatilho certo é desarmar a ameaça do adversário,
+ * não perseguir uma vitória própria que a carta não pode entregar. Uma vez a
+ * ORIGEM certa escolhida, qualquer destino elegível já desarma a linha —
+ * `resolveCpuInteraction` (abaixo) não precisa de tratamento especial pro 2º
+ * passo, o sorteio ingênuo de sempre já serve.
+ */
+function findDisruptiveTrip(state: GameState, cpu: Combatant): { origin: number } | null {
+  const human = opponentOf(cpu);
+
+  for (const line of WIN_LINES) {
+    const humanCount = line.filter((i) => state.board[i]?.owner === human).length;
+    const emptyCount = line.filter((i) => state.board[i] === null).length;
+    if (humanCount !== 2 || emptyCount !== 1) continue;
+
+    const origin = line.find(
+      (i) =>
+        state.board[i]?.owner === human &&
+        adjacentIndexes(i).some((n) => state.board[n] === null && !isCellUnavailable(state, n)),
+    );
+    if (origin !== undefined) return { origin };
+  }
+
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                CARTAS DA CPU                                */
 /* -------------------------------------------------------------------------- */
@@ -273,7 +305,19 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     }
   }
 
-  // 6. Remove a própria interdição antes de tentar jogar no tabuleiro. LIMPAR
+  // 6. TROPEÇAR (carta nova) — desarma uma ameaça de vitória iminente do
+  // HUMANO tirando uma das 2 peças da linha quase fechada da posição. Nunca
+  // fecha linha PRA CPU (move a peça do outro lado), então a urgência aqui é
+  // defensiva, não ofensiva — ver `findDisruptiveTrip`.
+  const trip = find('TRIP_PIECE');
+  if (trip) {
+    const disruptive = findDisruptiveTrip(state, CPU);
+    if (disruptive) {
+      return { uid: trip.uid, cardId: trip.cardId, targetIndex: disruptive.origin };
+    }
+  }
+
+  // 7. Remove a própria interdição antes de tentar jogar no tabuleiro. LIMPAR
   // só cobre o bloqueio do caos; PURIFICAR cobre os dois — ambas exigem alvo
   // agora (a própria célula interditada), diferente da antiga CLEANSE global.
   const clearBlock = find('CLEAR_BLOCK');
@@ -286,11 +330,11 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (target !== null) return { uid: cleanse.uid, cardId: cleanse.cardId, targetIndex: target };
   }
 
-  // 7. TURNO EXTRA é sempre bom e nunca tem alvo — sem desvantagem.
+  // 8. TURNO EXTRA é sempre bom e nunca tem alvo — sem desvantagem.
   const extra = find('TURNO_EXTRA');
   if (extra && state.extraTurnPending !== CPU) return { uid: extra.uid, cardId: extra.cardId };
 
-  // 8. Arma a primeira armadilha disponível, se sobrar espaço na mesa —
+  // 9. Arma a primeira armadilha disponível, se sobrar espaço na mesa —
   // cobre MINA, PROTEÇÃO, ANTIMAGIA, RICOCHETE e as 3 armadilhas novas
   // (TIME_CAPSULE, TRIPWIRE, PARADOX) de graça, por categoria
   // (`TRAP_CARD_IDS`). TIME_CAPSULE já tem prioridade PRÓPRIA acima (item 3)
@@ -301,7 +345,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (trap) return { uid: trap.uid, cardId: trap.cardId };
   }
 
-  // 9. Demolir a peça mais velha do HUMANO, só quando ele já tem 3 no
+  // 10. Demolir a peça mais velha do HUMANO, só quando ele já tem 3 no
   // tabuleiro (senão a carta só abriria espaço de graça para ele).
   const breakPiece = find('BREAK_PIECE');
   if (breakPiece) {
@@ -309,7 +353,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (target !== null) return { uid: breakPiece.uid, cardId: breakPiece.cardId, targetIndex: target };
   }
 
-  // 10. RENOVAR (carta nova) — só a partir de 3 peças próprias no tabuleiro
+  // 11. RENOVAR (carta nova) — só a partir de 3 peças próprias no tabuleiro
   // (mesma exigência do `canPlay` da carta, `registry.ts`) — a fila do
   // "infinito" só ameaça a partir daí; com menos, renovar não atrasaria
   // sumiço nenhum de verdade.
@@ -321,7 +365,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     }
   }
 
-  // 11. SAQUE e ESPIONAGEM: as duas mexem na mão do humano de verdade agora
+  // 12. SAQUE e ESPIONAGEM: as duas mexem na mão do humano de verdade agora
   // (SAQUE tem 50% de chance de roubar; ESPIONAGEM sempre descobre E
   // descarta) — prioridade parecida, só incomodam se ele tiver o que perder.
   const raid = find('HAND_RAID');
@@ -333,14 +377,14 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     return { uid: spyCard.uid, cardId: spyCard.cardId };
   }
 
-  // 12. APAGÃO (carta nova) — só vale a pena drenando energia relevante do
+  // 13. APAGÃO (carta nova) — só vale a pena drenando energia relevante do
   // humano, senão é 2⚡ desperdiçados numa recarga de +1 que ele nem sentiria.
   const blackout = find('BLACKOUT');
   if (blackout && state[energyKeyFor(HUMAN)] >= 2) {
     return { uid: blackout.uid, cardId: blackout.cardId };
   }
 
-  // 13. Trava uma célula vazia aleatória — disrupção de baixo custo. Nunca a
+  // 14. Trava uma célula vazia aleatória — disrupção de baixo custo. Nunca a
   // que já está lacrada: o efeito recusaria e a carta voltaria para a mão.
   const lock = find('LOCK_CELL');
   if (lock) {
@@ -350,7 +394,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (empty.length > 0) return { uid: lock.uid, cardId: lock.cardId, targetIndex: rng.pick(empty) };
   }
 
-  // 14. VIDENTE agora DESTRÓI a peça marcada (não só revela) — mirar na mais
+  // 15. VIDENTE agora DESTRÓI a peça marcada (não só revela) — mirar na mais
   // ANTIGA do humano seria desperdício, ela já sumiria sozinha em breve pelo
   // "infinito"; a mais NOVA é o alvo que rende de verdade, porque não sairia
   // do tabuleiro por conta própria tão cedo.
@@ -361,10 +405,10 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     if (newest !== null) return { uid: reveal.uid, cardId: reveal.cardId, targetIndex: newest };
   }
 
-  // 15. Cura não-crítica — melhor que deixar a carta parada na mão.
+  // 16. Cura não-crítica — melhor que deixar a carta parada na mão.
   if (heal) return { uid: heal.uid, cardId: heal.cardId };
 
-  // 16. Compra por último: preenche a mão quando nada mais se aplica.
+  // 17. Compra por último: preenche a mão quando nada mais se aplica.
   // PROCRASTINAR II primeiro — mesma ideia, mais cartas — quando a energia
   // alcançar; `find` já garante que só é escolhida se couber no turno.
   const drawBig = find('STUDY_II');
@@ -372,7 +416,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   const draw = find('STUDY');
   if (draw && hand.length < HAND_LIMIT) return { uid: draw.uid, cardId: draw.cardId };
 
-  // 17. Puramente informativas — a CPU já decide com o estado inteiro à
+  // 18. Puramente informativas — a CPU já decide com o estado inteiro à
   // vista, então não ganham nada mecânico, mas apodrecer na mão é pior. Do
   // lado do jogador viram um aviso concreto de que foi espiado.
   const fullIntel = find('FULL_INTEL');
@@ -382,14 +426,14 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
   const peek = find('PEEK_RANDOM');
   if (peek && state[handKeyFor(HUMAN)].length > 0) return { uid: peek.uid, cardId: peek.cardId };
 
-  // 18. PRESSÁGIO (carta nova) — zero ganho mecânico pra CPU (ela não tem
+  // 19. PRESSÁGIO (carta nova) — zero ganho mecânico pra CPU (ela não tem
   // como "lembrar" do que viu, só decide com o `state` inteiro à vista), mas
   // apodrecer na mão é pior — mesmo racional do item 17. Baixa prioridade,
   // só preenche energia que sobraria sem uso.
   const scry = find('SCRY_DECK');
   if (scry && rng.chance(0.2)) return { uid: scry.uid, cardId: scry.cardId };
 
-  // 19. RECICLAR (carta nova) — troca 1 carta parada por outra, quando não
+  // 20. RECICLAR (carta nova) — troca 1 carta parada por outra, quando não
   // há nada melhor a fazer com a energia sobrando. A escolha de QUAL
   // descartar já cai na heurística ingênua existente (`PICK_ONE_FROM_HAND`
   // em `resolveCpuInteraction`).
@@ -398,13 +442,13 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     return { uid: mulligan.uid, cardId: mulligan.cardId };
   }
 
-  // 20. TROCAR é alto risco (pode devolver uma carta melhor ao oponente) —
+  // 21. TROCAR é alto risco (pode devolver uma carta melhor ao oponente) —
   // só ocasionalmente, nunca como prioridade. Mesma cautela da antiga TROCA
   // (mão inteira), agora só entre uma carta de cada lado.
   const trade = find('HAND_SWAP');
   if (trade && rng.chance(0.15)) return { uid: trade.uid, cardId: trade.cardId };
 
-  // 21. DESLIZAR oportunista (carta nova) — sem vitória garantida (item 5 já
+  // 22. DESLIZAR oportunista (carta nova) — sem vitória garantida (item 5 já
   // pegou esse caso), só reposiciona uma peça própria quando não há nada
   // melhor a fazer. `resolveCpuInteraction` decide o destino.
   if (slide) {
@@ -416,7 +460,7 @@ export function chooseCpuCardPlay(state: GameState): CpuCardPlay | null {
     }
   }
 
-  // 22. TIC TAC BOOM! é de graça (custo 0) e o resultado é imprevisível para
+  // 23. TIC TAC BOOM! é de graça (custo 0) e o resultado é imprevisível para
   // os dois lados — sem leitura estratégica clara, só entra ocasionalmente
   // como uma última cartada em vez de deixar a energia sobrando sem uso.
   const roulette = find('CHAOS_ROULETTE');
@@ -486,10 +530,16 @@ export function chooseCpuMove(state: GameState, positionalBias = true): CpuDecis
  * `BOARD_TARGET` nunca chega aqui: a CPU sempre resolve o alvo sozinha ANTES
  * de jogar a carta (`chooseCpuCardPlay` devolve `targetIndex` de antemão),
  * então essa carta nunca abre uma interação pra CPU resolver depois. Os
- * outros 5 `kind`s ganham um ramo cada — `PICK_BOARD_CELL` (DESLIZAR, carta
- * nova) é a exceção à heurística ingênua do resto da função: quando algum
- * destino elegível fecha uma linha, escolhe ele em vez de sortear (mesma
- * checagem de `findWinningSlide`, reaproveitando `simulateSlide`).
+ * outros 5 `kind`s ganham um ramo cada — `PICK_BOARD_CELL` (DESLIZAR e
+ * TROPEÇAR, as duas cartas novas que movem peça) é a exceção à heurística
+ * ingênua do resto da função: quando algum destino elegível fecha uma linha
+ * PRA CPU, escolhe ele em vez de sortear (mesma checagem de
+ * `findWinningSlide`, reaproveitando `simulateSlide`). Em TROPEÇAR essa
+ * checagem nunca bate de verdade — a peça movida é do HUMANO, não da CPU —
+ * então cai direto no sorteio ingênuo; a escolha inteligente pra TROPEÇAR já
+ * aconteceu antes, na ORIGEM (`findDisruptiveTrip`, `chooseCpuCardPlay`),
+ * não no destino: uma vez a peça certa escolhida para tirar da linha,
+ * qualquer destino já desarma a ameaça.
  */
 function resolveCpuInteraction(pending: PendingInteraction, actions: CpuActions, state: GameState): void {
   const rng = getChannel('AI');

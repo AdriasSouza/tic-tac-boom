@@ -287,7 +287,7 @@ describe('chooseCpuCardPlay — CÁPSULA DO TEMPO (carta nova): prioridade próp
   it('arma quando HP crítico (<=2) e ainda não tem uma armada', () => {
     const state = createTestState({
       turn: 'MACHINE',
-      machineEnergy: 1,
+      machineEnergy: 3,
       machineHp: 2,
       machineHand: [{ uid: 'cap', cardId: 'TIME_CAPSULE' }],
     });
@@ -297,7 +297,7 @@ describe('chooseCpuCardPlay — CÁPSULA DO TEMPO (carta nova): prioridade próp
   it('com HP não crítico, ainda é escolhida pela regra genérica de armadilha (prioridade mais baixa)', () => {
     const state = createTestState({
       turn: 'MACHINE',
-      machineEnergy: 1,
+      machineEnergy: 3,
       machineHp: 5,
       machineTraps: [{ uid: 't1', cardId: 'TIME_CAPSULE' }],
       machineHand: [{ uid: 'cap2', cardId: 'TIME_CAPSULE' }],
@@ -388,6 +388,66 @@ describe('chooseCpuCardPlay — DESLIZAR (carta nova): fecha linha na hora quand
       machineEnergy: 1,
       board,
       machineHand: [{ uid: 'slide', cardId: 'SLIDE_PIECE' }],
+    });
+    expect(chooseCpuCardPlay(state)).toBeNull();
+  });
+});
+
+describe('chooseCpuCardPlay — TROPEÇAR (carta nova): desarma ameaça de vitória do HUMANO', () => {
+  it('tropeça uma peça do HUMANO que faz parte de uma ameaça de 2 na linha + 1 vazia', () => {
+    // PLAYER (humano) tem 0 e 1 na linha [0,1,2], 2 vazia — ameaça de vitória
+    // na próxima jogada. A peça em 0 tem vizinho vazio (3) pra tropeçar.
+    const board = boardWith({
+      0: { owner: 'PLAYER', mark: 'X', turnPlaced: 1 },
+      1: { owner: 'PLAYER', mark: 'X', turnPlaced: 2 },
+    });
+    const state = createTestState({
+      turn: 'MACHINE',
+      machineEnergy: 1,
+      board,
+      machineHand: [{ uid: 'trip', cardId: 'TRIP_PIECE' }],
+    });
+    const decision = chooseCpuCardPlay(state);
+    expect(decision?.cardId).toBe('TRIP_PIECE');
+    expect([0, 1]).toContain(decision?.targetIndex);
+  });
+
+  it('sem ameaça de vitória do humano (menos de 2 na mesma linha), não usa a carta', () => {
+    const board = boardWith({
+      0: { owner: 'PLAYER', mark: 'X', turnPlaced: 1 },
+      4: { owner: 'MACHINE', mark: 'O', turnPlaced: 2 },
+    });
+    const state = createTestState({
+      turn: 'MACHINE',
+      machineEnergy: 1,
+      board,
+      machineHand: [{ uid: 'trip', cardId: 'TRIP_PIECE' }],
+    });
+    expect(chooseCpuCardPlay(state)).toBeNull();
+  });
+
+  it('ameaça existe mas nenhuma das 2 peças tem vizinho vazio — não usa a carta (nada pra tropeçar de verdade)', () => {
+    // Diagonal [0,4,8]: 0 e 4 são do PLAYER, 8 fica vazia (a ameaça) — mas a
+    // diagonal NUNCA é vizinho ORTOGONAL de ninguém (`adjacentIndexes` não
+    // inclui diagonais), então a célula 8 nunca conta como destino de
+    // deslize pra nenhuma das duas peças. Cercando os vizinhos ORTOGONAIS de
+    // 0 e 4 (1, 3, 5, 7 — 3 do MACHINE no limite, a 4ª sobra pro PLAYER sem
+    // criar outra ameaça: com o MEIO das linhas [1,4,7] e [3,4,5] já do
+    // próprio PLAYER, um par ali não fecha nada) as duas peças da ameaça
+    // ficam sem NENHUM destino de deslize.
+    const board = boardWith({
+      0: { owner: 'PLAYER', mark: 'X', turnPlaced: 1 },
+      4: { owner: 'PLAYER', mark: 'X', turnPlaced: 2 },
+      7: { owner: 'PLAYER', mark: 'X', turnPlaced: 3 },
+      1: { owner: 'MACHINE', mark: 'O', turnPlaced: 4 },
+      3: { owner: 'MACHINE', mark: 'O', turnPlaced: 5 },
+      5: { owner: 'MACHINE', mark: 'O', turnPlaced: 6 },
+    });
+    const state = createTestState({
+      turn: 'MACHINE',
+      machineEnergy: 1,
+      board,
+      machineHand: [{ uid: 'trip', cardId: 'TRIP_PIECE' }],
     });
     expect(chooseCpuCardPlay(state)).toBeNull();
   });

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CHAOS_SURGE_CHANCE,
   ENERGY_CAP,
+  OPENING_HAND_SIZE,
   canPlaceAt,
   createEmptyBoard,
   getVanishingIndex,
@@ -11,6 +13,7 @@ import {
   type Board,
   type Piece,
 } from '@/engine/rules';
+import { getChannel, seedMatch } from '@/engine/rng';
 import { createTestState } from '@/engine/testHelpers';
 
 function withPieces(owner: Piece['owner'], indexes: number[]): Board {
@@ -139,5 +142,41 @@ describe('isHighlightedOldestValid — auto-invalidação do destaque de VIDENTE
       highlightedOldestFor: { caster: 'PLAYER', owner: 'MACHINE', index: 2, turnPlaced: 99 },
     });
     expect(isHighlightedOldestValid(state)).toBe(false);
+  });
+});
+
+describe('OPENING_HAND_SIZE — início de progressão', () => {
+  it('é 0: a partida começa sem cartas, de propósito', () => {
+    expect(OPENING_HAND_SIZE).toBe(0);
+  });
+});
+
+describe('CHAOS_SURGE_CHANCE — sorteio de surto de caos (canal RULES)', () => {
+  it('taxa observada fica perto de 25% em 20 000 sorteios', () => {
+    seedMatch(1);
+    const rng = getChannel('RULES');
+    const total = 20_000;
+    let hits = 0;
+    for (let i = 0; i < total; i++) {
+      if (rng.chance(CHAOS_SURGE_CHANCE)) hits++;
+    }
+    const rate = hits / total;
+    // Mesma folga de ±10% relativo já usada pra distribuição de raridade
+    // (`registry.test.ts`) — larga o bastante pra não ser "flaky", apertada
+    // o bastante pra pegar um `chance()` quebrado.
+    expect(rate).toBeGreaterThan(CHAOS_SURGE_CHANCE * 0.9);
+    expect(rate).toBeLessThan(CHAOS_SURGE_CHANCE * 1.1);
+  });
+
+  it('a mesma seed reproduz a mesma sequência de surtos — replay/multiplayer preservados', () => {
+    seedMatch(42);
+    const a = Array.from({ length: 500 }, () => getChannel('RULES').chance(CHAOS_SURGE_CHANCE));
+    seedMatch(42);
+    const b = Array.from({ length: 500 }, () => getChannel('RULES').chance(CHAOS_SURGE_CHANCE));
+    expect(a).toEqual(b);
+    // E não é sempre a mesma resposta — senão o teste acima passaria por
+    // acidente com uma implementação quebrada que sempre devolve `false`.
+    expect(a.some(Boolean)).toBe(true);
+    expect(a.every(Boolean)).toBe(false);
   });
 });

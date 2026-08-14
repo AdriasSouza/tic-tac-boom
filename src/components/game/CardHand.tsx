@@ -324,8 +324,17 @@ export function CardHand({ style }: CardHandProps) {
       )}
 
       {/* Faixa de instrução — sem ela, o modo mira vira um beco sem saída.
-          Cobre os 2 `kind`s que miram célula (ver `isTargeting`, acima). */}
-      {isTargeting && pendingInteraction && (
+          Cobre os 2 `kind`s que miram célula (ver `isTargeting`, acima).
+          `pendingInteraction.caster === localCombatant` (no online): esta
+          faixa nomeia a carta E oferece cancelar — informação e uma ação que
+          só fazem sentido pra quem jogou. O adversário já foi avisado de
+          qual carta é via `CARD_PLAYED` (anúncio de sempre, antes da mira
+          abrir); não precisa ver isto de novo, muito menos com um botão de
+          cancelar que o motor rejeitaria mesmo se tocado (`cancelInteraction`,
+          `gameStore.ts`, já recusa `caster !== combatant`). */}
+      {isTargeting &&
+        pendingInteraction &&
+        (!isOnline || pendingInteraction.caster === localCombatant) && (
         <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)}>
           <Pressable
             onPress={handleCancelTargeting}

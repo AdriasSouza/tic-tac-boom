@@ -677,7 +677,7 @@ describe('forcedVanish não atravessa troca de rodada (bug encontrado limpando c
     // na rodada anterior, que nem existe mais neste tabuleiro novo.
     //
     // `place` neutraliza qualquer surto de caos automático do relógio global
-    // (`turnCount` cruzando `CHAOS_SURGE_INTERVAL_TURNS`, alheio ao que este
+    // (sorteio de `CHAOS_SURGE_CHANCE` a cada meio-turno, alheio ao que este
     // teste verifica) depois de cada jogada — sem isto um BLOCKED_CELL
     // sorteado poderia lacrar uma das células que a sequência ainda precisa.
     const place = (who: 'PLAYER' | 'MACHINE', index: number): void => {
@@ -1151,6 +1151,7 @@ describe('resumeMatch — retomada de partida local/CPU após remount/relançame
       lastTimeCapsuleSave: { target: 'PLAYER' as const, id: 1 },
       lastEnergyDrain: { target: 'PLAYER' as const, amount: 2, id: 1 },
       lastParadoxMirror: { subject: 'PLAYER' as const, id: 1 },
+      lastCardsDrawnFor: { PLAYER: { cardIds: ['STUDY' as CardId], id: 1 }, MACHINE: null },
     };
 
     useGameStore.getState().resumeMatch(snapshot);
@@ -1173,6 +1174,7 @@ describe('resumeMatch — retomada de partida local/CPU após remount/relançame
     expect(state.lastTimeCapsuleSave).toBeNull();
     expect(state.lastEnergyDrain).toBeNull();
     expect(state.lastParadoxMirror).toBeNull();
+    expect(state.lastCardsDrawnFor).toEqual({ PLAYER: null, MACHINE: null });
   });
 
   it('reembolsa uma interação pendente em vez de tentar retomá-la', () => {
@@ -1308,6 +1310,62 @@ describe('BATERIA RESERVA / CÁPSULA DO TEMPO — takeDamage intercepta antes do
     const state = useGameStore.getState();
     expect(state.lastEnergyDrain).toBeNull();
     expect(state.nextEnergyDrainId).toBe(9);
+  });
+});
+
+describe('lastCardsDrawnFor — aviso "VOCÊ RECEBEU: ..." (drawCardsFor)', () => {
+  it('uma compra grava cardIds e id no slot do combatente certo, sem tocar no do outro lado', () => {
+    useGameStore.setState({
+      playerHand: [],
+      nextCardsDrawnIdFor: { PLAYER: 5, MACHINE: 0 },
+      lastCardsDrawnFor: { PLAYER: null, MACHINE: null },
+    });
+    useGameStore.getState().drawCard(1);
+
+    const state = useGameStore.getState();
+    expect(state.lastCardsDrawnFor.PLAYER).toEqual({
+      cardIds: [state.playerHand[0]?.cardId],
+      id: 5,
+    });
+    expect(state.lastCardsDrawnFor.MACHINE).toBeNull();
+    expect(state.nextCardsDrawnIdFor.PLAYER).toBe(6);
+  });
+
+  it('uma compra de várias cartas de uma vez vira UM aviso só, listando todas', () => {
+    useGameStore.setState({ playerHand: [] });
+    useGameStore.getState().drawCard(3);
+
+    const state = useGameStore.getState();
+    expect(state.lastCardsDrawnFor.PLAYER?.cardIds).toHaveLength(3);
+    expect(state.lastCardsDrawnFor.PLAYER?.cardIds).toEqual(state.playerHand.map((c) => c.cardId));
+  });
+
+  it('mão cheia (nada é comprado): não escreve aviso nenhum', () => {
+    const fullHand = Array.from({ length: 5 }, (_, i) => ({ uid: `x${i}`, cardId: 'STUDY' as CardId }));
+    useGameStore.setState({ playerHand: fullHand, lastCardsDrawnFor: { PLAYER: null, MACHINE: null } });
+    useGameStore.getState().drawCard(1);
+
+    expect(useGameStore.getState().lastCardsDrawnFor.PLAYER).toBeNull();
+  });
+
+  it('compra automática simultânea dos dois lados (mesma pilha síncrona) preserva os DOIS avisos — slot único apagaria um deles', () => {
+    useGameStore.setState({
+      playerHand: [],
+      machineHand: [],
+      nextCardsDrawnIdFor: { PLAYER: 0, MACHINE: 0 },
+      lastCardsDrawnFor: { PLAYER: null, MACHINE: null },
+    });
+
+    // Mesma sequência de chamadas que `tickGlobalClock` faz na compra
+    // automática — de propósito, uma logo depois da outra, sem `await`.
+    useGameStore.getState().drawCard(1);
+    useGameStore.getState().drawMachineCard(1);
+
+    const state = useGameStore.getState();
+    expect(state.lastCardsDrawnFor.PLAYER).not.toBeNull();
+    expect(state.lastCardsDrawnFor.MACHINE).not.toBeNull();
+    expect(state.lastCardsDrawnFor.PLAYER?.cardIds).toEqual([state.playerHand[0]?.cardId]);
+    expect(state.lastCardsDrawnFor.MACHINE?.cardIds).toEqual([state.machineHand[0]?.cardId]);
   });
 });
 

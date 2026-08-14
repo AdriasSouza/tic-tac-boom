@@ -6,8 +6,7 @@ import { getChannel, getMatchSeed, seedMatch } from '@/engine/rng';
 import {
   AUTO_DRAW_INTERVAL_TURNS,
   CHAOS_RULE_DURATION_TURNS,
-  CHAOS_SURGE_INTERVAL_ROUNDS,
-  CHAOS_SURGE_INTERVAL_TURNS,
+  CHAOS_SURGE_CHANCE,
   ENERGY_CAP,
   HAND_LIMIT,
   INITIAL_HP,
@@ -33,7 +32,6 @@ import {
   isCellLocked,
   isCellUnavailable,
   isChaosRuleExpired,
-  isChaosSurgeTurn,
   isHighlightedOldestValid,
   isLockedCellExpired,
   isValidTargetForCard,
@@ -45,6 +43,7 @@ import {
   trapsKeyFor,
   type AcknowledgementCode,
   type AcknowledgementKind,
+  type CardsDrawnNotice,
   type ChaosRule,
   type Combatant,
   type GameState,
@@ -72,10 +71,19 @@ const ROUND_TRANSITION_DELAY_MS = 1300;
  * `chaosRouletteSpinning` volta a `false`. Mudar aqui move as três coisas
  * juntas — nunca duplicar estes números em outro arquivo.
  */
-export const CHAOS_ROULETTE_COLUMN_STOP_MS: readonly [number, number, number] = [900, 1700, 2500];
+export const CHAOS_ROULETTE_COLUMN_STOP_MS: readonly [number, number, number] = [1200, 2300, 3400];
 
-/** Intervalo entre trocas de glifo enquanto uma célula ainda gira. */
+/** Intervalo INICIAL entre trocas de glifo enquanto uma célula ainda gira — desacelera perto do fim (ver `CHAOS_ROULETTE_FLICKER_DECEL_MS`). */
 export const CHAOS_ROULETTE_FLICKER_MS = 90;
+
+/**
+ * Quanto o intervalo entre trocas de glifo CRESCE conforme a coluna se
+ * aproxima do próprio horário de travar — o que dá a sensação de "rolo
+ * caindo até parar" em vez de um flicker de cadência constante que corta
+ * seco. Somado a `CHAOS_ROULETTE_FLICKER_MS` no pico (bem no fim do giro
+ * da coluna): intervalo efetivo vai de ~90ms no início a ~350ms no fim.
+ */
+export const CHAOS_ROULETTE_FLICKER_DECEL_MS = 260;
 
 /** Fade de entrada/saída do destaque laranja por célula. */
 export const CHAOS_ROULETTE_FADE_MS = 120;
@@ -126,8 +134,7 @@ function beginTurn(
 export {
   AUTO_DRAW_INTERVAL_TURNS,
   CHAOS_RULE_DURATION_TURNS,
-  CHAOS_SURGE_INTERVAL_ROUNDS,
-  CHAOS_SURGE_INTERVAL_TURNS,
+  CHAOS_SURGE_CHANCE,
   ENERGY_CAP,
   HAND_LIMIT,
   INITIAL_HP,
@@ -167,6 +174,7 @@ export type {
   AcknowledgementCode,
   AcknowledgementKind,
   CardId,
+  CardsDrawnNotice,
   Combatant,
   GameState,
   InteractionSelection,
@@ -422,8 +430,9 @@ const createInitialState = (): GameState => ({
   pendingAcknowledgement: null,
   nextAcknowledgementId: 0,
   machineHand: [],
-  // `null`: NORMAL não expira sozinho. O 1º surto vem naturalmente quando
-  // `turnCount` alcançar `CHAOS_SURGE_INTERVAL_TURNS` (ver `tickGlobalClock`).
+  // `null`: NORMAL não expira sozinho. O 1º surto vem do sorteio a cada
+  // meio-turno (`CHAOS_SURGE_CHANCE`, ver `tickGlobalClock`), não de uma
+  // cadência fixa.
   ruleExpiresAtTurn: null,
   lastDamageEvent: null,
   nextDamageEventId: 0,
@@ -434,6 +443,8 @@ const createInitialState = (): GameState => ({
   chaosRouletteSpinning: false,
   lastNotice: null,
   nextNoticeId: 0,
+  lastCardsDrawnFor: { PLAYER: null, MACHINE: null },
+  nextCardsDrawnIdFor: { PLAYER: 0, MACHINE: 0 },
   isPaused: false,
   isOnline: false,
   terminalLog: [],
@@ -593,11 +604,14 @@ export const useGameStore = create<GameStore>()((set, get) => {
    * 1. distribuir 1 carta para cada lado a cada `AUTO_DRAW_INTERVAL_TURNS`;
    * 2. reverter a regra caótica para NORMAL quando `ruleExpiresAtTurn` for
    *    alcançado (dura exatamente `CHAOS_RULE_DURATION_TURNS` turnos);
-   * 3. disparar um novo surto a cada `CHAOS_SURGE_INTERVAL_TURNS` turnos.
+   * 3. sortear (`CHAOS_SURGE_CHANCE`, canal `RULES`) se um novo surto começa
+   *    AGORA — a cada meio-turno, não mais numa cadência fixa.
    *
-   * A ordem (reverter ANTES de checar novo surto) importa só no caso raro de
-   * as duas janelas coincidirem no mesmo turno — reverter primeiro garante
-   * que o novo surto sempre parte de NORMAL, nunca de uma regra "vencida".
+   * A ordem (reverter ANTES de sortear novo surto) é o que garante que o
+   * sorteio sempre parte de NORMAL, nunca de uma regra "vencida" no mesmo
+   * turno — sem essa ordem, o gate `activeRule === 'NORMAL'` do sorteio
+   * poderia recusar um surto novo só porque a regra antiga ainda não tinha
+   * sido oficialmente revertida neste mesmo tick.
    */
   function tickGlobalClock(nextTurnCount: number): void {
     if (isAutoDrawTurn(nextTurnCount)) {
@@ -617,13 +631,16 @@ export const useGameStore = create<GameStore>()((set, get) => {
       get().applyChaosRule('NORMAL');
     }
 
-    // `isChaosSurgeTurn` já embute `turnCount > 0` internamente — o teste
-    // fica repetido aqui, explícito, como segunda linha de defesa: nenhum
-    // surto pode nascer de `nextTurnCount === 0`, nem que uma futura edição
-    // daquela função em `rules.ts` derrube a guarda por engano. Turno 0 é
-    // "partida acabou de começar, tabuleiro vazio" — caos ali seria o jogador
-    // vendo o terminal "ligar" antes de qualquer peça existir para reagir.
-    if (nextTurnCount > 0 && isChaosSurgeTurn(nextTurnCount)) {
+    // `nextTurnCount > 0`: turno 0 é "partida acabou de começar, tabuleiro
+    // vazio" — caos ali seria o jogador vendo o terminal "ligar" antes de
+    // qualquer peça existir para reagir. `activeRule === 'NORMAL'`: só
+    // sorteia um surto NOVO enquanto calmo — um surto já em andamento
+    // continua até `ruleExpiresAtTurn`, sem chance de se sobrepor a outro
+    // (o antigo intervalo fixo garantia isso por construção — folga de 2
+    // meios-turnos entre o fim de um surto e o início do próximo, já que o
+    // intervalo era 4 e a duração 2; sorteio a cada meio-turno não tem essa
+    // folga automática, daí o gate explícito).
+    if (nextTurnCount > 0 && get().activeRule === 'NORMAL' && getChannel('RULES').chance(CHAOS_SURGE_CHANCE)) {
       get().triggerTerminalGlitch();
     }
   }
@@ -696,11 +713,36 @@ export const useGameStore = create<GameStore>()((set, get) => {
     return state.isOnline || caster === 'MACHINE';
   }
 
+  /**
+   * Aviso não-bloqueante ("Você recebeu: ...") de que carta(s) específica(s)
+   * acabaram de entrar na mão de `target` — puramente informativo, nunca
+   * pausa o jogo (não é `pendingAcknowledgement`). Slot DEDICADO por
+   * combatente (`lastCardsDrawnFor`, `rules.ts`), não um slot único
+   * compartilhado: a compra automática credita os dois lados na MESMA pilha
+   * síncrona (`drawCardsFor('PLAYER',1); drawCardsFor('MACHINE',1);`,
+   * `tickGlobalClock` abaixo), e um slot único faria a 2ª escrita apagar a
+   * 1ª antes de qualquer tela chegar a mostrá-la.
+   */
+  function noticeCardsReceived(target: Combatant, cardIds: CardId[]): void {
+    if (cardIds.length === 0) return;
+    set((state) => ({
+      lastCardsDrawnFor: {
+        ...state.lastCardsDrawnFor,
+        [target]: { cardIds, id: state.nextCardsDrawnIdFor[target] },
+      },
+      nextCardsDrawnIdFor: {
+        ...state.nextCardsDrawnIdFor,
+        [target]: state.nextCardsDrawnIdFor[target] + 1,
+      },
+    }));
+  }
+
   /** Implementação compartilhada de `drawCard`/`drawMachineCard`. */
   function drawCardsFor(target: Combatant, count: number): void {
     const rng = getChannel('CARDS');
     const key = handKeyFor(target);
     const before = get()[key].length;
+    const drawnIds: CardId[] = [];
 
     set((state) => {
       const hand = [...state[key]];
@@ -709,6 +751,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
       for (let i = 0; i < count && hand.length < HAND_LIMIT; i++) {
         const cardId = drawCardId(rng);
         hand.push({ uid: `${cardId}#${uid++}`, cardId });
+        drawnIds.push(cardId);
       }
 
       // Identidade nova só se algo entrou — evita re-render à toa da mão.
@@ -717,6 +760,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
 
     if (get()[key].length > before) {
       get().dispatchEvent({ type: 'CARD_DRAWN', player: target });
+      noticeCardsReceived(target, drawnIds);
     }
   }
 
@@ -1584,6 +1628,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
       lastTimeCapsuleSave: null,
       lastEnergyDrain: null,
       lastParadoxMirror: null,
+      lastCardsDrawnFor: { PLAYER: null, MACHINE: null },
     });
 
     // Uma interação a meio caminho (mira, escolha, sacrifício) também
@@ -2107,6 +2152,15 @@ export const selectLastEnergyDrain = (s: GameStore) => s.lastEnergyDrain;
 /** Cópia de PARADOXO mais recente, com `id` monotônico. Alimenta `<ParadoxEchoOverlay />`. */
 export const selectLastParadoxMirror = (s: GameStore) => s.lastParadoxMirror;
 
+/**
+ * Lote de cartas recebido mais recentemente por UM combatente, com `id`
+ * monotônico — fábrica de seletor (não um seletor único) porque o slot é POR
+ * COMBATENTE (`lastCardsDrawnFor`, `rules.ts`): `<CardsReceivedToast />`
+ * monta uma instância por lado, cada uma assinando só o próprio campo.
+ */
+export const selectLastCardsDrawnFor = (target: Combatant) => (s: GameStore) =>
+  s.lastCardsDrawnFor[target];
+
 /** O giro ainda está em cascata? Trava `<Cell />`/`<CardHand />` enquanto a
  * apresentação não termina (ver comentário de `chaosRouletteSpinning` no
  * `GameState`). */
@@ -2140,6 +2194,21 @@ export const selectIsInteracting = (s: GameStore) => s.pendingInteraction !== nu
  * — DESLIZAR passo 2, mesma UI de mira, célula em vez de carta na mão)? */
 export const selectIsTargeting = (s: GameStore) =>
   s.pendingInteraction?.kind === 'BOARD_TARGET' || s.pendingInteraction?.kind === 'PICK_BOARD_CELL';
+
+/**
+ * Caster da mira atual (`BOARD_TARGET`/`PICK_BOARD_CELL`, os 2 `kind`s de
+ * `selectIsTargeting`), ou `null` fora de mira. Usado pra esconder a UI de
+ * mira (brilho de célula alvo em `<Cell />`, faixa "◎ ESCOLHA..." em
+ * `<CardHand />`) do lado que NÃO é o dono da jogada — mesmo racional de
+ * VIDENTE (`highlighted.caster === localCombatant`, `<Cell />`): quem não é
+ * o caster não tem por que ver a informação tática de onde o alvo pode cair.
+ */
+export const selectTargetingCaster = (s: GameStore): Combatant | null => {
+  const pending = s.pendingInteraction;
+  return pending && (pending.kind === 'BOARD_TARGET' || pending.kind === 'PICK_BOARD_CELL')
+    ? pending.caster
+    : null;
+};
 
 /** `uid` da carta em mira, ou `null`. Primitivo, seguro para assinar. */
 export const selectPendingUid = (s: GameStore) =>

@@ -1402,6 +1402,46 @@ describe('TIC TAC BOOM! (CHAOS_ROULETTE) — reshuffle total das peças existent
     // docs/NOTAS_TECNICAS.md. Cobertura ponta a ponta em gameStore.test.ts.
     expect(findWinner(newBoard)).toMatchObject({ winner: 'PLAYER', line: [0, 1, 2] });
   });
+
+  it('exclui célula travada por TRAVAR do sorteio — nunca reembaralha peça para cima dela (bug corrigido)', () => {
+    const board = boardWith({ 0: piece('PLAYER', 1), 4: piece('MACHINE', 2) });
+    const state = createTestState({ board, lockedCell: 3 });
+    let shuffledCandidates: readonly number[] = [];
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng: fixedRng({
+        shuffle: (<T,>(items: readonly T[]) => {
+          shuffledCandidates = items as unknown as readonly number[];
+          return [...items];
+        }),
+      }),
+    });
+    expect(shuffledCandidates).not.toContain(3);
+    expect(shuffledCandidates).toHaveLength(8);
+    const newBoard = result?.patch?.board as Board;
+    expect(newBoard[3]).toBeNull();
+  });
+
+  it('exclui célula interditada pela regra de caos BLOCKED_CELL do sorteio (bug corrigido)', () => {
+    const board = boardWith({ 0: piece('PLAYER', 1) });
+    const state = createTestState({ board, activeRule: 'BLOCKED_CELL', blockedCell: 6 });
+    let shuffledCandidates: readonly number[] = [];
+    card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng: fixedRng({
+        shuffle: (<T,>(items: readonly T[]) => {
+          shuffledCandidates = items as unknown as readonly number[];
+          return [...items];
+        }),
+      }),
+    });
+    expect(shuffledCandidates).not.toContain(6);
+    expect(shuffledCandidates).toHaveLength(8);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1620,6 +1660,142 @@ describe('DESLIZAR (SLIDE_PIECE) — carta nova (patch pós-Fase 7a): move peça
     });
     expect(result).toBeNull();
   });
+
+  it('1º passo: exclui célula travada por TRAVAR dos vizinhos elegíveis (bug corrigido — antes só checava board[i]===null)', () => {
+    const state = createTestState({
+      board: boardWith({ 4: piece('PLAYER', 0) }),
+      lockedCell: 5, // vizinho de 4, vazio mas travado
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 4, rng });
+    expect(result?.interaction?.kind).toBe('PICK_BOARD_CELL');
+    if (result?.interaction?.kind === 'PICK_BOARD_CELL') {
+      expect(result.interaction.eligibleIndexes).not.toContain(5);
+      expect([...result.interaction.eligibleIndexes].sort()).toEqual([1, 3, 7]);
+    }
+  });
+
+  it('2º passo: recusa destino travado por TRAVAR mesmo se forçado via interação sintética (rede de segurança no motor)', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('PLAYER', 7) }), lockedCell: 5 });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: {
+        selection: { kind: 'PICK_BOARD_CELL', index: 5 },
+        priorSelections: [{ kind: 'BOARD_TARGET', index: 4 }],
+      },
+    });
+    expect(result).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                                 TROPEÇAR                                    */
+/* -------------------------------------------------------------------------- */
+
+describe('TROPEÇAR (TRIP_PIECE) — carta nova: move peça do OPONENTE para vizinho vazio, sem mudar a idade', () => {
+  const card = getCard('TRIP_PIECE');
+
+  it('isValidTarget: só peça do OPONENTE com >=1 vizinho ortogonal vazio', () => {
+    const state = createTestState({
+      board: boardWith({
+        4: piece('MACHINE', 0),
+        1: piece('PLAYER', 1),
+        3: piece('PLAYER', 2),
+        5: piece('PLAYER', 3),
+        7: piece('PLAYER', 4),
+      }),
+    });
+    expect(card.isValidTarget?.({ state, caster: 'PLAYER', index: 4 })).toBe(false);
+  });
+
+  it('isValidTarget: peça do oponente com vizinho vazio é alvo válido; peça PRÓPRIA nunca é', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('MACHINE', 0), 1: piece('PLAYER', 1) }) });
+    expect(card.isValidTarget?.({ state, caster: 'PLAYER', index: 4 })).toBe(true);
+    expect(card.isValidTarget?.({ state, caster: 'PLAYER', index: 1 })).toBe(false);
+  });
+
+  it('canPlay: indisponível sem nenhuma peça do oponente com vizinho vazio (tabuleiro cheio ao redor)', () => {
+    const state = createTestState({
+      board: boardWith({
+        4: piece('MACHINE', 0),
+        1: piece('PLAYER', 1),
+        3: piece('PLAYER', 2),
+        5: piece('PLAYER', 3),
+        7: piece('PLAYER', 4),
+      }),
+    });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(false);
+  });
+
+  it('canPlay: disponível com alguma peça do oponente tendo vizinho vazio', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('MACHINE', 0) }) });
+    expect(card.canPlay?.({ state, caster: 'PLAYER', uid: 'x' })).toBe(true);
+  });
+
+  it('1º passo: abre PICK_BOARD_CELL com os vizinhos VAZIOS do alvo escolhido (peça do oponente)', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('MACHINE', 0), 1: piece('PLAYER', 1) }) });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 4, rng });
+    expect(result?.interaction?.kind).toBe('PICK_BOARD_CELL');
+    if (result?.interaction?.kind === 'PICK_BOARD_CELL') {
+      // Vizinhos de 4 são 1,3,5,7 — 1 está ocupado (PLAYER), sobram 3,5,7.
+      expect([...result.interaction.eligibleIndexes].sort()).toEqual([3, 5, 7]);
+    }
+  });
+
+  it('1º passo: recusa mirar a PRÓPRIA peça (targetIndex não é do oponente)', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('PLAYER', 0) }) });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 4, rng });
+    expect(result).toBeNull();
+  });
+
+  it('1º passo: exclui célula travada por TRAVAR dos vizinhos elegíveis (reaproveita eligibleSlideDestinations)', () => {
+    const state = createTestState({
+      board: boardWith({ 4: piece('MACHINE', 0) }),
+      lockedCell: 5,
+    });
+    const result = card.effect({ state, caster: 'PLAYER', uid: 'x', targetIndex: 4, rng });
+    expect(result?.interaction?.kind).toBe('PICK_BOARD_CELL');
+    if (result?.interaction?.kind === 'PICK_BOARD_CELL') {
+      expect(result.interaction.eligibleIndexes).not.toContain(5);
+      expect([...result.interaction.eligibleIndexes].sort()).toEqual([1, 3, 7]);
+    }
+  });
+
+  it('2º passo: move a peça do oponente — some da origem, aparece no destino com o MESMO turnPlaced e dono; log/notice carregam o `target`', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('MACHINE', 7) }) });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: {
+        selection: { kind: 'PICK_BOARD_CELL', index: 5 },
+        priorSelections: [{ kind: 'BOARD_TARGET', index: 4 }],
+      },
+    });
+    const newBoard = result?.patch?.board as Board;
+    expect(newBoard[4]).toBeNull();
+    expect(newBoard[5]).toEqual({ owner: 'MACHINE', mark: 'O', turnPlaced: 7 });
+    expect(result?.log).toMatchObject({ code: 'CARD_TRIP_PIECE', subject: 'PLAYER', target: 'MACHINE', value: 5 });
+    expect(result?.notice).toMatchObject({ code: 'CARD_TRIP_PIECE', subject: 'PLAYER', target: 'MACHINE', value: 5 });
+  });
+
+  it('2º passo: destino não-adjacente (ou ocupado) devolve null — mesma defesa que as outras cartas de 2 passos', () => {
+    const state = createTestState({ board: boardWith({ 4: piece('MACHINE', 7), 8: piece('PLAYER', 1) }) });
+    const result = card.effect({
+      state,
+      caster: 'PLAYER',
+      uid: 'x',
+      rng,
+      interaction: {
+        selection: { kind: 'PICK_BOARD_CELL', index: 8 },
+        priorSelections: [{ kind: 'BOARD_TARGET', index: 4 }],
+      },
+    });
+    expect(result).toBeNull();
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1696,6 +1872,13 @@ describe('CÁPSULA DO TEMPO (TIME_CAPSULE) — carta nova: a regra real vive em 
   it('é uma TRAP sem triggerCondition — não participa do barramento de eventos (ver events.ts, DAMAGE_TAKEN nunca dispara)', () => {
     expect(card.type).toBe('TRAP');
     expect(card.triggerCondition).toBeUndefined();
+  });
+
+  // LENDÁRIA/custo 3 (era RARA/1, `CLAUDE.md` #4) — driblar uma morte
+  // garantida e ainda sair com 2 cartas de bônus é forte demais por 1⚡.
+  it('é LENDÁRIA e custa 3 — forte demais pra entrar na mesa por 1⚡', () => {
+    expect(card.rarity).toBe('LEGENDARY');
+    expect(card.cost).toBe(3);
   });
 
   it('effect() nunca é chamado pelo fluxo normal — devolve null por segurança', () => {

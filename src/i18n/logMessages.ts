@@ -161,8 +161,14 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
       return `espionagem :: ${who} revelou ${entry.value} carta(s) ${whose === 'sua' ? 'de você' : whose}, sem descartar`;
     case 'CARD_SINGLE_TRADE':
       return `trocar :: ${who} trocou uma carta com ${whose === 'sua' ? 'você' : whose} e recebeu ${cardName(entry.value)}`;
+    // A carta escolhida só é nomeada pro próprio dono — pro outro lado seria
+    // revelar o conteúdo da mão dele sem nenhuma carta de espionagem de
+    // permeio (achado ao implementar o aviso de "carta recebida" — mesma
+    // categoria de vazamento já corrigida em TRAP_ARMED/PRESSÁGIO).
     case 'CARD_DRAFT_PICK':
-      return `procrastinar :: ${who} escolheu ${cardName(entry.value)} entre as opções reveladas`;
+      return entry.subject === p.localCombatant
+        ? `procrastinar :: ${who} escolheu ${cardName(entry.value)} entre as opções reveladas`
+        : `procrastinar :: ${who} escolheu 1 carta entre as opções reveladas`;
     case 'CARD_CHAOS_ROULETTE':
       return `tic tac boom :: ${who} embaralhou as peças do tabuleiro`;
     case 'CARD_ALTAR_INVOKED':
@@ -175,6 +181,8 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
       return `reciclar :: ${who} descartou 1 carta e comprou outra`;
     case 'CARD_SLIDE_PIECE':
       return `deslizar :: ${who} moveu uma peça para ${cellLabel(entry.value)}`;
+    case 'CARD_TRIP_PIECE':
+      return `tropeçar :: ${who} fez ${whose === 'sua' ? 'sua peça' : `a peça ${whose}`} tropeçar para ${cellLabel(entry.value)}`;
     case 'CARD_BACKUP_BATTERY':
       return `bateria reserva :: ${who} ativou um escudo contra o próximo dano`;
     case 'CARD_SHIELD_ABSORBED':
@@ -237,7 +245,9 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
     case 'CARD_SINGLE_TRADE':
       return `${who} RECEBEU: ${cardName(entry.value)}`;
     case 'CARD_DRAFT_PICK':
-      return `${who} ESCOLHEU: ${cardName(entry.value)}`;
+      return entry.subject === p.localCombatant
+        ? `${who} ESCOLHEU: ${cardName(entry.value)}`
+        : `${who} ESCOLHEU 1 CARTA`;
     case 'CARD_SHIELD_ABSORBED':
       return 'ESCUDO ABSORVEU O GOLPE';
     case 'CARD_TIME_CAPSULE':
@@ -248,9 +258,38 @@ export function formatNotice(entry: LogPayload, p: LogPerspective): string {
       return `${who} DRENOU ${entry.value}⚡ COM FIO DE ARAME`;
     case 'CARD_PARADOX':
       return `${who} COPIOU: ${cardName(entry.value)}`;
+    case 'CARD_TRIP_PIECE':
+      return `${who} FEZ UMA PEÇA TROPEÇAR`;
     default:
       return formatLogEntry(entry, p).toUpperCase();
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       TEXTO DO AVISO DE CARTA RECEBIDA                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Texto do aviso não-bloqueante "VOCÊ RECEBEU: ..." (`lastCardsDrawnFor`,
+ * `gameStore.ts`). Não passa pelo `formatNotice`/`LogPayload` porque o fato
+ * carrega uma LISTA de cartas (um lote pode ter mais de uma), e `LogPayload.
+ * value` só guarda `string | number` — uma carta só, não um lote.
+ *
+ * Nomeia as cartas só pro próprio dono; o outro lado (online ou CPU, a mão
+ * alheia é sempre secreta) só vê a contagem — mesmo princípio de privacidade
+ * já usado em TRAP_ARMED/CARD_SCRY_DECK/CARD_DRAFT_PICK.
+ */
+export function formatCardsReceivedNotice(
+  subject: Combatant,
+  cardIds: readonly CardId[],
+  p: LogPerspective,
+): string {
+  if (subject === p.localCombatant) {
+    const names = cardIds.map((id) => cardName(id)).join(', ');
+    return `VOCÊ RECEBEU: ${names}`;
+  }
+  const who = shoutName(subject, p);
+  return `${who} RECEBEU ${cardIds.length} CARTA(S)`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -364,14 +403,40 @@ export function formatAcknowledgement(
       };
 
     case 'HAND_REVEALED': {
-      // `INFO`: a ESPIONAGEM já decidiu sozinha (RNG) qual carta descobriu e
-      // descartou — não sobrou escolha nenhuma para o jogador fazer, então o
-      // modal só mostra o resultado, sem grade de cartas viradas para baixo.
+      // Multiplayer online: quem NÃO é o `subject` não pode ver o conteúdo
+      // revelado (é informação privada de quem jogou a carta) — só um texto
+      // genérico dizendo que há algo em andamento. Fora do online (CPU/hot-
+      // seat) `isOnline` já é `false`, então este ramo nunca dispara lá — 0
+      // mudança de comportamento pros modos existentes.
+      const isMine = ack.subject === p.localCombatant;
+
+      // `INFO` (SAQUE, ramo de roubo): a carta já foi escolhida (não é RNG) —
+      // o modal só confirma QUAL era, pro autor da escolha. O alvo já sabia o
+      // próprio prejuízo (é a própria mão dele), não tem nada pra "descobrir".
       if (ack.kind === 'INFO') {
+        if (p.isOnline && !isMine) {
+          return {
+            subtitle: 'SAQUE',
+            title: 'UMA CARTA SUA FOI ROUBADA',
+            description: `Aguarde a confirmação — ${nameOf(ack.subject, p, 'subject')} já sabe qual era.`,
+            tone: 'INTEL',
+          };
+        }
         return {
-          subtitle: 'ESPIONAGEM',
+          subtitle: 'SAQUE',
           title: card?.name ?? 'CARTA DESCOBERTA',
-          description: card?.description ?? 'Você descobriu e descartou uma carta do oponente.',
+          description: card?.description ?? 'Você descobriu e roubou uma carta do oponente.',
+          tone: 'INTEL',
+        };
+      }
+
+      // `INTEL_FLIP` (VISÃO ABSOLUTA): só o caster vê a grade da mão revelada
+      // — o alvo já conhece a própria mão, não precisa de nada novo aqui.
+      if (ack.kind === 'INTEL_FLIP' && p.isOnline && !isMine) {
+        return {
+          subtitle: 'VISÃO ABSOLUTA',
+          title: 'SUA MÃO FOI REVELADA',
+          description: `Aguarde a confirmação — ${nameOf(ack.subject, p, 'subject')} está vendo todas as suas cartas.`,
           tone: 'INTEL',
         };
       }
@@ -394,12 +459,22 @@ export function formatAcknowledgement(
       };
     }
 
-    case 'CARD_SCRY_DECK':
+    case 'CARD_SCRY_DECK': {
+      const isMine = ack.subject === p.localCombatant;
+      if (p.isOnline && !isMine) {
+        return {
+          subtitle: 'PRESSÁGIO',
+          title: 'CONSULTANDO O BARALHO',
+          description: `Aguarde a confirmação — ${nameOf(ack.subject, p, 'subject')} está vendo as próximas cartas.`,
+          tone: 'INTEL',
+        };
+      }
       return {
         subtitle: 'PRESSÁGIO',
         title: 'PRÓXIMAS CARTAS DO BARALHO',
-        description: `As próximas ${ack.revealedCards.length} cartas a sair, na ordem — ninguém mais viu isto.`,
+        description: `As próximas ${ack.revealedCards.length} cartas a sair da fila compartilhada, na ordem — não é garantia de que serão suas.`,
         tone: 'INTEL',
       };
+    }
   }
 }

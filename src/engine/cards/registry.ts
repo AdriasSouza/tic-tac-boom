@@ -6,11 +6,13 @@ import {
   MAX_PIECES_PER_PLAYER,
   TRAP_LIMIT,
   adjacentIndexes,
+  eligibleSlideDestinations,
   energyOf,
   getPieceIndexes,
   handKeyFor,
   hasAdjacentEmpty,
   hpOf,
+  isCellUnavailable,
   isImmuneToTraps,
   occupiedIndexes,
   opponentOf,
@@ -413,10 +415,10 @@ const SLIDE_PIECE: CardDefinition = {
 
   requiresTarget: true,
   isValidTarget: ({ state, caster, index }) =>
-    state.board[index]?.owner === caster && hasAdjacentEmpty(state.board, index),
+    state.board[index]?.owner === caster && hasAdjacentEmpty(state, index),
 
   canPlay: ({ state, caster }) =>
-    occupiedIndexes(state, caster).some((index) => hasAdjacentEmpty(state.board, index)),
+    occupiedIndexes(state, caster).some((index) => hasAdjacentEmpty(state, index)),
 
   effect: (ctx) => {
     const { state, caster, targetIndex } = ctx;
@@ -426,7 +428,7 @@ const SLIDE_PIECE: CardDefinition = {
       const piece = state.board[targetIndex];
       if (!piece || piece.owner !== caster) return null;
 
-      const eligibleIndexes = adjacentIndexes(targetIndex).filter((i) => state.board[i] === null);
+      const eligibleIndexes = eligibleSlideDestinations(state, targetIndex);
       if (eligibleIndexes.length === 0) return null;
 
       return { interaction: { kind: 'PICK_BOARD_CELL', eligibleIndexes } };
@@ -440,6 +442,10 @@ const SLIDE_PIECE: CardDefinition = {
     const piece = state.board[origin.index];
     if (!piece || piece.owner !== caster) return null;
     if (state.board[selection.index] !== null) return null;
+    // Rede de segurança no motor, não só na UI que já filtra `eligibleIndexes`
+    // acima — mesmo princípio de `canPlaceAt` (AGENTS.md: regra de domínio se
+    // garante no motor, não só onde a UI evita oferecer o caminho).
+    if (isCellUnavailable(state, selection.index)) return null;
     if (!adjacentIndexes(origin.index).includes(selection.index)) return null;
 
     const board = [...state.board];
@@ -451,6 +457,75 @@ const SLIDE_PIECE: CardDefinition = {
       log: { code: 'CARD_SLIDE_PIECE', subject: caster, value: selection.index },
       notice: { code: 'CARD_SLIDE_PIECE', subject: caster, value: selection.index, tone: 'NEUTRAL' },
     };
+  },
+};
+
+/**
+ * Carta nova. Espelho de DESLIZAR com o alvo invertido: realoca 1 peça do
+ * OPONENTE (não do caster) para uma célula vizinha vazia e disponível — mesma
+ * restrição ortogonal (`adjacentIndexes`, sem diagonais) e mesmo formato de 2
+ * passos (`BOARD_TARGET` → `PICK_BOARD_CELL`, reaproveitando o `kind` que
+ * DESLIZAR já abriu). Reaproveita `eligibleSlideDestinations` — já nasce sem
+ * o bug de TRAVAR/`BLOCKED_CELL` que DESLIZAR tinha antes desta correção.
+ *
+ * `turnPlaced` também NÃO muda aqui — mesma regra de DESLIZAR, é posição, não
+ * idade.
+ */
+const TRIP_PIECE: CardDefinition = {
+  id: 'TRIP_PIECE',
+  name: 'TROPEÇAR',
+  type: 'ACTION',
+  description:
+    'Mova 1 peça do oponente para uma célula vazia adjacente (sem diagonais). Não muda a idade dela na fila.',
+  targeting: 'CELL',
+  rarity: 'COMMON',
+  weight: 3,
+  cost: 1,
+
+  requiresTarget: true,
+  isValidTarget: ({ state, caster, index }) =>
+    state.board[index]?.owner === opponentOf(caster) && hasAdjacentEmpty(state, index),
+
+  canPlay: ({ state, caster }) =>
+    occupiedIndexes(state, opponentOf(caster)).some((index) => hasAdjacentEmpty(state, index)),
+
+  effect: (ctx) => {
+    const { state, caster, targetIndex } = ctx;
+    const target = opponentOf(caster);
+
+    if (!ctx.interaction) {
+      if (targetIndex === undefined) return null;
+      const piece = state.board[targetIndex];
+      if (!piece || piece.owner !== target) return null;
+
+      const eligibleIndexes = eligibleSlideDestinations(state, targetIndex);
+      if (eligibleIndexes.length === 0) return null;
+
+      return { interaction: { kind: 'PICK_BOARD_CELL', eligibleIndexes } };
+    }
+
+    const selection = ctx.interaction.selection;
+    if (selection.kind !== 'PICK_BOARD_CELL') return null;
+    const origin = ctx.interaction.priorSelections[0];
+    if (!origin || origin.kind !== 'BOARD_TARGET') return null;
+
+    const piece = state.board[origin.index];
+    if (!piece || piece.owner !== target) return null;
+    if (state.board[selection.index] !== null) return null;
+    if (isCellUnavailable(state, selection.index)) return null;
+    if (!adjacentIndexes(origin.index).includes(selection.index)) return null;
+
+    const board = [...state.board];
+    board[origin.index] = null;
+    board[selection.index] = piece;
+
+    // Sem `tone` explícito de propósito (diferente de DESLIZAR, que passa
+    // `'NEUTRAL'` — mover a PRÓPRIA peça não afeta ninguém): igual a
+    // `HAND_RAID`/`CARD_RAID_DESTROYED`, deixa `resolveNoticeTone`
+    // (`logMessages.ts`) decidir por perspectiva — GOOD pra quem jogou, BAD
+    // pra quem teve a peça tropeçada.
+    const event = { code: 'CARD_TRIP_PIECE', subject: caster, target, value: selection.index } as const;
+    return { patch: { board }, log: event, notice: event };
   },
 };
 
@@ -477,7 +552,8 @@ const SCRY_DECK: CardDefinition = {
   id: 'SCRY_DECK',
   name: 'PRESSÁGIO',
   type: 'ACTION',
-  description: 'Veja as 3 próximas cartas do baralho, sem comprá-las.',
+  description:
+    'Veja as 3 próximas cartas da fila do baralho (compartilhada — não é garantia de que serão suas), sem comprá-las.',
   targeting: 'NONE',
   rarity: 'COMMON',
   weight: 3,
@@ -1565,9 +1641,11 @@ const TIME_CAPSULE: CardDefinition = {
   type: 'TRAP',
   description: 'Virada na mesa. Se seu HP chegar a 0, você sobrevive com 1 e compra 2 cartas.',
   targeting: 'NONE',
-  rarity: 'RARE',
+  // LENDÁRIA/custo 3 (era RARA/1) — driblar uma morte garantida e ainda
+  // sair com 2 cartas de bônus é forte demais pra entrar na mesa por 1⚡.
+  rarity: 'LEGENDARY',
   weight: 2,
-  cost: 1,
+  cost: 3,
 
   effect: () => null,
 };
@@ -1911,7 +1989,16 @@ const CHAOS_ROULETTE: CardDefinition = {
       (cell.mark === 'X' ? xPieces : oPieces).push(cell);
     }
 
-    const cellOrder = rng.shuffle([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    // Exclui células travadas (TRAVAR) ou interditadas (regra de caos
+    // BLOCKED_CELL) do sorteio — sem isto, o embaralhar podia pousar uma
+    // peça em cima de uma casa que TRAVAR tinha acabado de lacrar. Sempre
+    // sobra espaço: no máximo 6 peças em jogo (3 por lado) contra no máximo
+    // 2 células indisponíveis ao mesmo tempo (1 trava + 1 bloqueio) — nunca
+    // falta destino. Determinístico: os dois clientes computam a mesma
+    // `state`, logo o mesmo conjunto disponível, logo o mesmo consumo do
+    // canal `BOARD` do RNG.
+    const availableIndexes = [0, 1, 2, 3, 4, 5, 6, 7, 8].filter((i) => !isCellUnavailable(state, i));
+    const cellOrder = rng.shuffle(availableIndexes);
     const board: Board = createEmptyBoard();
     cellOrder.slice(0, xPieces.length).forEach((index, i) => {
       board[index] = xPieces[i];
@@ -2086,6 +2173,7 @@ export const CARD_REGISTRY: Record<CardId, CardDefinition> = {
   RENEW_PIECE,
   MULLIGAN,
   SLIDE_PIECE,
+  TRIP_PIECE,
   SCRY_DECK,
   BACKUP_BATTERY,
   TIME_CAPSULE,

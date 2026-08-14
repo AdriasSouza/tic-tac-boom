@@ -21,6 +21,7 @@ import DamageFlashOverlay from '@/components/ui/DamageFlashOverlay';
 import AcknowledgementModal from '@/components/ui/AcknowledgementModal';
 import AltarModal from '@/components/ui/AltarModal';
 import InteractionModal from '@/components/ui/InteractionModal';
+import CardsReceivedToast from '@/components/ui/CardsReceivedToast';
 import ExtraTurnBanner from '@/components/ui/ExtraTurnBanner';
 import ChaosRouletteBanner from '@/components/ui/ChaosRouletteBanner';
 import NoticeToast from '@/components/ui/NoticeToast';
@@ -325,6 +326,8 @@ export default function GameScreen() {
       <DamageFlashOverlay />
       <ParadoxEchoOverlay />
       <NoticeToast />
+      <CardsReceivedToast target="PLAYER" />
+      <CardsReceivedToast target="MACHINE" />
       <ConnectionSyncBanner />
       <ExtraTurnBanner />
       <TimeCapsuleBanner />

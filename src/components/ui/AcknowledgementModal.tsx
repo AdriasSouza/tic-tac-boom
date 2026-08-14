@@ -109,7 +109,14 @@ export function AcknowledgementModal() {
 
   const text = formatAcknowledgement(pending, perspective);
   const accent = TONE_COLOR[text.tone];
-  const hasCards = pending.revealedCards.length > 0;
+  // Conteúdo revelado é informação PRIVADA de quem jogou a carta — no online,
+  // só o `subject` vê a grade de cartas. O outro lado ainda vê o modal (o
+  // motor pausa os dois via `pendingAcknowledgement`), só que com o texto
+  // genérico que `formatAcknowledgement` já devolve pra esse caso — nunca a
+  // grade. Fora do online (`isOnline: false`) ninguém perde nada: os dois
+  // lados sempre foram a mesma pessoa (hot-seat) ou a IA (sem modal nenhum).
+  const isSubject = pending.subject === perspective.localCombatant;
+  const hasCards = pending.revealedCards.length > 0 && (!perspective.isOnline || isSubject);
   // Na Espionagem o botão só libera depois da escolha: confirmar sem virar
   // nada desperdiçaria a carta em silêncio.
   const hasFlippedIfRequired = !isSpyPick || flipped.length > 0;

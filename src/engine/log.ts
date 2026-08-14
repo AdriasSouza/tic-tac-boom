@@ -144,6 +144,8 @@ export type LogCode =
   | 'CARD_MULLIGAN'
   /** `subject` deslizou 1 peça própria para uma célula vizinha. `value` = índice de destino. */
   | 'CARD_SLIDE_PIECE'
+  /** `subject` fez uma peça de `target` tropeçar para uma célula vizinha. `value` = índice de destino. */
+  | 'CARD_TRIP_PIECE'
   /** `subject` ativou o escudo de BATERIA RESERVA. Sem `value`. */
   | 'CARD_BACKUP_BATTERY'
   /** O escudo de `subject` absorveu um dano que zeraria/reduziria o HP dele. Sem `value`. */

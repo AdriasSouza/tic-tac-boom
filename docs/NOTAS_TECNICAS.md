@@ -390,31 +390,32 @@ abaixo) continuam de fora — fora do escopo desta rodada, não um esquecimento 
 | BATERIA RESERVA (`BACKUP_BATTERY`, carta nova) | Sim | Prioridade 2 — `hpOf(CPU) <= 3` e ainda sem escudo ativo. |
 | CÁPSULA DO TEMPO (`TIME_CAPSULE`, carta nova) | Sim | Prioridade 3 (crítica, `hpOf(CPU) <= 2` e ainda não armada) — dá timing de verdade, além da cobertura genérica de armadilha (prioridade 8) que ela também recebe fora do caso crítico. |
 | ATAQUE (`DIRECT_DAMAGE`) | Sim | Prioridade 4 — abate garantido: `hpOf(HUMAN) <= 2`. |
-| DESLIZAR (`SLIDE_PIECE`, carta nova) | Sim | Prioridade 5 (fecha linha na hora, `findWinningSlide` — mesma urgência de uma vitória por colocação) e prioridade 21 (oportunista, `rng.chance(0.15)`, reposiciona sem garantia de vitória). |
-| LIMPAR (`CLEAR_BLOCK`) | Sim | Prioridade 6 — `activeRule === 'BLOCKED_CELL'` e a célula bloqueada é conhecida. |
-| PURIFICAR (`CLEANSE`) | Sim | Prioridade 6 — alvo é `blockedCell` ou `lockedCell`, o que estiver ativo. |
-| TURNO EXTRA (`TURNO_EXTRA`) | Sim | Prioridade 7 — sempre boa, sem alvo; só verifica `extraTurnPending !== CPU` (não duplicar concessão). |
-| MINA (`BOMB_TRAP`) | Sim (genérico) | Prioridade 8 — `TRAP_CARD_IDS.includes(...)`, arma a PRIMEIRA armadilha da mão nessa ordem; nenhuma preferência pelo tipo (Lendária ou não). |
-| PROTEÇÃO (`SHIELD_TRAP`) | Sim (genérico) | Mesma prioridade 8, mesma falta de diferenciação por tipo. |
-| ANTIMAGIA (`ANTI_SPELL_TRAP`) | Sim (genérico) | Mesma prioridade 8. |
-| RICOCHETE (`REFLECT_TRAP`) | Sim (genérico) | Mesma prioridade 8. |
-| FIO DE ARAME (`TRIPWIRE`, carta nova) | Sim (genérico) | Mesma prioridade 8 — sem regra própria, entra igual às outras 3 armadilhas antigas. |
-| PARADOXO (`PARADOX`, carta nova) | Sim (genérico) | Mesma prioridade 8 — idem; é uma "arma e esquece", não precisa de timing especial. |
-| DEMOLIR (`BREAK_PIECE`) | Sim | Prioridade 9 — só dispara quando o HUMANO já tem 3 peças no tabuleiro (`getOldestPieceIndex` exige `>= MAX_PIECES_PER_PLAYER`; com menos de 3, a condição nunca fecha). |
-| RENOVAR (`RENEW_PIECE`, carta nova) | Sim | Prioridade 10 — com 2+ peças próprias no tabuleiro, renova a mais antiga (jogada de atraso tática). |
-| SAQUE (`HAND_RAID`) | Sim | Prioridade 11 — mão do humano não vazia E `rng.chance(0.5)` (probabilística, não garantida mesmo com condição satisfeita). |
-| SABOTAGEM (`SABOTAGE`) | Sim | Prioridade 11 — mesma forma de SAQUE. |
-| APAGÃO (`BLACKOUT`, carta nova) | Sim | Prioridade 12 — só quando `energyOf(HUMAN) >= 2` (denial que não denega quase nada não vale o custo). |
-| TRAVAR (`LOCK_CELL`) | Sim | Prioridade 13 — trava uma célula vazia aleatória (disrupção de baixo custo). |
-| OBSOLESCÊNCIA/AMALDIÇOAR (`OBSOLESCENCE`) | Sim | Prioridade 14 — mira a peça mais NOVA do humano (`getPieceIndexes(...).at(-1)`); dispara sempre que ele tiver >=1 peça. |
-| ESTUDAR (`STUDY`) | Sim | Prioridade 16 — mão não cheia; verificada DEPOIS de ESTUDAR II. |
-| ESTUDAR II (`STUDY_II`) | Sim | Prioridade 16 — mão não cheia; checada ANTES de ESTUDAR (prioridade "mais cartas primeiro"). |
-| VISÃO ABSOLUTA (`FULL_INTEL`) | Sim | Prioridade 17 — só se a mão do humano não estiver vazia; puramente informativa. |
-| ESPIADA (`PEEK_RANDOM`) | Sim | Prioridade 17 — só se a mão do humano não estiver vazia; sem chance/condição além disso. |
-| PRESSÁGIO (`SCRY_DECK`, carta nova) | Sim | Prioridade 18 — `rng.chance(0.2)`, sem outra condição. Zero ganho MECÂNICO pra CPU (ela decide sempre com o `state` inteiro à vista, não "lembra" do que viu) — só evita a carta apodrecer na mão, mesmo racional de VISÃO ABSOLUTA/ESPIADA. |
-| RECICLAR (`MULLIGAN`, carta nova) | Sim | Prioridade 19 — `hand.length > 1` E `rng.chance(0.2)`; a escolha de QUAL carta descartar cai na heurística ingênua existente (`PICK_ONE_FROM_HAND`). |
-| PERMUTA CAÓTICA (`HAND_SWAP`) | Sim | Prioridade 20 — `rng.chance(0.15)`, sem outra condição (alto risco, propositalmente raro). |
-| TIC TAC BOOM! (`CHAOS_ROULETTE`) | Sim | Prioridade 22 — `rng.chance(0.2)`, sem condição além do custo 0. |
+| DESLIZAR (`SLIDE_PIECE`, carta nova) | Sim | Prioridade 5 (fecha linha na hora, `findWinningSlide` — mesma urgência de uma vitória por colocação) e prioridade 22 (oportunista, `rng.chance(0.15)`, reposiciona sem garantia de vitória). |
+| TROPEÇAR (`TRIP_PIECE`, carta nova) | Sim | Prioridade 6 — desarma uma ameaça de vitória iminente do HUMANO (2 peças na linha + 1 vazia) tropeçando uma delas pra fora (`findDisruptiveTrip`). Nunca fecha linha PRA CPU (move a peça do outro lado), então não tem equivalente à prioridade 5 de DESLIZAR nem versão "oportunista" — sem ameaça pra desarmar, a carta simplesmente não é escolhida. |
+| LIMPAR (`CLEAR_BLOCK`) | Sim | Prioridade 7 — `activeRule === 'BLOCKED_CELL'` e a célula bloqueada é conhecida. |
+| PURIFICAR (`CLEANSE`) | Sim | Prioridade 7 — alvo é `blockedCell` ou `lockedCell`, o que estiver ativo. |
+| TURNO EXTRA (`TURNO_EXTRA`) | Sim | Prioridade 8 — sempre boa, sem alvo; só verifica `extraTurnPending !== CPU` (não duplicar concessão). |
+| MINA (`BOMB_TRAP`) | Sim (genérico) | Prioridade 9 — `TRAP_CARD_IDS.includes(...)`, arma a PRIMEIRA armadilha da mão nessa ordem; nenhuma preferência pelo tipo (Lendária ou não). |
+| PROTEÇÃO (`SHIELD_TRAP`) | Sim (genérico) | Mesma prioridade 9, mesma falta de diferenciação por tipo. |
+| ANTIMAGIA (`ANTI_SPELL_TRAP`) | Sim (genérico) | Mesma prioridade 9. |
+| RICOCHETE (`REFLECT_TRAP`) | Sim (genérico) | Mesma prioridade 9. |
+| FIO DE ARAME (`TRIPWIRE`, carta nova) | Sim (genérico) | Mesma prioridade 9 — sem regra própria, entra igual às outras 3 armadilhas antigas. |
+| PARADOXO (`PARADOX`, carta nova) | Sim (genérico) | Mesma prioridade 9 — idem; é uma "arma e esquece", não precisa de timing especial. |
+| DEMOLIR (`BREAK_PIECE`) | Sim | Prioridade 10 — só dispara quando o HUMANO já tem 3 peças no tabuleiro (`getOldestPieceIndex` exige `>= MAX_PIECES_PER_PLAYER`; com menos de 3, a condição nunca fecha). |
+| RENOVAR (`RENEW_PIECE`, carta nova) | Sim | Prioridade 11 — com 2+ peças próprias no tabuleiro, renova a mais antiga (jogada de atraso tática). |
+| SAQUE (`HAND_RAID`) | Sim | Prioridade 12 — mão do humano não vazia E `rng.chance(0.5)` (probabilística, não garantida mesmo com condição satisfeita). |
+| SABOTAGEM (`SABOTAGE`) | Sim | Prioridade 12 — mesma forma de SAQUE. |
+| APAGÃO (`BLACKOUT`, carta nova) | Sim | Prioridade 13 — só quando `energyOf(HUMAN) >= 2` (denial que não denega quase nada não vale o custo). |
+| TRAVAR (`LOCK_CELL`) | Sim | Prioridade 14 — trava uma célula vazia aleatória (disrupção de baixo custo). |
+| OBSOLESCÊNCIA/AMALDIÇOAR (`OBSOLESCENCE`) | Sim | Prioridade 15 — mira a peça mais NOVA do humano (`getPieceIndexes(...).at(-1)`); dispara sempre que ele tiver >=1 peça. |
+| ESTUDAR (`STUDY`) | Sim | Prioridade 17 — mão não cheia; verificada DEPOIS de ESTUDAR II. |
+| ESTUDAR II (`STUDY_II`) | Sim | Prioridade 17 — mão não cheia; checada ANTES de ESTUDAR (prioridade "mais cartas primeiro"). |
+| VISÃO ABSOLUTA (`FULL_INTEL`) | Sim | Prioridade 18 — só se a mão do humano não estiver vazia; puramente informativa. |
+| ESPIADA (`PEEK_RANDOM`) | Sim | Prioridade 18 — só se a mão do humano não estiver vazia; sem chance/condição além disso. |
+| PRESSÁGIO (`SCRY_DECK`, carta nova) | Sim | Prioridade 19 — `rng.chance(0.2)`, sem outra condição. Zero ganho MECÂNICO pra CPU (ela decide sempre com o `state` inteiro à vista, não "lembra" do que viu) — só evita a carta apodrecer na mão, mesmo racional de VISÃO ABSOLUTA/ESPIADA. |
+| RECICLAR (`MULLIGAN`, carta nova) | Sim | Prioridade 20 — `hand.length > 1` E `rng.chance(0.2)`; a escolha de QUAL carta descartar cai na heurística ingênua existente (`PICK_ONE_FROM_HAND`). |
+| PERMUTA CAÓTICA (`HAND_SWAP`) | Sim | Prioridade 21 — `rng.chance(0.15)`, sem outra condição (alto risco, propositalmente raro). |
+| TIC TAC BOOM! (`CHAOS_ROULETTE`) | Sim | Prioridade 23 — `rng.chance(0.2)`, sem condição além do custo 0. |
 | VIDENTE (`HIGHLIGHT_OLDEST`) | **Não** | Nunca referenciada. Pré-existente à baseline de 29 cartas — fora do escopo desta rodada. |
 | ANOMALIA (`QUEUE_SHUFFLE`) | **Não** | Nunca referenciada. Pré-existente — fora do escopo desta rodada. |
 | TROCAR (`SINGLE_CARD_TRADE`) | **Não** | Nunca referenciada. Pré-existente — fora do escopo desta rodada. |
