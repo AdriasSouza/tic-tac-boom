@@ -1369,6 +1369,65 @@ describe('lastCardsDrawnFor — aviso "VOCÊ RECEBEU: ..." (drawCardsFor)', () =
   });
 });
 
+describe('Modo Clássico (cardsEnabled) — cartas totalmente fora de jogo', () => {
+  it('startMatch(seed, isOnline, cardsEnabled=false): mão inicial vazia e a flag fica gravada', () => {
+    useGameStore.getState().startMatch(1, false, false);
+
+    const state = useGameStore.getState();
+    expect(state.cardsEnabled).toBe(false);
+    expect(state.playerHand).toEqual([]);
+    expect(state.machineHand).toEqual([]);
+  });
+
+  it('startMatch sem o 3º argumento continua com cartas ligadas (comportamento de sempre)', () => {
+    useGameStore.getState().startMatch(1, false);
+    expect(useGameStore.getState().cardsEnabled).toBe(true);
+  });
+
+  it('auto-draw NUNCA dispara com cardsEnabled=false, mesmo cruzando AUTO_DRAW_INTERVAL_TURNS', () => {
+    useGameStore.getState().startMatch(1, false, false);
+    useGameStore.setState({ turnCount: 5, playerHand: [], machineHand: [] }); // próxima jogada cruza o turno 6
+
+    useGameStore.getState().placeMark('PLAYER', 0);
+
+    const state = useGameStore.getState();
+    expect(state.turnCount).toBe(6);
+    expect(state.playerHand).toEqual([]);
+    expect(state.machineHand).toEqual([]);
+  });
+
+  it('com cardsEnabled=true (padrão), auto-draw continua funcionando ao cruzar o mesmo turno — não regrediu', () => {
+    useGameStore.getState().startMatch(1, false, true);
+    useGameStore.setState({ turnCount: 5, playerHand: [], machineHand: [] });
+
+    useGameStore.getState().placeMark('PLAYER', 0);
+
+    const state = useGameStore.getState();
+    expect(state.turnCount).toBe(6);
+    expect(state.playerHand).toHaveLength(1);
+    expect(state.machineHand).toHaveLength(1);
+  });
+
+  it('resolveCardPlay (playCard/playMachineCard) recusa qualquer jogada com cardsEnabled=false — mesmo se a mão não estiver vazia', () => {
+    useGameStore.setState({
+      cardsEnabled: false,
+      playerEnergy: 3,
+      playerHand: [{ uid: 'heal', cardId: 'HEAL_SELF' }],
+    });
+
+    expect(useGameStore.getState().playCard('heal')).toBe(false);
+    // Nada foi consumido: a guarda barrou ANTES de tocar mão/energia.
+    expect(useGameStore.getState().playerHand).toEqual([{ uid: 'heal', cardId: 'HEAL_SELF' }]);
+    expect(useGameStore.getState().playerEnergy).toBe(3);
+  });
+
+  it('resumeMatch preserva cardsEnabled do snapshot — não é campo efêmero de sessão', () => {
+    const snapshot = { ...useGameStore.getState(), cardsEnabled: false };
+    useGameStore.getState().resumeMatch(snapshot);
+    expect(useGameStore.getState().cardsEnabled).toBe(false);
+  });
+});
+
 describe('PARADOXO (PARADOX) — e2e pela store: MACHINE joga carta de custo 3⚡, o PARADOXO do PLAYER copia', () => {
   it('MACHINE joga CURA (custo 3): a cura de MACHINE aplica no 1º "Entendi", a cópia do PARADOXO cura o PLAYER só no 2º', () => {
     useGameStore.setState({

@@ -51,6 +51,17 @@ describe('matchPersistence', () => {
     expect(loaded?.rng.seed).toBeTypeOf('number');
   });
 
+  it('round-trip: aceita mode "classic" (Modo Clássico)', async () => {
+    const gameState = createTestState({ cardsEnabled: false });
+
+    await saveMatchSnapshot('classic', gameState);
+    const loaded = await loadMatchSnapshot();
+
+    expect(loaded).not.toBeNull();
+    expect(loaded?.mode).toBe('classic');
+    expect(loaded?.gameState.cardsEnabled).toBe(false);
+  });
+
   it('devolve null quando não há nada salvo', async () => {
     expect(await loadMatchSnapshot()).toBeNull();
   });

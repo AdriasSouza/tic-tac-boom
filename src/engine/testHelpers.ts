@@ -53,6 +53,7 @@ export function createTestState(overrides: Partial<GameState> = {}): GameState {
     nextCardsDrawnIdFor: { PLAYER: 0, MACHINE: 0 },
     isPaused: false,
     isOnline: false,
+    cardsEnabled: true,
     terminalLog: [],
     nextLogId: 0,
     extraTurnPending: null,

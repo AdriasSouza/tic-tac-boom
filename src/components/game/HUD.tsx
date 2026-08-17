@@ -68,6 +68,13 @@ export interface HUDProps {
   /** Rótulo do adversário. Omitido, vira "CPU" offline e "RIVAL" no online. */
   machineLabel?: string;
   hapticsEnabled?: boolean;
+  /**
+   * `false` no Modo Clássico (`GameState.cardsEnabled`) — esconde a miniatura
+   * de mão (`<HandTracker />`) e a fileira de energia de cada `<HpTracker />`:
+   * as duas coisas não significam nada sem cartas. O medidor de HP continua
+   * (o Modo Clássico ainda decide rodadas por dano, ver `ROUND_DAMAGE`).
+   */
+  cardsEnabled?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -111,6 +118,7 @@ export function HUD({
   playerLabel = 'VOCÊ',
   machineLabel,
   hapticsEnabled = true,
+  cardsEnabled = true,
 }: HUDProps) {
   const turn = useGameStore(selectTurn);
   const status = useGameStore(selectStatus);
@@ -159,8 +167,9 @@ export function HUD({
               // São as MINHAS cartas — o leque lá embaixo já as mostra por
               // extenso, então o tracker não vaza identidade nova nenhuma.
               handRevealed
+              cardsEnabled={cardsEnabled}
             />
-            {!isPortrait && <HandTracker owner={localCombatant} revealed />}
+            {!isPortrait && cardsEnabled && <HandTracker owner={localCombatant} revealed />}
           </View>
 
           <TurnBadge
@@ -186,11 +195,12 @@ export function HUD({
               handTrackerRowHeight={handTrackerRowHeight}
               // Sem `handRevealed`: versos idênticos, só a carta que a
               // ESPIADA já revelou mostra face (ver `<HandTracker />`).
+              cardsEnabled={cardsEnabled}
             />
             {/* `row-reverse` no pai põe o HP na borda externa — este elemento
                 fica pra dentro, mesma posição que o antigo `<MiniHand />`
                 ocupava. */}
-            {!isPortrait && <HandTracker owner={remoteCombatant} />}
+            {!isPortrait && cardsEnabled && <HandTracker owner={remoteCombatant} />}
           </View>
         </View>
       </View>
@@ -227,6 +237,8 @@ interface HpTrackerProps {
   inlineHandTracker: boolean;
   /** Altura EXPLÍCITA do `trackerHeader` — só aplicada quando `inlineHandTracker`. */
   handTrackerRowHeight: number;
+  /** Repassado de `<HUD />` — ver o prop lá. Esconde `<HandTracker />` inline e a fileira de energia. */
+  cardsEnabled: boolean;
 }
 
 const HpTracker = memo(function HpTracker({
@@ -240,6 +252,7 @@ const HpTracker = memo(function HpTracker({
   handRevealed = false,
   inlineHandTracker,
   handTrackerRowHeight,
+  cardsEnabled,
 }: HpTrackerProps) {
   const hp = useGameStore(target === 'PLAYER' ? selectPlayerHp : selectMachineHp);
   // O reembaralhar do giro de TIC TAC BOOM! pode fechar uma linha e causar
@@ -441,7 +454,7 @@ const HpTracker = memo(function HpTracker({
             (perto do tabuleiro) nos dois lados, sem lógica extra aqui.
             Só em retrato: em paisagem o `<HandTracker />` mora fora daqui
             (ver `inlineHandTracker` e `HUD()`). */}
-        {inlineHandTracker && <HandTracker owner={target} revealed={handRevealed} />}
+        {inlineHandTracker && cardsEnabled && <HandTracker owner={target} revealed={handRevealed} />}
       </View>
 
       <View style={[styles.blocks, align === 'right' && styles.rowReverse]}>
@@ -455,17 +468,23 @@ const HpTracker = memo(function HpTracker({
             size={blockSize}
           />
         ))}
-        {/* Espaçador só pra separar visualmente HP de energia, sem precisar de
-            um rótulo novo (que custaria altura). */}
-        <View style={{ width: Math.max(4, Math.round(blockSize * 0.4)) }} />
-        {energyPips.map((i) => (
-          <EnergyPip
-            key={i}
-            state={i < energy ? 'FILLED' : i < energy + reserved ? 'RESERVED' : 'EMPTY'}
-            draining={!!drainingRange && i >= drainingRange.from && i <= drainingRange.to}
-            size={energyPipSize}
-          />
-        ))}
+        {/* Sem cartas (Modo Clássico), energia não significa nada — nem o
+            espaçador nem os pips têm por que existir (ver `HUDProps.cardsEnabled`). */}
+        {cardsEnabled && (
+          <>
+            {/* Espaçador só pra separar visualmente HP de energia, sem precisar de
+                um rótulo novo (que custaria altura). */}
+            <View style={{ width: Math.max(4, Math.round(blockSize * 0.4)) }} />
+            {energyPips.map((i) => (
+              <EnergyPip
+                key={i}
+                state={i < energy ? 'FILLED' : i < energy + reserved ? 'RESERVED' : 'EMPTY'}
+                draining={!!drainingRange && i >= drainingRange.from && i <= drainingRange.to}
+                size={energyPipSize}
+              />
+            ))}
+          </>
+        )}
       </View>
     </Animated.View>
   );

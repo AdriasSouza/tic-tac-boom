@@ -572,6 +572,18 @@ export interface GameState {
   isOnline: boolean;
 
   /**
+   * Modo Clássico: cartas totalmente fora de jogo — sem mão inicial, sem
+   * compra automática, `resolveCardPlay` recusa qualquer jogada de carta na
+   * guarda de domínio (não só pela mão ficar vazia por construção — mesmo
+   * raciocínio do AGENTS.md "Invariantes de domínio": a regra vive AQUI, não
+   * só é respeitada porque nada preenche a mão). O tabuleiro (3-em-linha +
+   * overflow do "infinito") e o Terminal do Caos (`tickGlobalClock`) seguem
+   * intactos — nenhum dos dois depende de carta nenhuma, ver `CHAOS_SURGE_CHANCE`.
+   * Fato sobre a PARTIDA, igual `isOnline` — não estado de UI.
+   */
+  cardsEnabled: boolean;
+
+  /**
    * Log de combate — buffer circular de `LOG_LIMIT` linhas.
    *
    * Mora no estado, e não direto na WebView, para sobreviver a recarregamento

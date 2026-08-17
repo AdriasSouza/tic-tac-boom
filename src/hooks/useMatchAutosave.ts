@@ -15,7 +15,7 @@ const AUTOSAVE_DEBOUNCE_MS = 400;
  */
 export function useMatchAutosave(mode: string): void {
   useEffect(() => {
-    if (mode !== 'local' && mode !== 'cpu') return;
+    if (mode !== 'local' && mode !== 'cpu' && mode !== 'classic') return;
     const persistableMode: PersistableMode = mode;
 
     let timer: ReturnType<typeof setTimeout> | null = null;

@@ -243,8 +243,12 @@ export interface GameActions {
    * `isOnline` marca que o combatente `MACHINE` é um humano em outro
    * aparelho, e não a IA — ver a flag homônima em `GameState`. Omitir mantém
    * o comportamento offline de sempre.
+   *
+   * `cardsEnabled` (padrão `true`) liga/desliga o Modo Clássico — `false`
+   * pula a mão inicial e a compra automática, e `resolveCardPlay` recusa
+   * qualquer jogada de carta pela guarda de domínio (ver `GameState.cardsEnabled`).
    */
-  startMatch: (seed?: number, isOnline?: boolean) => void;
+  startMatch: (seed?: number, isOnline?: boolean, cardsEnabled?: boolean) => void;
 
   /**
    * Retoma uma partida local/CPU a partir de um snapshot persistido
@@ -447,6 +451,7 @@ const createInitialState = (): GameState => ({
   nextCardsDrawnIdFor: { PLAYER: 0, MACHINE: 0 },
   isPaused: false,
   isOnline: false,
+  cardsEnabled: true,
   terminalLog: [],
   nextLogId: 0,
   extraTurnPending: null,
@@ -614,7 +619,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
    * sido oficialmente revertida neste mesmo tick.
    */
   function tickGlobalClock(nextTurnCount: number): void {
-    if (isAutoDrawTurn(nextTurnCount)) {
+    // Modo Clássico (`cardsEnabled: false`): nenhuma carta circula, nunca —
+    // nem a compra automática. O resto do relógio (trava de TRAVAR, reversão
+    // de regra caótica, sorteio de novo surto) é alheio a cartas e continua
+    // rodando normalmente, ver `GameState.cardsEnabled`.
+    if (get().cardsEnabled && isAutoDrawTurn(nextTurnCount)) {
       drawCardsFor('PLAYER', 1);
       drawCardsFor('MACHINE', 1);
     }
@@ -1067,6 +1076,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // 4ª ocorrência do padrão do AGENTS.md (regra de domínio só respeitada
     // porque a UI não oferece o caminho). A guarda mora aqui agora.
     if (state.pendingInteraction !== null) return false;
+    // Modo Clássico: nenhuma carta resolve, nunca — a mão fica vazia por
+    // construção (compra desligada em `tickGlobalClock`/`startMatch`), mas a
+    // guarda mora AQUI também, não só na ausência de cartas para jogar (mesmo
+    // raciocínio do AGENTS.md "Invariantes de domínio").
+    if (!state.cardsEnabled) return false;
 
     const handKey = handKeyFor(caster);
     const handIndex = state[handKey].findIndex((c) => c.uid === uid);
@@ -1564,7 +1578,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
     });
   },
 
-  startMatch: (seed, isOnline = false) => {
+  startMatch: (seed, isOnline = false, cardsEnabled = true) => {
     // Semear ANTES de montar o estado: createInitialState lê a seed efetiva.
     const usedSeed = seedMatch(seed);
     resetEventBus(); // eventos da partida anterior não vazam para a nova
@@ -1585,12 +1599,17 @@ export const useGameStore = create<GameStore>()((set, get) => {
      * voltando a `null` (foi o caso do `<ExtraTurnBanner />`/`<NoticeToast />`,
      * corrigidos separadamente).
      */
-    set({ ...createInitialState(), matchSeed: usedSeed, status: 'PLAYING', isOnline });
+    set({ ...createInitialState(), matchSeed: usedSeed, status: 'PLAYING', isOnline, cardsEnabled });
 
     // Mão inicial dos dois lados — autocontido aqui para que NENHUMA tela
     // precise lembrar de chamar `drawCard` depois de iniciar a partida.
-    drawCardsFor('PLAYER', OPENING_HAND_SIZE);
-    drawCardsFor('MACHINE', OPENING_HAND_SIZE);
+    // Modo Clássico (`cardsEnabled: false`) pula isto — `OPENING_HAND_SIZE`
+    // já é 0 hoje, então isto é redundante NO PRESENTE, mas não pode
+    // depender disso continuar valendo se `OPENING_HAND_SIZE` mudar de novo.
+    if (cardsEnabled) {
+      drawCardsFor('PLAYER', OPENING_HAND_SIZE);
+      drawCardsFor('MACHINE', OPENING_HAND_SIZE);
+    }
   },
 
   resumeMatch: (gameState) => {
@@ -2101,6 +2120,8 @@ export const selectPendingAcknowledgement = (s: GameStore) => s.pendingAcknowled
 export const selectHasPendingAcknowledgement = (s: GameStore) => s.pendingAcknowledgement !== null;
 export const selectTerminalLog = (s: GameStore) => s.terminalLog;
 export const selectIsPaused = (s: GameStore) => s.isPaused;
+/** Modo Clássico está DESLIGADO (cartas normais) quando `true` — ver `GameState.cardsEnabled`. */
+export const selectCardsEnabled = (s: GameStore) => s.cardsEnabled;
 /**
  * O destaque de VIDENTE, já filtrado por validade — devolve `null` se a peça
  * saiu do índice original (auto-invalidação, ver `isHighlightedOldestValid`),

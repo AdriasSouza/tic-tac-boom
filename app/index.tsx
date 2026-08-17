@@ -96,6 +96,11 @@ export default function TitleScreen() {
         onPress={() => void handleFreshStart('local')}
       />
       <PixelButton
+        label="Modo Clássico"
+        variant="secondary"
+        onPress={() => void handleFreshStart('classic')}
+      />
+      <PixelButton
         label="Jogar Online"
         variant="secondary"
         onPress={() => router.push('/lobby')}

@@ -22,7 +22,8 @@ import type { GameState } from '@/engine/rules';
  * local paralelo só criaria uma segunda fonte pra divergir da primeira.
  */
 
-export type PersistableMode = 'local' | 'cpu';
+/** `'classic'` = Modo Clássico vs CPU (`GameState.cardsEnabled: false`) — sem cartas, só campo + Terminal do Caos. */
+export type PersistableMode = 'local' | 'cpu' | 'classic';
 
 export interface MatchSnapshot {
   mode: PersistableMode;
@@ -59,7 +60,12 @@ export async function loadMatchSnapshot(): Promise<MatchSnapshot | null> {
     if (!raw) return null;
 
     const parsed = JSON.parse(raw) as Partial<MatchSnapshot> | null;
-    if (!parsed || (parsed.mode !== 'local' && parsed.mode !== 'cpu') || !parsed.gameState || !parsed.rng) {
+    if (
+      !parsed ||
+      (parsed.mode !== 'local' && parsed.mode !== 'cpu' && parsed.mode !== 'classic') ||
+      !parsed.gameState ||
+      !parsed.rng
+    ) {
       return null;
     }
 

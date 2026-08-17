@@ -46,6 +46,10 @@ export default function GameScreen() {
   // `seed` só chega no modo online, vinda da sala do Firebase. Nos modos
   // locais é `undefined` e o `startMatch` sorteia a sua.
   const { mode, seed } = useLocalSearchParams<{ mode: string; seed?: string }>();
+  // Modo Clássico: cartas fora de jogo (ver `GameState.cardsEnabled`) — some
+  // a mão, as zonas de armadilha (nunca teriam nada dentro) e o resumo de
+  // energia/mão do HUD. O tabuleiro e o Terminal do Caos ficam intactos.
+  const isClassic = mode === 'classic';
   const router = useRouter();
   const startMatch = useGameStore(state => state.startMatch);
   const resumeMatch = useGameStore(state => state.resumeMatch);
@@ -212,7 +216,9 @@ export default function GameScreen() {
         restoreRng(snapshot.rng);
         resumeMatch(snapshot.gameState);
       } else {
-        startMatch(undefined, false);
+        // Modo Clássico (`/game/classic`): cartas totalmente fora de jogo —
+        // ver `GameState.cardsEnabled`. Único mode que passa `false` aqui.
+        startMatch(undefined, false, mode !== 'classic');
       }
     }
 
@@ -226,9 +232,10 @@ export default function GameScreen() {
   // inerte no online (ver `useMatchAutosave`).
   useMatchAutosave(mode);
 
-  // Ativa a IA apenas se a rota acessada for /game/cpu. O hook também se
-  // inibe sozinho durante uma partida online (ver `useCpuOpponent`).
-  useCpuOpponent({ enabled: mode === 'cpu' });
+  // Ativa a IA se a rota acessada for /game/cpu OU /game/classic (Modo
+  // Clássico também é vs CPU, só sem cartas). O hook também se inibe sozinho
+  // durante uma partida online (ver `useCpuOpponent`).
+  useCpuOpponent({ enabled: mode === 'cpu' || mode === 'classic' });
 
   // Cordão umbilical com a rede: consome o log de ações da sala e aplica no
   // motor as jogadas do oponente. Inerte fora do modo online.
@@ -267,7 +274,7 @@ export default function GameScreen() {
             [ HP · mão (você) ]   [ TURNO ]   [ mão · HP (rival) ]
             Altura ditada pelo conteúdo; a largura é a do wrapper, então no
             desktop os dois lados param de se afastar em 1024. Ver `<HUD />`. */}
-        <HUD />
+        <HUD cardsEnabled={!isClassic} />
 
         {/* ── LINHA 2 · ÁREA DE COMBATE ──────────────────────────────────────
             A única linha elástica: fica com a altura que sobrar das outras
@@ -301,8 +308,10 @@ export default function GameScreen() {
         </View>
 
         {/* ── LINHA 3 · MÃO INTERATIVA ───────────────────────────────────────
-            As cartas de verdade, em leque. Ver `<CardHand />`/`<CardItem />`. */}
-        <CardHand />
+            As cartas de verdade, em leque. Ver `<CardHand />`/`<CardItem />`.
+            Modo Clássico: a mão fica vazia pra sempre (`cardsEnabled: false`)
+            — some a fileira inteira em vez de mostrar "MÃO VAZIA" pra sempre. */}
+        {!isClassic && <CardHand />}
       </View>
 
       {multiplayerError !== null && (
@@ -326,8 +335,12 @@ export default function GameScreen() {
       <DamageFlashOverlay />
       <ParadoxEchoOverlay />
       <NoticeToast />
-      <CardsReceivedToast target="PLAYER" />
-      <CardsReceivedToast target="MACHINE" />
+      {!isClassic && (
+        <>
+          <CardsReceivedToast target="PLAYER" />
+          <CardsReceivedToast target="MACHINE" />
+        </>
+      )}
       <ConnectionSyncBanner />
       <ExtraTurnBanner />
       <TimeCapsuleBanner />
