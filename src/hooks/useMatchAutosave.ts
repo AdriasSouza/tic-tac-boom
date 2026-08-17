@@ -7,7 +7,7 @@ import { clearMatchSnapshot, saveMatchSnapshot, type PersistableMode } from '@/s
 const AUTOSAVE_DEBOUNCE_MS = 400;
 
 /**
- * Salva a partida local/CPU automaticamente enquanto ela está em andamento —
+ * Salva a partida CPU/Clássico automaticamente enquanto ela está em andamento —
  * a metade "escrita" da persistência que sobrevive a um remount/relançamento
  * (ver `src/store/matchPersistence.ts` para o porquê e `resumeMatch` em
  * `gameStore.ts` para a leitura). Inerte em qualquer outro `mode` (online
@@ -15,7 +15,7 @@ const AUTOSAVE_DEBOUNCE_MS = 400;
  */
 export function useMatchAutosave(mode: string): void {
   useEffect(() => {
-    if (mode !== 'local' && mode !== 'cpu' && mode !== 'classic') return;
+    if (mode !== 'cpu' && mode !== 'classic') return;
     const persistableMode: PersistableMode = mode;
 
     let timer: ReturnType<typeof setTimeout> | null = null;

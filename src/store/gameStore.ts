@@ -251,7 +251,7 @@ export interface GameActions {
   startMatch: (seed?: number, isOnline?: boolean, cardsEnabled?: boolean) => void;
 
   /**
-   * Retoma uma partida local/CPU a partir de um snapshot persistido
+   * Retoma uma partida CPU/Clássico a partir de um snapshot persistido
    * (`src/store/matchPersistence.ts`) — ao contrário de `startMatch`, NÃO
    * resemeia o RNG nem sorteia mão nova (quem chama já rodou `restoreRng`
    * antes). Sanitiza os campos que dependiam de maquinário desta sessão de

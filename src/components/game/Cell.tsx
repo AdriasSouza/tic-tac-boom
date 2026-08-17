@@ -127,14 +127,10 @@ function CellComponent({ index, size }: CellProps) {
   /**
    * VIDENTE: "só para quem jogou" só faz sentido gatear por IDENTIDADE fixa
    * (`localCombatant`) no ONLINE, onde os dois lados são aparelhos
-   * fisicamente separados. Fora do online (`isOnline === false` cobre CPU E
-   * `/game/local` hot-seat) `localCombatant` é sempre `'PLAYER'` — mas em
-   * hot-seat `MACHINE` é um segundo HUMANO no mesmo aparelho, então esconder
-   * por essa identidade fixa esconderia o destaque de quem joga de MACHINE
-   * ali. Como o destaque só existe enquanto é o turno de quem o lançou (ver
-   * limpeza em `placeMark`/`endTurn`), mostrar sempre que estiver aceso é
-   * seguro e correto fora do online — a tela já é compartilhada, esconder
-   * não protegeria nada.
+   * fisicamente separados. Fora do online (CPU/Clássico, um único humano no
+   * aparelho) o destaque já só existe enquanto é o turno de quem o lançou
+   * (ver limpeza em `placeMark`/`endTurn`), então mostrar sempre que estiver
+   * aceso é seguro e correto — esconder não protegeria nada.
    */
   const highlighted = useGameStore(selectHighlightedOldest);
   const isHighlightedByVidente =

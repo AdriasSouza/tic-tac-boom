@@ -4,8 +4,8 @@ import { snapshotRng, type RngSnapshot } from '@/engine/rng';
 import type { GameState } from '@/engine/rules';
 
 /**
- * Save/resume de partida LOCAL/CPU através de um remount ou fechamento real
- * do app — investigação da "rotação reinicia o jogo": `gameStore` é 100% em
+ * Save/resume de partida CPU/Clássico através de um remount ou fechamento
+ * real do app — investigação da "rotação reinicia o jogo": `gameStore` é 100% em
  * memória (sem `zustand/persist`), e `app/game/[mode].tsx` chama `startMatch()`
  * incondicionalmente a cada montagem, então qualquer remount (rotação sem a
  * trava de orientação realmente aplicada no build instalado, recarregar a
@@ -23,7 +23,7 @@ import type { GameState } from '@/engine/rules';
  */
 
 /** `'classic'` = Modo Clássico vs CPU (`GameState.cardsEnabled: false`) — sem cartas, só campo + Terminal do Caos. */
-export type PersistableMode = 'local' | 'cpu' | 'classic';
+export type PersistableMode = 'cpu' | 'classic';
 
 export interface MatchSnapshot {
   mode: PersistableMode;
@@ -62,7 +62,7 @@ export async function loadMatchSnapshot(): Promise<MatchSnapshot | null> {
     const parsed = JSON.parse(raw) as Partial<MatchSnapshot> | null;
     if (
       !parsed ||
-      (parsed.mode !== 'local' && parsed.mode !== 'cpu' && parsed.mode !== 'classic') ||
+      (parsed.mode !== 'cpu' && parsed.mode !== 'classic') ||
       !parsed.gameState ||
       !parsed.rng
     ) {

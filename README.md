@@ -211,18 +211,18 @@ npx expo start -c        # -c limpa o cache do bundler
 Depois: `a` para Android, `i` para iOS, ou escaneie o QR code com o Expo Go.
 
 O app abre na tela de título. Para pular direto ao jogo, abra `/game/cpu` ou
-`/game/local`.
+`/game/classic`.
 
 ---
 
 ## Roteiro de teste
 
-Dois modos:
+Modos offline:
 
 - **`/game/cpu`** — a máquina joga sozinha (heurística vencer → bloquear → posicional),
   com 0,8–1,5s de "tempo de pensar".
-- **`/game/local`** — hot-seat: o segundo jogador humano controla o lado `MACHINE` no mesmo
-  aparelho. Use este para testar armadilhas passo a passo, já que você controla os dois lados.
+- **`/game/classic`** — Modo Clássico: mesma IA de `/game/cpu`, mas sem cartas — só o
+  tabuleiro e o Terminal do Caos (`GameState.cardsEnabled: false`).
 
 ### Jogo da velha infinito
 1. Faça 3 jogadas com o mesmo jogador.
@@ -350,7 +350,7 @@ tic-tac-boom/
 ├── app/                              # ROTAS (Expo Router) — só layout e ciclo de vida
 │   ├── _layout.tsx                   # GestureHandlerRootView + Stack
 │   ├── index.tsx                     # Menu
-│   └── game/[mode].tsx               # Tela de partida (local | cpu)
+│   └── game/[mode].tsx               # Tela de partida (cpu | classic | online)
 │
 ├── src/
 │   ├── engine/                       # ⭐ TypeScript puro, ZERO React

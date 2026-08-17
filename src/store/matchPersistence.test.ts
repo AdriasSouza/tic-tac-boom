@@ -79,7 +79,7 @@ describe('matchPersistence', () => {
   it('devolve null e se autolimpa para um snapshot expirado (>7 dias)', async () => {
     const eightDaysAgo = Date.now() - 8 * 24 * 60 * 60 * 1000;
     const stale: MatchSnapshot = {
-      mode: 'local',
+      mode: 'cpu',
       gameState: createTestState(),
       rng: { seed: 1, cursors: { RULES: 0, BOARD: 0, CARDS: 0, AI: 0, TERMINAL: 0 } },
       savedAt: eightDaysAgo,
@@ -91,8 +91,21 @@ describe('matchPersistence', () => {
   });
 
   it('clearMatchSnapshot remove o snapshot salvo', async () => {
-    await saveMatchSnapshot('local', createTestState());
+    await saveMatchSnapshot('cpu', createTestState());
     await clearMatchSnapshot();
+    expect(await loadMatchSnapshot()).toBeNull();
+  });
+
+  it('devolve null para mode "local" — modo hot-seat removido, snapshot antigo não deve reviver', async () => {
+    store.set(
+      STORAGE_KEY,
+      JSON.stringify({
+        mode: 'local',
+        gameState: createTestState(),
+        rng: { seed: 1, cursors: { RULES: 0, BOARD: 0, CARDS: 0, AI: 0, TERMINAL: 0 } },
+        savedAt: Date.now(),
+      }),
+    );
     expect(await loadMatchSnapshot()).toBeNull();
   });
 });

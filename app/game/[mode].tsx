@@ -180,7 +180,7 @@ export default function GameScreen() {
    * vez de voltar pra tela de conexão" relatado. A correção é voltar pro
    * lobby, não tentar rodar a partida.
    *
-   * **Local/CPU**: tenta retomar um snapshot salvo (`matchPersistence.ts`)
+   * **CPU/Clássico**: tenta retomar um snapshot salvo (`matchPersistence.ts`)
    * antes de começar uma partida nova — é isto que sobrevive a um remount
    * (rotação sem a trava de orientação realmente aplicada no build instalado)
    * ou a um relançamento real do app. `restoreRng` roda ANTES de
@@ -228,7 +228,7 @@ export default function GameScreen() {
     };
   }, [startMatch, resumeMatch, seed, mode, router]);
 
-  // Salva local/CPU automaticamente enquanto a partida está em andamento —
+  // Salva CPU/Clássico automaticamente enquanto a partida está em andamento —
   // inerte no online (ver `useMatchAutosave`).
   useMatchAutosave(mode);
 

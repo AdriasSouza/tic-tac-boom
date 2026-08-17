@@ -18,14 +18,12 @@ import {
  * mudar por acaso.
  *
  * Fora do modo online, usa `controlledCombatants` (`useMatchPerspective`) em
- * vez de devolver `true` incondicionalmente — hot-seat (`/game/local`)
- * controla os dois lados, então QUALQUER turno é "meu" (`includes` sempre
- * `true`, comportamento inalterado); CPU controla só `PLAYER`, então a vez de
- * `MACHINE` agora corretamente devolve `false`. Antes disto, durante o
- * "pensamento" da CPU a mão continuava brilhando e arrastável, e o botão de
- * passar a vez continuava tocável — a jogada era recusada em silêncio pela
- * guarda do motor (`state.turn !== caster`), mas a UI mentia sobre o que
- * estava disponível.
+ * vez de devolver `true` incondicionalmente — CPU/Clássico controlam só
+ * `PLAYER`, então a vez de `MACHINE` corretamente devolve `false`. Sem isto,
+ * durante o "pensamento" da CPU a mão continuava brilhando e arrastável, e o
+ * botão de passar a vez continuava tocável — a jogada era recusada em
+ * silêncio pela guarda do motor (`state.turn !== caster`), mas a UI mentia
+ * sobre o que estava disponível.
  */
 export function useIsLocalTurn(): boolean {
   const turn = useGameStore(selectTurn);

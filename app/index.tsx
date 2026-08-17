@@ -92,10 +92,6 @@ export default function TitleScreen() {
         onPress={() => void handleFreshStart('cpu')}
       />
       <PixelButton
-        label="Jogar Local"
-        onPress={() => void handleFreshStart('local')}
-      />
-      <PixelButton
         label="Modo Clássico"
         variant="secondary"
         onPress={() => void handleFreshStart('classic')}

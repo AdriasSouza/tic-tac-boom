@@ -31,10 +31,10 @@ import { colors } from '@/theme/colors';
  * Sempre montado no root (como `AcknowledgementModal`/`AltarModal`), decide
  * sozinho se tem algo para mostrar. `controlledCombatants` (`useMatchPerspective`,
  * JSDoc do próprio campo) decide se ESTE aparelho vê a UI de escolha: fora do
- * online mostra sempre (hot-seat controla os dois lados; CPU nunca abre estes
- * `kind`s ainda); no online só quem controla `pending.caster` vê — o outro
- * lado só sabe que está bloqueado (mão/tabuleiro já recusam por conta própria),
- * sem precisar de um segundo modal de "aguardando".
+ * online mostra sempre (CPU nunca abre estes `kind`s); no online só quem
+ * controla `pending.caster` vê — o outro lado só sabe que está bloqueado
+ * (mão/tabuleiro já recusam por conta própria), sem precisar de um segundo
+ * modal de "aguardando".
  */
 export function InteractionModal() {
   const pending = useGameStore(selectPendingInteraction);

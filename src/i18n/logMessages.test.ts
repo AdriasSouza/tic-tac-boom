@@ -57,7 +57,7 @@ describe('formatAcknowledgement — conteúdo revelado só pra quem é o subject
     expect(text.description).not.toContain('ninguém mais viu isto');
   });
 
-  it('PRESSÁGIO: fora do online (hot-seat/CPU) sempre mostra completo, mesmo com subject remoto', () => {
+  it('PRESSÁGIO: fora do online (CPU/Clássico) sempre mostra completo, mesmo com subject remoto', () => {
     const ack: PendingAcknowledgement = {
       id: 3,
       code: 'CARD_SCRY_DECK',

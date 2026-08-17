@@ -13,7 +13,7 @@ import {
 } from '@/store/gameStore';
 
 export interface UseCpuOpponentOptions {
-  /** Desligue no modo hot-seat, onde o lado MACHINE é outro humano. */
+  /** Desligue fora de CPU/Clássico — no online o lado MACHINE é outro humano. */
   enabled?: boolean;
   minDelay?: number;
   maxDelay?: number;

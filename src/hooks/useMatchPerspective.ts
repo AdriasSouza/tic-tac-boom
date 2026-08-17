@@ -1,4 +1,3 @@
-import { useLocalSearchParams } from 'expo-router';
 import { useMemo } from 'react';
 
 import { opponentOf, type Combatant } from '@/store/gameStore';
@@ -32,13 +31,10 @@ export interface MatchPerspective {
   /** `true` quando há um humano do outro lado da rede. */
   isOnline: boolean;
   /**
-   * Combatentes que ESTE dispositivo/pessoa controla agora. `1` em CPU/online (o humano só
-   * controla um lado — a IA no CPU, o outro aparelho no online); `2` em `/game/local`
-   * (hot-seat: os dois lados são o mesmo humano, alternando quem está segurando o
-   * aparelho). Fonte única para responder "esconder informação secreta de um combatente X
-   * faz sentido pra quem está olhando agora?" — quem consome combina isto com
-   * `state.turn` quando o segredo é por-lado-atual (`TrapZone`: só o lado de quem controla
-   * E está na vez vê a própria armadilha em hot-seat) ou usa sozinho quando o segredo
+   * Combatentes que ESTE dispositivo/pessoa controla agora — sempre 1 (o modo hot-seat, que
+   * controlava os 2, foi removido). Fonte única para responder "esconder informação secreta
+   * de um combatente X faz sentido pra quem está olhando agora?" — quem consome combina isto
+   * com `state.turn` quando o segredo é por-lado-atual, ou usa sozinho quando o segredo
    * persiste independente do turno (a própria carta armada, uma vez que o dono a vê,
    * continua vendo até ela resolver).
    *
@@ -54,29 +50,21 @@ export interface MatchPerspective {
 
 /**
  * Fora do modo online devolve a identidade (`PLAYER` local, `MACHINE`
- * remoto) — que é exatamente o comportamento que os modos local e CPU sempre
- * tiveram. Nenhum componente precisa de ramo condicional por modo de jogo:
- * quem consome este hook funciona igual nos três.
+ * remoto) — comportamento de sempre nos modos CPU/Clássico. Nenhum
+ * componente precisa de ramo condicional por modo de jogo: quem consome
+ * este hook funciona igual nos dois.
  */
 export function useMatchPerspective(): MatchPerspective {
   const multiplayerStatus = useMultiplayerStore(selectMultiplayerStatus);
   const playerId = useMultiplayerStore(selectPlayerId);
-  // Só pra decidir `controlledCombatants` — a rota (`/game/[mode]`) é a única fonte que
-  // distingue CPU de hot-seat local; `useMultiplayerStore` não sabe dessa diferença (as
-  // duas são igualmente "não online" pra ele).
-  const { mode } = useLocalSearchParams<{ mode?: string }>();
 
   return useMemo(() => {
     if (multiplayerStatus !== 'MATCH_STARTED' || playerId === null) {
-      // Hot-seat: os dois lados são o mesmo humano, alternando quem segura o aparelho —
-      // controla os dois. Qualquer outro modo offline (CPU) controla só o próprio.
-      const controlledCombatants: readonly Combatant[] =
-        mode === 'local' ? ['PLAYER', 'MACHINE'] : ['PLAYER'];
       return {
         localCombatant: 'PLAYER',
         remoteCombatant: 'MACHINE',
         isOnline: false,
-        controlledCombatants,
+        controlledCombatants: ['PLAYER'],
       };
     }
 
@@ -87,7 +75,7 @@ export function useMatchPerspective(): MatchPerspective {
       isOnline: true,
       controlledCombatants: [localCombatant],
     };
-  }, [multiplayerStatus, playerId, mode]);
+  }, [multiplayerStatus, playerId]);
 }
 
 export default useMatchPerspective;

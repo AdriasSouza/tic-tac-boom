@@ -89,8 +89,8 @@ export function CardHand({ style }: CardHandProps) {
   // testa `turn === 'PLAYER'`, o que travaria permanentemente quem entrou
   // como `player2` numa sala online (do lado dele o combatente local é
   // `MACHINE`). Fora do online os dois são equivalentes de verdade —
-  // `useIsLocalTurn` consulta `controlledCombatants` (hot-seat controla os
-  // dois lados, CPU só `PLAYER`), não mais um `true` incondicional.
+  // `useIsLocalTurn` consulta `controlledCombatants` (sempre só `PLAYER`
+  // em CPU/Clássico), não mais um `true` incondicional.
   const canPlayCards = useCanPlayCardsNow();
   const isLocalTurn = useIsLocalTurn();
   const isOnline = useMultiplayerStore(selectMultiplayerStatus) === 'MATCH_STARTED';
@@ -309,10 +309,9 @@ export function CardHand({ style }: CardHandProps) {
     <View style={[styles.root, style]}>
       {/* Vez do oponente: sem um aviso, a mão simplesmente para de responder e
           o jogador não tem como saber se travou ou se é a vez do outro. Só
-          aparece no online — em hot-seat `isLocalTurn` é sempre true (os dois
-          lados são o mesmo humano); em CPU ele reflete a vez de verdade (ver
-          `useIsLocalTurn`), mas a dimmed da mão já basta lá, sem precisar
-          deste banner especificamente online. */}
+          aparece no online — em CPU/Clássico `isLocalTurn` já reflete a vez
+          de verdade (ver `useIsLocalTurn`), mas a dimmed da mão já basta lá,
+          sem precisar deste banner especificamente online. */}
       {isOnline && !isLocalTurn && (
         <Animated.View
           entering={FadeIn.duration(160)}

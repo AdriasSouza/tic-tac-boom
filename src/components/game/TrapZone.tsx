@@ -10,7 +10,6 @@ import type { CardId } from '@/engine/cards/definitions';
 import {
   TRAP_LIMIT,
   selectTraps,
-  selectTurn,
   useGameStore,
   type Combatant,
 } from '@/store/gameStore';
@@ -82,15 +81,11 @@ export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
   /**
    * Quem arma uma armadilha sabe o que armou — o segredo é só em relação ao
    * OPONENTE, então a face fica visível pro próprio dono. `controlledCombatants`
-   * (ver `useMatchPerspective`) resolve os 3 modos com uma regra só:
-   * - CPU/online controlam 1 lado só → a própria face aparece sempre, a do
-   *   outro lado nunca (evita vazar a armadilha da IA quando é a vez dela);
-   * - hot-seat controla os 2 → só a do lado que está NA VEZ aparece, porque
-   *   os dois combatentes são o mesmo humano revezando o aparelho.
+   * (ver `useMatchPerspective`) já resolve isso: CPU/online controlam 1 lado
+   * só → a própria face aparece sempre, a do outro lado nunca (evita vazar a
+   * armadilha da IA quando é a vez dela).
    */
-  const turn = useGameStore(selectTurn);
-  const isFaceVisible =
-    controlledCombatants.includes(owner) && (controlledCombatants.length < 2 || owner === turn);
+  const isFaceVisible = controlledCombatants.includes(owner);
 
   const { mode } = useLayoutMode();
   const { sidebarWidth, slotSize, hitSlop } = TRAP_ZONE_BOUNDS[mode];
@@ -100,10 +95,7 @@ export function TrapZone({ owner = 'PLAYER', style }: TrapZoneProps) {
   /**
    * Consulta só-leitura de uma armadilha PRÓPRIA já armada (patch pós-Fase
    * 7a) — "dar uma espiada" na carta virada na mesa, pra quem esqueceu o que
-   * armou. Só possível quando `isFaceVisible` (é exatamente "é minha E estou
-   * autorizado a ver a face agora" — cobre hot-seat de graça: no turno do
-   * OUTRO lado, mesmo a própria armadilha de antes fica ilegível de novo,
-   * então também não é consultável nesse instante).
+   * armou. Só possível quando `isFaceVisible` (é exatamente "é minha").
    */
   const [focusedCardId, setFocusedCardId] = useState<CardId | null>(null);
 
@@ -152,9 +144,9 @@ export default TrapZone;
  * Slot de armadilha armada — UM componente persistente pros dois estados
  * (verso e face), nunca dois componentes escolhidos condicionalmente.
  *
- * Isso importa porque `faceVisible` MUDA sozinho durante a partida (em
- * hot-seat, a cada troca de turno) sem a armadilha em si ser armada ou
- * detonada de novo — se verso/face fossem elementos de tipos DIFERENTES na
+ * Isso importa porque `faceVisible` pode mudar sozinho durante a partida
+ * (a perspectiva de quem olha, ver `useMatchPerspective`) sem a armadilha em
+ * si ser armada ou detonada de novo — se verso/face fossem elementos de tipos DIFERENTES na
  * mesma `key`, o React desmontaria/remontaria a cada troca, disparando
  * `entering`/`exiting` (`FadeInDown`/`ZoomOut`) num flicker que deveria só
  * acontecer ao armar/detonar de verdade. Aqui só o CONTEÚDO interno troca —
@@ -181,8 +173,8 @@ const TrapSlot = memo(function TrapSlot({
   size: { width: number; height: number };
   hitSlop?: number;
   /** Consulta só-leitura (patch pós-Fase 7a) — `undefined` quando não é
-   * consultável agora (armadilha do OPONENTE, ou própria fora do turno em
-   * hot-seat — ver `isFaceVisible` em `<TrapZone />`). */
+   * consultável agora (armadilha do OPONENTE — ver `isFaceVisible` em
+   * `<TrapZone />`). */
   onPress?: () => void;
 }) {
   const card = getCard(cardId);

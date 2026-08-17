@@ -113,8 +113,8 @@ export function AcknowledgementModal() {
   // só o `subject` vê a grade de cartas. O outro lado ainda vê o modal (o
   // motor pausa os dois via `pendingAcknowledgement`), só que com o texto
   // genérico que `formatAcknowledgement` já devolve pra esse caso — nunca a
-  // grade. Fora do online (`isOnline: false`) ninguém perde nada: os dois
-  // lados sempre foram a mesma pessoa (hot-seat) ou a IA (sem modal nenhum).
+  // grade. Fora do online (`isOnline: false`) ninguém perde nada: o outro
+  // lado sempre foi a IA (sem modal nenhum).
   const isSubject = pending.subject === perspective.localCombatant;
   const hasCards = pending.revealedCards.length > 0 && (!perspective.isOnline || isSubject);
   // Na Espionagem o botão só libera depois da escolha: confirmar sem virar
