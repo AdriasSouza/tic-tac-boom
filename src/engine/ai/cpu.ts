@@ -5,6 +5,7 @@ import {
   INITIAL_HP,
   MARK_BY_COMBATANT,
   MAX_PIECES_PER_PLAYER,
+  PLACEMENT_COST,
   TRAP_LIMIT,
   adjacentIndexes,
   energyKeyFor,
@@ -45,7 +46,13 @@ export interface CpuDecision {
  * comprar cartas, mudar regra ou aplicar dano — e o compilador garante isso.
  */
 export interface CpuActions {
-  placeMark: (index: number) => void;
+  /**
+   * Devolve `boolean` (reflete o `placeMark` real da store, `gameStore.ts`) —
+   * achado A.4 da Fase 8a: antes tipado `void`, e uma recusa (por qualquer
+   * motivo, presente ou futuro) passava em silêncio. `playCPUTurn` consome o
+   * retorno.
+   */
+  placeMark: (index: number) => boolean;
   /** Resolve a partir da mão da máquina. A IA nunca toca na mão do Player. */
   playCard: (uid: string, targetIndex?: number) => boolean;
   /** Passa a vez sem colocar peça — plano B quando `chooseCpuMove` não decide nada. */
@@ -487,6 +494,11 @@ export function chooseCpuMove(state: GameState, positionalBias = true): CpuDecis
   // antes de chegar aqui, ver `chooseCpuCardPlay`), só não decide colocação —
   // tratado exatamente como "sem jogada legal", sem precisar simular nada.
   if (state.machinePlacementBlocked) return null;
+  // Fase 8b: colocar peça custa `PLACEMENT_COST`. Sem energia suficiente,
+  // colocar não é uma decisão disponível — mesmo tratamento do guard acima,
+  // cai no mesmo "sem jogada legal" que `playCPUTurn` já sabe resolver
+  // chamando `endTurn` em vez de travar (achado A.4 da Fase 8a).
+  if (state[energyKeyFor(CPU)] < PLACEMENT_COST) return null;
 
   const moves = legalMoves(state);
   if (moves.length === 0) return null;
@@ -704,6 +716,22 @@ export async function playCPUTurn(
     return null;
   }
 
-  actions.placeMark(decision.index);
+  const placed = actions.placeMark(decision.index);
+  if (!placed) {
+    // Defensivo — inalcançável no caminho atual (o guard de energia acima e
+    // o de `machinePlacementBlocked` já filtram os dois motivos de recusa
+    // conhecidos ANTES de chegar aqui). Mas o tipo de `placeMark` agora
+    // reflete o `boolean` real (achado A.4 da Fase 8a) — uma recusa por
+    // qualquer motivo FUTURO não pode mais passar em silêncio: sem isto,
+    // nada mudaria (`turn`/`turnCount`/`pendingAcknowledgement`), então nada
+    // reacionaria o hook da CPU, e o turno travaria pra sempre.
+    console.error(
+      '[cpu] placeMark recusado apesar de chooseCpuMove ter decidido — decisão:',
+      decision,
+    );
+    actions.endTurn();
+    return null;
+  }
+
   return decision;
 }

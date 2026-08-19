@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react';
 
-import { consumeRemoteActions, resetSyncBridge, resyncFromActionLog } from '@/services/syncBridge';
+import {
+  consumeRemoteActions,
+  resetSyncBridge,
+  restoreOutbox,
+  resyncFromActionLog,
+} from '@/services/syncBridge';
 import { selectRoom, selectRoomCode, useMultiplayerStore } from '@/store/multiplayerStore';
 
 /**
@@ -29,10 +34,21 @@ export function useMultiplayerSync(): void {
      Os ids processados são específicos de uma sala. Sem o reset, entrar numa
      segunda partida com a ponte ainda cheia dos ids da primeira faria ela
      ignorar ações legítimas — e o jogo simplesmente não responderia às
-     jogadas do oponente, sem erro nenhum.                                   */
+     jogadas do oponente, sem erro nenhum.
+
+     `restoreOutbox()` roda logo depois, de propósito: `resetSyncBridge` só
+     zera o que é efêmero de SESSÃO (nunca o outbox persistido em disco — ver
+     o comentário lá), e é aqui que qualquer ação que não terminou de ser
+     confirmada antes do app fechar/cair retoma o envio. Cobre tanto
+     reconectar na MESMA sala (o caso principal) quanto entrar numa sala
+     nova — uma entrada de uma sala anterior continua tentando em segundo
+     plano até expirar por idade/tentativas (`outboxPersistence.ts`), sem
+     custo real: `pushAction` é uma escrita crua no Firebase, não depende de
+     nenhuma sessão de UI viva pra funcionar.                                */
   useEffect(() => {
     resetSyncBridge();
     needsFullResyncRef.current = true;
+    void restoreOutbox();
   }, [roomCode]);
 
   /* --- Consumo do log ------------------------------------------------------

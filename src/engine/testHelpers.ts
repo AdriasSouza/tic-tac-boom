@@ -57,6 +57,7 @@ export function createTestState(overrides: Partial<GameState> = {}): GameState {
     terminalLog: [],
     nextLogId: 0,
     extraTurnPending: null,
+    extraTurnCostWaived: null,
     status: 'PLAYING',
     roundWinner: null,
     winningLine: null,

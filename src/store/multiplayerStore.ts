@@ -39,12 +39,16 @@ export type MultiplayerStatus = 'DISCONNECTED' | 'IN_LOBBY' | 'MATCH_STARTED';
  * Estado da fila de saída de ações (`syncBridge`'s `outbox`) — `'idle'` sem
  * nada pendente, `'retrying'` tentando publicar de novo depois de uma falha,
  * `'stalled'` depois de várias tentativas seguidas (só muda o RÓTULO pra UI
- * comunicar urgência — a fila continua tentando, nunca desiste sozinha).
- * Escrito de fora do corpo da store por `syncBridge.ts` (mesmo padrão que
- * `pendingReconnectCode` já recebe de fora, abaixo) — é estado de REDE, não
- * de partida, por isso mora aqui e não no `gameStore`.
+ * comunicar urgência — a fila continua tentando essa entrada). `'failed'` é
+ * o único terminal: uma entrada esgotou `MAX_OUTBOX_ENTRY_ATTEMPTS`
+ * (`outboxPersistence.ts`) e foi descartada de vez — exceção deliberada ao
+ * "nunca desiste" das outras duas, só depois de dezenas de tentativas (ver
+ * `drainOutbox`, `syncBridge.ts`). Escrito de fora do corpo da store por
+ * `syncBridge.ts` (mesmo padrão que `pendingReconnectCode` já recebe de
+ * fora, abaixo) — é estado de REDE, não de partida, por isso mora aqui e não
+ * no `gameStore`.
  */
-export type OutboxStatus = 'idle' | 'retrying' | 'stalled';
+export type OutboxStatus = 'idle' | 'retrying' | 'stalled' | 'failed';
 
 export interface MultiplayerState {
   /** Código da sala atual, ou `null` fora de uma sala. */

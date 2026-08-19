@@ -15,6 +15,7 @@ import Animated, {
 
 import { playSound } from '@/audio/soundEngine';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
+import { useIsLocalTurn } from '@/hooks/useLocalTurn';
 import {
   getLocalCombatant,
   isLocalTurn,
@@ -26,6 +27,7 @@ import {
   canPlaceAt,
   isPendingTarget,
   selectCell,
+  selectEnergy,
   selectForcedVanish,
   selectHighlightedOldest,
   selectIsBlocked,
@@ -44,6 +46,7 @@ import {
   CHAOS_ROULETTE_FLICKER_DECEL_MS,
   CHAOS_ROULETTE_FLICKER_MS,
   MARK_BY_COMBATANT,
+  PLACEMENT_COST,
   type Combatant,
   type Mark,
 } from '@/store/gameStore';
@@ -110,6 +113,20 @@ function CellComponent({ index, size }: CellProps) {
   // Define qual peça é "minha" para efeito de cor — ver `colorFor`.
   const { localCombatant, isOnline } = useMatchPerspective();
   const targetingCaster = useGameStore(selectTargetingCaster);
+  /**
+   * Fase 8b: colocar peça passa a custar `PLACEMENT_COST`, então "não dá pra
+   * colocar aqui agora, falta energia" precisa de ALGUM sinal — o mais
+   * barato possível, reaproveitando o MESMO mecanismo de esmaecimento que
+   * `CardItem.tsx` já usa pra `canAfford` (`cardDisabled: {opacity:0.55}`,
+   * puro `StyleSheet` condicional, nenhuma animação nova). Global, não
+   * por-célula (mesmo padrão de `chaosRouletteSpinning`/`isTargeting` acima):
+   * as 9 células compartilham a mesma resposta pra "é meu turno e tenho
+   * energia?". Só esmaece célula VAZIA — uma célula ocupada não tem
+   * affordance de colocação pra começo de conversa.
+   */
+  const isMyTurn = useIsLocalTurn();
+  const localEnergy = useGameStore(useMemo(() => selectEnergy(localCombatant), [localCombatant]));
+  const showsUnaffordable = !piece && isMyTurn && localEnergy < PLACEMENT_COST;
   /**
    * Brilho de "alvo válido" — informação TÁTICA (qual peça está em jogo,
    * quais destinos ela pode tomar), não só "qual carta" (isso já é anunciado
@@ -605,7 +622,7 @@ function CellComponent({ index, size }: CellProps) {
         isHighlightedByVidente,
         isSpinning,
       )}
-      style={{ width: size, height: size }}
+      style={[{ width: size, height: size }, showsUnaffordable && styles.cellUnaffordable]}
     >
       <Animated.View
         style={[
@@ -862,6 +879,13 @@ function buildA11yLabel(
 /* -------------------------------------------------------------------------- */
 
 const styles = StyleSheet.create({
+  // Mesmo valor de `cardDisabled` em `CardItem.tsx` — mesmo sinal visual de
+  // "não dá pra pagar agora", reaproveitado aqui pra colocação de peça
+  // (Fase 8b). Só `opacity`: não muda largura/altura/padding, então não
+  // toca o orçamento de layout do `<Board />`.
+  cellUnaffordable: {
+    opacity: 0.55,
+  },
   surface: {
     alignItems: 'center',
     justifyContent: 'center',

@@ -4,6 +4,7 @@ import {
   CHAOS_SURGE_CHANCE,
   ENERGY_CAP,
   OPENING_HAND_SIZE,
+  PLACEMENT_COST,
   canPlaceAt,
   createEmptyBoard,
   getVanishingIndex,
@@ -110,6 +111,47 @@ describe('canPlaceAt — bloqueio de colocação da REBOBINAR', () => {
   it('sem nenhuma flag ativa, colocação segue liberada normalmente', () => {
     const state = createTestState({ turn: 'PLAYER' });
     expect(canPlaceAt(state, 0, 'PLAYER')).toBe(true);
+  });
+});
+
+describe('canPlaceAt — custo de energia (PLACEMENT_COST, Fase 8b)', () => {
+  it('recusa colocação com energia insuficiente', () => {
+    const state = createTestState({ turn: 'PLAYER', playerEnergy: 0 });
+    expect(canPlaceAt(state, 0, 'PLAYER')).toBe(false);
+  });
+
+  it('com energia exatamente igual ao custo, libera normalmente', () => {
+    const state = createTestState({ turn: 'PLAYER', playerEnergy: PLACEMENT_COST });
+    expect(canPlaceAt(state, 0, 'PLAYER')).toBe(true);
+  });
+
+  it('REBOBINAR + energia insuficiente ao mesmo tempo: ainda recusa, sem precisar distinguir o motivo (defesa em profundidade)', () => {
+    const state = createTestState({
+      turn: 'MACHINE',
+      machinePlacementBlocked: true,
+      machineEnergy: 0,
+    });
+    expect(canPlaceAt(state, 0, 'MACHINE')).toBe(false);
+  });
+
+  it('TURNO_EXTRA/MINA: a 1ª colocação da sequência (extraTurnPending) é isenta do custo', () => {
+    const state = createTestState({ turn: 'MACHINE', machineEnergy: 0, extraTurnPending: 'MACHINE' });
+    expect(canPlaceAt(state, 0, 'MACHINE')).toBe(true);
+  });
+
+  it('TURNO_EXTRA/MINA: a 2ª colocação da sequência (extraTurnCostWaived) também é isenta', () => {
+    const state = createTestState({
+      turn: 'MACHINE',
+      machineEnergy: 0,
+      extraTurnPending: null, // já consumida pela 1ª colocação
+      extraTurnCostWaived: 'MACHINE',
+    });
+    expect(canPlaceAt(state, 0, 'MACHINE')).toBe(true);
+  });
+
+  it('a isenção de turno extra é só pra ESTE combatente — o outro lado paga normal', () => {
+    const state = createTestState({ turn: 'PLAYER', playerEnergy: 0, extraTurnCostWaived: 'MACHINE' });
+    expect(canPlaceAt(state, 0, 'PLAYER')).toBe(false);
   });
 });
 

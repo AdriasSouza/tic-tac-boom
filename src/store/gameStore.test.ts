@@ -8,6 +8,7 @@ import { createEmptyBoard, type PendingInteraction } from '@/engine/rules';
 import {
   CHAOS_ROULETTE_COLUMN_STOP_MS,
   ENERGY_CAP,
+  PLACEMENT_COST,
   selectHighlightedOldest,
   useGameStore,
 } from '@/store/gameStore';
@@ -45,27 +46,88 @@ afterEach(() => {
 
 describe('energia — regen simétrico ao longo de vários turnos', () => {
   it('os dois lados ganham +1 a cada turno, respeitando o teto de ENERGY_CAP', () => {
-    // Estado inicial forçado: player gastou tudo, machine já está no teto.
-    useGameStore.setState({ playerEnergy: 0, machineEnergy: ENERGY_CAP });
+    // Estado inicial forçado: player com só 1⚡ (o mínimo pra pagar a
+    // colocação do turno 1 — com playerEnergy:0 a colocação nem aconteceria,
+    // `canPlaceAt` recusaria por PLACEMENT_COST, Fase 8b), machine já no teto.
+    useGameStore.setState({ playerEnergy: 1, machineEnergy: ENERGY_CAP });
 
-    // Turno 1: PLAYER coloca peça em 0. Regen roda pros DOIS lados.
+    // Turno 1: PLAYER coloca peça em 0 — paga PLACEMENT_COST (1) E regenera
+    // (+1) na MESMA colocação: o gasto e o regen se cancelam pra quem colocou
+    // (1 - 1 + 1 = 1), o lado que NÃO jogou só recebe o regen de graça.
     useGameStore.getState().placeMark('PLAYER', 0);
-    expect(useGameStore.getState().playerEnergy).toBe(1); // 0 + 1
+    expect(useGameStore.getState().playerEnergy).toBe(1); // 1 - 1 (custo) + 1 (regen) = 1
     expect(useGameStore.getState().machineEnergy).toBe(ENERGY_CAP); // já no teto, não passa
 
-    // Turno 2: MACHINE coloca peça em 1.
+    // Turno 2: MACHINE coloca peça em 1 — mesmo efeito nulo pra quem coloca,
+    // e PLAYER (que não jogou nada) ganha o regen de graça.
     useGameStore.getState().placeMark('MACHINE', 1);
-    expect(useGameStore.getState().playerEnergy).toBe(2); // 1 + 1
-    expect(useGameStore.getState().machineEnergy).toBe(ENERGY_CAP);
+    expect(useGameStore.getState().playerEnergy).toBe(2); // 1 + 1 (regen de graça)
+    expect(useGameStore.getState().machineEnergy).toBe(ENERGY_CAP); // 3 - 1 + 1, já no teto
 
-    // Turno 3: PLAYER coloca peça em 2.
+    // Turno 3: PLAYER coloca peça em 2 — de novo, gasto+regen se cancelam pra
+    // quem coloca.
     useGameStore.getState().placeMark('PLAYER', 2);
-    expect(useGameStore.getState().playerEnergy).toBe(3); // 2 + 1, agora no teto
+    expect(useGameStore.getState().playerEnergy).toBe(2); // 2 - 1 + 1 = 2
     expect(useGameStore.getState().machineEnergy).toBe(ENERGY_CAP);
 
-    // Turno 4: MACHINE coloca peça em 3 — player já no teto, não deveria passar.
+    // Turno 4: MACHINE coloca peça em 3 — PLAYER ganha o regen de graça de
+    // novo e finalmente alcança o teto.
     useGameStore.getState().placeMark('MACHINE', 3);
-    expect(useGameStore.getState().playerEnergy).toBe(ENERGY_CAP);
+    expect(useGameStore.getState().playerEnergy).toBe(ENERGY_CAP); // 2 + 1 = 3
+  });
+});
+
+describe('placeMark — custo de energia (PLACEMENT_COST, Fase 8b)', () => {
+  it('recusa com energia insuficiente, sem nenhum efeito colateral', () => {
+    useGameStore.setState({ turn: 'PLAYER', playerEnergy: 0 });
+
+    const before = useGameStore.getState();
+    const played = useGameStore.getState().placeMark('PLAYER', 0);
+    const after = useGameStore.getState();
+
+    expect(played).toBe(false);
+    // Mesma prova de referência idêntica já usada nos outros testes de guard:
+    // `canPlaceAt` recusa ANTES de qualquer `set()`.
+    expect(after).toBe(before);
+    expect(after.board[0]).toBeNull();
+  });
+
+  it('colocação bem-sucedida (ramo normal, sem fechar rodada) deduz exatamente PLACEMENT_COST', () => {
+    useGameStore.setState({ turn: 'PLAYER', playerEnergy: 3, machineEnergy: 0 });
+
+    // Índice 0 não fecha linha nenhuma sozinho — fica no ramo de continuação.
+    const played = useGameStore.getState().placeMark('PLAYER', 0);
+    expect(played).toBe(true);
+
+    const state = useGameStore.getState();
+    // 3 - PLACEMENT_COST (1) + regen (+1, fim de turno) = 3 — pra provar que
+    // não é só "ficou 2", confirma tanto o débito quanto o não-débito do
+    // outro lado separadamente: MACHINE não jogou nada e só recebe o regen.
+    expect(state.playerEnergy).toBe(3 - PLACEMENT_COST + 1);
+    expect(state.machineEnergy).toBe(0 + 1); // regen de fim de turno, sem custo nenhum
+  });
+
+  it('colocação que FECHA a rodada deduz PLACEMENT_COST de quem jogou — e preserva a energia do outro lado intacta (nenhum regen roda aqui, só na rodada seguinte)', () => {
+    const board = createEmptyBoard();
+    board[0] = { owner: 'PLAYER', mark: 'X', turnPlaced: 1 };
+    board[1] = { owner: 'PLAYER', mark: 'X', turnPlaced: 2 };
+    useGameStore.setState({ turn: 'PLAYER', board, playerEnergy: 3, machineEnergy: 2 });
+
+    vi.useFakeTimers(); // segura o setTimeout de scheduleRoundTransition
+    const won = useGameStore.getState().placeMark('PLAYER', 2); // fecha 0-1-2
+    expect(won).toBe(true);
+
+    const state = useGameStore.getState();
+    expect(state.status).toBe('ROUND_OVER');
+    // Achado central desta fase: o ramo que FECHA a rodada não chama
+    // `beginTurn`/regen (isso só acontece em `startNextRound`, mais tarde) —
+    // então aqui só o CUSTO de quem colocou a peça deve aparecer. O lado que
+    // NÃO jogou (MACHINE) precisa continuar EXATAMENTE como estava — se
+    // `energySpend` tivesse sido esquecido de um dos dois `set()` da função,
+    // é o lado que ficou de fora que mais provavelmente vazaria (energia
+    // "congelada" no valor de antes), não o de quem jogou.
+    expect(state.playerEnergy).toBe(3 - PLACEMENT_COST);
+    expect(state.machineEnergy).toBe(2); // intacta — nenhum regen rodou ainda
   });
 });
 
@@ -829,7 +891,11 @@ describe('VISÃO ABSOLUTA (FULL_INTEL) — revelação automática com prazo, po
     useGameStore.setState({
       turn: 'PLAYER',
       board,
-      playerEnergy: 3,
+      // 4, não 3: FULL_INTEL custa 3⚡, e a colocação que fecha a rodada logo
+      // abaixo agora custa mais 1⚡ (PLACEMENT_COST, Fase 8b) — sem a folga,
+      // sobraria 0⚡ e `placeMark` recusaria por energia insuficiente, o que
+      // não é o que este teste quer exercitar.
+      playerEnergy: 4,
       playerHand: [{ uid: 'fi', cardId: 'FULL_INTEL' }],
       machineHand: [{ uid: 'm1', cardId: 'HEAL_SELF' }],
     });

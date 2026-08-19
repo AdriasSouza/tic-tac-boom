@@ -91,9 +91,7 @@ function viewFor(decidingSide: Combatant, real: GameState): GameState {
 
 function buildActions(decidingSide: Combatant, cardPlays: CardPlayRecord[]): CpuActions {
   return {
-    placeMark: (index) => {
-      useGameStore.getState().placeMark(decidingSide, index);
-    },
+    placeMark: (index) => useGameStore.getState().placeMark(decidingSide, index),
     playCard: (uid, targetIndex) => {
       const hand = useGameStore.getState()[handKeyFor(decidingSide)];
       const cardId = hand.find((c) => c.uid === uid)?.cardId;

@@ -599,6 +599,29 @@ export interface GameState {
    */
   extraTurnPending: Combatant | null;
 
+  /**
+   * Combatente cuja PRÓXIMA colocação (a 2ª da sequência de turno extra, a
+   * que de fato passa a vez) também está isenta de `PLACEMENT_COST` — Fase
+   * 8b. Setada por `placeMark` quando `extraTurnPending` é consumido (a 1ª
+   * colocação da sequência), consumida na colocação seguinte deste mesmo
+   * combatente.
+   *
+   * Campo PRÓPRIO, não reaproveita `extraTurnPending`, porque as duas
+   * colocações da sequência têm o campo de controle em ESTADOS diferentes: a
+   * 1ª lê `extraTurnPending !== null`, a 2ª já o encontra `null` (consumido
+   * pela 1ª) — sem um campo separado para "a próxima também é isenta", a 2ª
+   * colocação não teria como se identificar como parte da mesma sequência.
+   *
+   * Por que as DUAS são isentas, não só a 1ª: entre elas não existe nenhum
+   * regen (`placeMark` pula o regen justamente na 1ª, de propósito — "concede
+   * uma colocação extra, não energia extra"), então a 2ª colocação nunca teria
+   * de onde tirar o `PLACEMENT_COST` — MINA/TURNO_EXTRA custam exatamente
+   * `ENERGY_CAP` (3), o teto, então sobra sempre 0⚡ depois de jogá-las, sem
+   * exceção. Cobrar a 2ª tornaria a concessão inteira da carta inutilizável
+   * na prática (decisão confirmada com o usuário, Fase 8b).
+   */
+  extraTurnCostWaived: Combatant | null;
+
   status: MatchStatus;
   /** Quem venceu a rodada atual (resetado ao iniciar a próxima). */
   roundWinner: Combatant | null;
@@ -686,6 +709,9 @@ export const ENERGY_CAP = 3;
 
 /** Dano padrão aplicado ao perdedor de uma rodada. Cartas podem alterar. */
 export const ROUND_DAMAGE = 1;
+
+/** Custo em ⚡ de colocar uma peça (Fase 8b — antes, colocação era grátis). */
+export const PLACEMENT_COST = 1;
 
 /** Teto de cartas na mão do jogador. */
 export const HAND_LIMIT = 5;
@@ -961,6 +987,24 @@ export function canPlaceAt(state: GameState, index: number, combatant: Combatant
   // REBOBINAR: o resto do turno de `combatant` segue normal (energia, cartas,
   // armadilhas) — só a colocação de peça é recusada aqui.
   if (state[placementBlockedKeyFor(combatant)]) return false;
+  // Fase 8b: colocar peça custa `PLACEMENT_COST` — checado aqui, não em
+  // `Cell.tsx`/CPU isoladamente, pelo mesmo motivo do bloqueio de REBOBINAR
+  // logo acima: um guard de domínio só é de verdade se viver no motor.
+  //
+  // EXCETO as duas colocações da sequência de turno extra (TURNO_EXTRA/MINA)
+  // — `extraTurnPending === combatant` cobre a 1ª, `extraTurnCostWaived ===
+  // combatant` cobre a 2ª (ver o campo, acima). "Concede uma colocação
+  // extra, não energia extra" (P11, `docs/CARTAS.md`) já valia pro regen
+  // (`placeMark`, `gameStore.ts`) e agora precisa valer pro CUSTO das DUAS:
+  // MINA/TURNO_EXTRA custam exatamente `ENERGY_CAP`, então sobra sempre 0⚡
+  // depois de jogá-las — sem a isenção nas duas, a concessão inteira da
+  // carta seria inutilizável na prática (decisão confirmada com o usuário,
+  // Fase 8b).
+  const placementCostWaived =
+    state.extraTurnPending === combatant || state.extraTurnCostWaived === combatant;
+  if (!placementCostWaived && state[energyKeyFor(combatant)] < PLACEMENT_COST) {
+    return false;
+  }
   if (index < 0 || index > 8) return false;
   if (state.board[index] !== null) return false;
   // Caos (BLOCKED_CELL) e carta (TRAVAR) lacram por caminhos diferentes; aqui

@@ -19,6 +19,7 @@ import { isFirebaseConfigured } from '@/config/firebase';
 import { normalizeRoomCode } from '@/services/multiplayerService';
 import {
   selectError,
+  selectHasOpponent,
   selectIsBusy,
   selectMultiplayerStatus,
   selectPendingReconnectCode,
@@ -31,6 +32,15 @@ import { colors } from '@/theme/colors';
 
 /** Comprimento do código de sala. Espelha `ROOM_CODE_LENGTH` do serviço. */
 const CODE_LENGTH = 4;
+
+/**
+ * Depois de quanto tempo com o oponente já sentado (`selectHasOpponent`) mas
+ * a sala ainda sem virar `MATCH_STARTED`, mostra o aviso de "algo pode ter
+ * dado errado" — folga de sobra pra `flipRoomToPlaying` (3 tentativas,
+ * `multiplayerService.ts`, no máximo ~1,2s no total) terminar sozinha antes
+ * de alarmar o jogador à toa.
+ */
+const STUCK_START_HINT_MS = 8_000;
 
 /**
  * Lobby do multiplayer online.
@@ -57,6 +67,7 @@ export default function LobbyScreen() {
   const error = useMultiplayerStore(selectError);
   const isBusy = useMultiplayerStore(selectIsBusy);
   const pendingReconnectCode = useMultiplayerStore(selectPendingReconnectCode);
+  const hasOpponent = useMultiplayerStore(selectHasOpponent);
 
   const createRoom = useMultiplayerStore((s) => s.createRoom);
   const joinRoom = useMultiplayerStore((s) => s.joinRoom);
@@ -125,6 +136,27 @@ export default function LobbyScreen() {
     playSound('TAP_SOFT');
     dismissReconnect();
   }, [dismissReconnect]);
+
+  /* --- Detecção de sala travada (achado da Fase 8a: player1 esperava "o
+     oponente" pra sempre sem nenhum sinal de que algo deu errado) -----------
+     `hasOpponent` vira `true` assim que a transação de assento de `player2`
+     comita — ANTES da escrita de status (`flipRoomToPlaying`,
+     `multiplayerService.ts`) terminar. Se o oponente já ocupou a vaga mas
+     `status` não virou `MATCH_STARTED` depois de uma folga generosa, é sinal
+     de que aquela escrita não confirmou — o único caso em que isto acontece
+     hoje é exatamente o bug que esta fase corrige (com retry + auto-cura no
+     REJOIN), então este aviso deveria ser raro na prática, não o caminho
+     comum de espera normal (onde `hasOpponent` ainda é `false`). */
+  const [stuckHint, setStuckHint] = useState(false);
+  useEffect(() => {
+    const isWaitingNow = status === 'IN_LOBBY' && roomCode !== null;
+    if (!isWaitingNow || !hasOpponent) {
+      setStuckHint(false);
+      return;
+    }
+    const timer = setTimeout(() => setStuckHint(true), STUCK_START_HINT_MS);
+    return () => clearTimeout(timer);
+  }, [status, roomCode, hasOpponent]);
 
   /* --- Sem configuração ---------------------------------------------------- */
   if (!configured) {
@@ -205,6 +237,14 @@ export default function LobbyScreen() {
             <ActivityIndicator color={colors.winGlow} />
             <Text style={styles.hint}>Aguardando o oponente entrar...</Text>
           </View>
+
+          {stuckHint && (
+            <Text style={styles.stuckHint}>
+              O oponente parece ter entrado, mas a partida não confirmou o início — pode ser um
+              problema de conexão dele. Aguarde mais um pouco ou toque em Cancelar e peça pra
+              ele tentar de novo.
+            </Text>
+          )}
 
           <Text style={styles.slotHint}>
             Você é {playerId === 'player1' ? 'o anfitrião' : 'o convidado'}
@@ -366,6 +406,13 @@ const styles = StyleSheet.create({
     fontSize: 9,
     letterSpacing: 1.5,
     textAlign: 'center',
+  },
+  stuckHint: {
+    color: colors.danger,
+    fontSize: 10,
+    lineHeight: 15,
+    textAlign: 'center',
+    opacity: 0.9,
   },
   reconnectCode: {
     color: colors.markX,

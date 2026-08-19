@@ -14,6 +14,7 @@ import {
   MARK_BY_COMBATANT,
   MAX_PIECES_PER_PLAYER,
   OPENING_HAND_SIZE,
+  PLACEMENT_COST,
   ROUND_DAMAGE,
   STARTING_ENERGY,
   TRAP_LIMIT,
@@ -142,6 +143,7 @@ export {
   MARK_BY_COMBATANT,
   MAX_PIECES_PER_PLAYER,
   OPENING_HAND_SIZE,
+  PLACEMENT_COST,
   ROUND_DAMAGE,
   STARTING_ENERGY,
   TRAP_LIMIT,
@@ -455,6 +457,7 @@ const createInitialState = (): GameState => ({
   terminalLog: [],
   nextLogId: 0,
   extraTurnPending: null,
+  extraTurnCostWaived: null,
   status: 'IDLE',
   roundWinner: null,
   winningLine: null,
@@ -1307,11 +1310,50 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // `combatant` precisa BATER com `state.turn` — sem isto, qualquer chamador
     // (toque durante a vez da CPU, uma ação de rede fora de ordem) colocaria
     // peça como se fosse o dono da vez, não quem de fato chamou.
+    //
+    // Todo caminho de colocação de peça — local (`Cell.tsx`), CPU
+    // (`useCpuOpponent.ts`), replay de rede (`netPlaceMark`/`applyLoggedAction`
+    // em `syncBridge.ts`) — passa por AQUI, e só por aqui: é este `placeMark`,
+    // não um checador espalhado por cada chamador, que segura `canPlaceAt`
+    // (turno, status, pausa, confirmação pendente, REBOBINAR, custo de
+    // energia — `PLACEMENT_COST`, Fase 8b). Se uma ação nova de tabuleiro for
+    // adicionada no futuro SEM passar por esta função, ela não herda nenhuma
+    // dessas guardas de graça — confirme isso ao adicionar qualquer ação nova
+    // que toque o tabuleiro, em vez de assumir que "é óbvio que passa por
+    // aqui".
     if (!canPlaceAt(state, index, combatant)) return false;
 
     const owner = combatant;
     const board = [...state.board];
     const nextTurnCount = state.turnCount + 1;
+    // Determinado AQUI (não só mais abaixo, no ramo de continuação) porque
+    // decide o CUSTO — `canPlaceAt` já isenta pelo mesmo motivo (ver o
+    // comentário lá), então esta dedução tem que concordar, senão a guarda
+    // libera a jogada e a dedução cobra por algo que a guarda disse ser
+    // grátis. `keepsTurn` continua sendo só sobre a 1ª colocação (decide o
+    // regen também, mais abaixo); `placementCostWaived` cobre as DUAS.
+    const keepsTurn = state.extraTurnPending === owner;
+    const placementCostWaived = keepsTurn || state.extraTurnCostWaived === owner;
+    // Próximo valor de `extraTurnCostWaived`: liga pra owner quando ESTA é a
+    // 1ª colocação (a 2ª que vem a seguir também precisa ser isenta), desliga
+    // quando ESTA é a 2ª (acabou de consumir a isenção), inalterado em
+    // qualquer outra colocação normal.
+    const nextExtraTurnCostWaived: Combatant | null = keepsTurn
+      ? owner
+      : state.extraTurnCostWaived === owner
+        ? null
+        : state.extraTurnCostWaived;
+    // Computado uma vez, mesclado nos DOIS `set()` abaixo (fecha a rodada OU
+    // continua) — mesmo padrão de `energySpend` que `resolveCardPlay` já usa
+    // pra cartas. Os DOIS precisam: `startNextRound` lê `state.playerEnergy`/
+    // `state.machineEnergy` (os DOIS lados) pra regenerar a rodada seguinte —
+    // sem o merge no ramo que FECHA a rodada, a peça vencedora sairia de
+    // graça, e a energia do lado que NÃO jogou ficaria "congelada" também
+    // errada (o bug mais provável de vazar se um dos dois `set()` for
+    // esquecido não é só do lado de quem colocou a peça).
+    const energySpend: Partial<GameState> = placementCostWaived
+      ? {}
+      : { [energyKeyFor(owner)]: state[energyKeyFor(owner)] - PLACEMENT_COST };
 
     // --- 1. Abre espaço removendo a peça condenada -------------------------
     // `state.forcedVanish` (ANOMALIA/OBSOLESCÊNCIA) só é consultado se for
@@ -1357,6 +1399,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
         board,
         turnCount: nextTurnCount,
         ...lastVanishedIndexPatch,
+        ...energySpend,
         forcedVanish: nextForcedVanish,
         status: 'ROUND_OVER',
         roundWinner: result.winner,
@@ -1388,15 +1431,20 @@ export const useGameStore = create<GameStore>()((set, get) => {
     }
 
     // --- 4. Turno extra (carta TURNO_EXTRA/TURNO EXTRA) ---------------------
-    // A flag é consumida aqui: vale por uma jogada só.
-    const keepsTurn = state.extraTurnPending === owner;
+    // `keepsTurn` já foi determinado acima (decide o custo também agora) — a
+    // flag `extraTurnPending` é consumida aqui, vale por uma jogada só.
     // Continuação (turno extra) ou alternância normal — nos dois casos é uma
     // jogada NOVA começando. A ENERGIA já não é igual: `keepsTurn` é a segunda
     // colocação da MESMA jogada de TURNO_EXTRA, então pula o regen (P11 de
     // `docs/CARTAS.md` — a carta concede uma colocação extra, não energia
     // extra; regenerar aqui faria ela se pagar sozinha).
     const nextTurnHolder = keepsTurn ? owner : opponentOf(owner);
-    const nextTurnInfo = beginTurn(state, !keepsTurn);
+    // `beginTurn` precisa ler a energia JÁ COM o custo de colocação descontado
+    // (`energySpend`, computado acima a partir do `state` original) — senão o
+    // regen de +1 calcularia a partir do valor de ANTES do gasto e devolveria
+    // exatamente o que acabou de ser cobrado, tornando `PLACEMENT_COST`
+    // inobservável sempre que a colocação não fecha a rodada (o caso comum).
+    const nextTurnInfo = beginTurn({ ...state, ...energySpend }, !keepsTurn);
 
     // Empate por tabuleiro cheio é impossível aqui: no máximo 3 + 3 = 6 peças
     // ocupam o grid de 9 células. A rodada só termina por vitória.
@@ -1406,8 +1454,10 @@ export const useGameStore = create<GameStore>()((set, get) => {
       ...lastVanishedIndexPatch,
       forcedVanish: nextForcedVanish,
       turn: nextTurnHolder,
+      ...energySpend,
       ...nextTurnInfo.patch,
       extraTurnPending: keepsTurn ? null : state.extraTurnPending,
+      extraTurnCostWaived: nextExtraTurnCostWaived,
       // VIDENTE: sobrevive à 2ª colocação de TURNO_EXTRA (`keepsTurn` — é o
       // MESMO turno de `owner` ainda) e só limpa quando o turno de fato passa
       // adiante.
@@ -1686,6 +1736,7 @@ export const useGameStore = create<GameStore>()((set, get) => {
         winningLine: null,
         lastVanishedIndex: null,
         extraTurnPending: null, // turno extra não atravessa rodadas
+        extraTurnCostWaived: null, // mesma vida útil de `extraTurnPending`
         // Interação pendente morre com a rodada — mesma flag de turno que
         // `extraTurnPending`. Nunca deveria estar setada aqui de qualquer
         // forma (`canPlaceAt` bloqueia `placeMark` enquanto ela existir, ver
@@ -1767,6 +1818,11 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // vez de usá-la, ela não pode sobrar para reativar `keepsTurn` numa
       // jogada futura dele.
       extraTurnPending: state.extraTurnPending === combatant ? null : state.extraTurnPending,
+      // Mesmo consumo, pro caso de `combatant` já ter usado a 1ª colocação
+      // (grátis) e escolhido passar a vez em vez de usar a 2ª: a isenção não
+      // pode sobrar para uma jogada futura sem relação nenhuma com esta.
+      extraTurnCostWaived:
+        state.extraTurnCostWaived === combatant ? null : state.extraTurnCostWaived,
       // VIDENTE: o destaque de `combatant` só existe enquanto o turno DELE
       // não terminou — passar a vez é exatamente isso terminando.
       highlightedOldestFor:

@@ -28,8 +28,10 @@ const STALE_WAIT_MS = 20_000;
  *
  * 1. **Minha última jogada não confirmou** (`outboxStatus` em
  *    `multiplayerStore`, escrito pela fila de retry de `syncBridge.ts`) —
- *    aviso curto durante `'retrying'`, com botão TENTAR AGORA quando vira
- *    `'stalled'` (várias tentativas seguidas).
+ *    aviso curto durante `'retrying'`, botão TENTAR AGORA quando vira
+ *    `'stalled'` (várias tentativas seguidas), e botão SINCRONIZAR se chegar
+ *    a `'failed'` (a fila desistiu de vez dessa entrada — só um resync com o
+ *    servidor resolve).
  * 2. **Estou esperando o oponente há tempo suspeito**, ele aparece
  *    conectado, e minha própria fila está limpa (se não estivesse, o caso 1
  *    já explicaria a espera) — nudge com botão SINCRONIZAR, que busca o log
@@ -85,6 +87,14 @@ export function ConnectionSyncBanner() {
   } else if (outboxStatus === 'stalled') {
     text = 'NÃO CONSEGUIMOS ENVIAR SUA JOGADA';
     action = { label: 'TENTAR AGORA', onPress: retryOutboxNow };
+  } else if (outboxStatus === 'failed') {
+    // Terminal: o outbox desistiu desta entrada depois de esgotar as
+    // tentativas (`MAX_OUTBOX_ENTRY_ATTEMPTS`, `outboxPersistence.ts`) — ela
+    // nunca vai ser reenviada sozinha. `manualResync` é o único remédio: busca
+    // a verdade do servidor (que nunca recebeu esta ação) e reconstrói o
+    // estado local a partir dela.
+    text = 'UMA JOGADA NÃO PÔDE SER ENVIADA';
+    action = { label: resyncing ? 'SINCRONIZANDO...' : 'SINCRONIZAR', onPress: handleResync, disabled: resyncing };
   } else if (staleWait) {
     text = 'PARECE QUE ESTÁ DEMORANDO';
     action = { label: resyncing ? 'SINCRONIZANDO...' : 'SINCRONIZAR', onPress: handleResync, disabled: resyncing };

@@ -1,4 +1,10 @@
 import { fetchRoom, pushAction } from '@/services/multiplayerService';
+import {
+  loadPersistedOutbox,
+  savePersistedOutbox,
+  MAX_OUTBOX_ENTRY_ATTEMPTS,
+  type OutboxEntry,
+} from '@/services/outboxPersistence';
 import { useGameStore } from '@/store/gameStore';
 import { selectOpponentConnectionStatus, useMultiplayerStore } from '@/store/multiplayerStore';
 import type { Combatant, InteractionSelection } from '@/engine/rules';
@@ -144,6 +150,12 @@ let lastActionAuthor: PlayerSlot | null = null;
 /**
  * Zera a ponte. Chamado ao entrar numa partida — sem isto, ids de uma sala
  * anterior fariam a ponte ignorar ações legítimas da sala nova.
+ *
+ * **Só o estado EM MEMÓRIA.** Nunca apaga o outbox persistido em disco
+ * (`outboxPersistence.ts`) — é exatamente esse persistido que precisa
+ * sobreviver a este reset para alimentar `restoreOutbox()` logo em seguida
+ * (`useMultiplayerSync.ts` chama os dois em sequência). Apagar o persistido
+ * aqui destruiria a própria recuperação que ele existe para viabilizar.
  */
 export function resetSyncBridge(): void {
   processedActionIds = new Set<string>();
@@ -193,12 +205,6 @@ export function canLocalAcknowledge(): boolean {
    direto. Fora do online elas são um repasse puro, então os modos local e CPU
    não pagam nada por existirem.                                              */
 
-interface OutboxEntry {
-  roomCode: string;
-  action: MultiplayerAction;
-  attempts: number;
-}
-
 /**
  * Ações aplicadas localmente mas ainda não confirmadas pelo servidor,
  * processadas em ORDEM ESTRITA — nunca duas em voo ao mesmo tempo.
@@ -221,9 +227,13 @@ const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
 /**
  * Depois de quantas tentativas malsucedidas o status reportado à UI vira
  * `'stalled'` em vez de `'retrying'` — só muda o RÓTULO (comunica urgência
- * crescente), nunca desiste de tentar de verdade: desistir permanentemente
- * de publicar uma ação já aplicada localmente é uma dessincronia
- * PERMANENTE sem saída — pior que continuar tentando em silêncio.
+ * crescente). **Não é o ponto em que se desiste** — isso só acontece bem
+ * mais tarde, em `MAX_OUTBOX_ENTRY_ATTEMPTS` (`outboxPersistence.ts`, muito
+ * maior que este número): desistir permanentemente de publicar uma ação já
+ * aplicada localmente é uma dessincronia PERMANENTE sem saída, então o
+ * padrão aqui continua sendo "nunca desiste sozinho" — a exceção documentada
+ * é só depois de dezenas de tentativas, quando insistir deixou de ser
+ * otimismo e virou desperdício (ver o `if` de descarte em `drainOutbox`).
  */
 const STALLED_AFTER_ATTEMPTS = 5;
 
@@ -261,10 +271,37 @@ async function drainOutbox(): Promise<void> {
     try {
       await pushAction(entry.roomCode, entry.action);
       outbox.shift();
+      void savePersistedOutbox(outbox);
       if (outbox.length === 0) useMultiplayerStore.setState({ outboxStatus: 'idle' });
     } catch (error) {
       entry.attempts += 1;
       console.warn('[syncBridge] falha ao publicar ação (tentativa', entry.attempts, '):', error);
+
+      // Exceção documentada ao "nunca desiste" (ver `STALLED_AFTER_ATTEMPTS`
+      // acima) — depois de MUITAS tentativas, insistir deixou de ser
+      // otimismo. Descarta só ESTA entrada (não trava a fila inteira atrás
+      // dela) e só acende o aviso pra UI se ainda for a sala ATIVA agora —
+      // uma entrada de uma sala antiga/abandonada sendo descartada em
+      // segundo plano não deve interromper uma partida diferente em
+      // andamento na tela.
+      if (entry.attempts >= MAX_OUTBOX_ENTRY_ATTEMPTS) {
+        console.error(
+          '[syncBridge] desistindo de publicar ação após',
+          entry.attempts,
+          'tentativas — descartada:',
+          entry.action.type,
+          'na sala',
+          entry.roomCode,
+        );
+        outbox.shift();
+        void savePersistedOutbox(outbox);
+        if (entry.roomCode === useMultiplayerStore.getState().roomCode) {
+          useMultiplayerStore.setState({ outboxStatus: 'failed' });
+        }
+        continue; // próxima entrada, sem esperar backoff por uma que já foi descartada
+      }
+
+      void savePersistedOutbox(outbox); // `attempts` mudou, mantém o espelho em disco atual
       useMultiplayerStore.setState({
         outboxStatus: entry.attempts >= STALLED_AFTER_ATTEMPTS ? 'stalled' : 'retrying',
       });
@@ -276,6 +313,32 @@ async function drainOutbox(): Promise<void> {
   }
 
   draining = false;
+}
+
+/**
+ * Recarrega o outbox persistido em disco e retoma o envio de onde parou.
+ *
+ * Chamada por `useMultiplayerSync.ts` logo depois de `resetSyncBridge()`, a
+ * cada entrada/reentrada numa sala. `if (outbox.length > 0) return;` é a
+ * guarda de idempotência — protege contra o double-invoke de efeito do React
+ * em dev (mesmo cuidado já usado em outros componentes desta base) e contra
+ * chamadas repetidas em geral: uma vez que o outbox em memória já tem algo
+ * (seja de uma restauração anterior, seja de uma ação nova que o jogador
+ * acabou de disparar), uma segunda restauração seria uma duplicata.
+ *
+ * **Nunca toca `useGameStore`.** `loadPersistedOutbox()` só devolve ações
+ * que ainda faltam ser CONFIRMADAS pelo servidor — elas já foram aplicadas
+ * ao motor no instante em que entraram no outbox, antes do processo morrer.
+ * Restaurar aqui só retoma o lado de REDE (`pushAction`), nunca o de jogo.
+ */
+export async function restoreOutbox(): Promise<void> {
+  if (outbox.length > 0) return;
+
+  const restored = await loadPersistedOutbox();
+  if (restored.length === 0) return;
+
+  outbox = restored;
+  void drainOutbox();
 }
 
 /** Publica a ação, se estivermos online e ela não tiver vindo da rede. */
@@ -294,7 +357,8 @@ function broadcast(build: (by: PlayerSlot) => MultiplayerAction): void {
   // anterior, uma falha agora RETENTA sozinha (com backoff, ver acima) e
   // reporta o status em `multiplayerStore.outboxStatus` para a UI — não fica
   // mais só um `console.warn` que ninguém vê.
-  outbox.push({ roomCode, action: build(playerId), attempts: 0 });
+  outbox.push({ roomCode, action: build(playerId), attempts: 0, createdAt: Date.now() });
+  void savePersistedOutbox(outbox);
   void drainOutbox();
 }
 
@@ -644,6 +708,17 @@ export async function manualResync(): Promise<boolean> {
     if (snapshot === null) return false;
 
     resyncFromActionLog(snapshot.seed, snapshot.actions);
+
+    // `'failed'` (uma entrada do outbox foi descartada depois de esgotar as
+    // tentativas, ver `drainOutbox`) é o único status que este resync
+    // resolve por si só — ele busca a verdade do servidor, que é
+    // exatamente o remédio pra uma ação que nunca chegou lá. Só limpa se a
+    // fila já estiver vazia: se ainda sobrar algo tentando, o status
+    // daquilo continua valendo.
+    if (useMultiplayerStore.getState().outboxStatus === 'failed' && outbox.length === 0) {
+      useMultiplayerStore.setState({ outboxStatus: 'idle' });
+    }
+
     return true;
   } catch (error) {
     console.warn('[syncBridge] falha ao sincronizar manualmente:', error);

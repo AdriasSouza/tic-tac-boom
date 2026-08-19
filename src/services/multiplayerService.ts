@@ -13,6 +13,7 @@ import {
 
 import { getDb } from '@/config/firebase';
 import { generateSeed } from '@/engine/rng';
+import { retryAsync } from '@/services/retry';
 import type {
   MultiplayerAction,
   PlayerConnectionStatus,
@@ -284,6 +285,31 @@ function playerRef(code: string, slot: PlayerSlot) {
   return ref(getDb(), `${ROOMS_PATH}/${code}/players/${slot}`);
 }
 
+/**
+ * Vira a sala para `PLAYING` — a escrita que acorda o listener de quem criou
+ * a sala (`multiplayerStore.startListening`) para a partida ter começado.
+ *
+ * **Confirmado por leitura, não presumido:** esta é a ÚNICA escrita de
+ * `status: 'PLAYING'` neste arquivo inteiro, e só é alcançada pelo caminho
+ * de entrada NOVA em `joinRoom` — a transação logo antes trava sempre em
+ * `playerRef(code, 'player2')` (nunca `'player1'`, que só escreve `'LOBBY'`
+ * na criação, em `createRoom`). Ou seja: hoje, e depois desta função
+ * existir, é sempre `player2` (quem entra por último) quem escreve isto,
+ * nunca `player1` — é por isso que a auto-cura do ramo REJOIN abaixo só
+ * dispara pra `player2`.
+ *
+ * 3 tentativas rápidas — não o backoff de segundos do outbox de
+ * `syncBridge.ts`: isto bloqueia um spinner em primeiro plano
+ * (`joinRoom`/`multiplayerStore.enterRoom`), diferente da fila de ações que
+ * roda em segundo plano sem o jogador esperando na tela.
+ */
+async function flipRoomToPlaying(code: string): Promise<void> {
+  await retryAsync(
+    () => update(roomRef(code), { status: 'PLAYING' satisfies RoomRecord['status'] }),
+    { attempts: 3, delaysMs: [300, 900] },
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                CRIAR SALA                                   */
 /* -------------------------------------------------------------------------- */
@@ -409,9 +435,13 @@ function classifyJoin(current: RoomRecord, clientId: string): JoinDecision {
  *    o palpite otimista coincide com a condição de ESCREVER ("vaga livre"),
  *    então o cache frio nunca impede a transação de perguntar ao servidor.
  *
- * Depois de garantir a vaga, vira a sala para `PLAYING` — sinal que acorda o
- * listener do outro cliente (`multiplayerStore`) para a partida ter começado.
- * Ninguém além do dono da vaga faz essa escrita, então não há corrida aqui.
+ * Depois de garantir a vaga, vira a sala para `PLAYING` (`flipRoomToPlaying`,
+ * com retry) — sinal que acorda o listener do outro cliente
+ * (`multiplayerStore`) para a partida ter começado. Ninguém além do dono da
+ * vaga faz essa escrita, então não há corrida aqui. Se as tentativas se
+ * esgotarem mesmo assim, esta função NÃO lança (o assento já é dele de
+ * verdade) — só loga alto e deixa a auto-cura do ramo REJOIN, acima, tentar
+ * de novo na próxima vez que ele reabrir a sala.
  */
 export async function joinRoom(rawCode: string): Promise<JoinRoomResult> {
   const code = normalizeRoomCode(rawCode);
@@ -433,6 +463,21 @@ export async function joinRoom(rawCode: string): Promise<JoinRoomResult> {
     // presença — o `onDisconnect` da sessão anterior morreu junto com a
     // conexão antiga e não vigia mais a PRÓXIMA queda sozinho.
     attachPresence(code, decision.slot);
+
+    // Auto-cura: se a escrita de `flipRoomToPlaying` da entrada ORIGINAL
+    // deste `player2` falhou de vez (ver o catch abaixo), a sala pode estar
+    // travada em `LOBBY` pra sempre com o assento dele já garantido — sem
+    // isto, `classifyJoin` devolvia REJOIN e nunca mais tentava essa escrita
+    // de novo. Só `player2` tenta (ver `flipRoomToPlaying`: `player1` nunca
+    // foi responsável por essa escrita) e só se ainda estiver mesmo travada.
+    if (decision.slot === 'player2' && room.status === 'LOBBY') {
+      try {
+        await flipRoomToPlaying(code);
+      } catch (error) {
+        console.error('[multiplayerService] auto-cura de status falhou no REJOIN:', error);
+      }
+    }
+
     return { code, seed: room.seed, slot: decision.slot };
   }
   if (decision.kind === 'FAIL') {
@@ -460,9 +505,17 @@ export async function joinRoom(rawCode: string): Promise<JoinRoomResult> {
   }
 
   try {
-    await update(roomRef(code), { status: 'PLAYING' satisfies RoomRecord['status'] });
+    await flipRoomToPlaying(code);
   } catch (error) {
-    throw toNetworkError(error);
+    // O ASSENTO já foi reservado pela transação acima — lançar aqui mentiria
+    // pro jogador ("falhou ao entrar") quando na verdade ele já está
+    // sentado. Loga alto e segue: a auto-cura do ramo REJOIN (acima) é quem
+    // tenta essa mesma escrita de novo na PRÓXIMA vez que este cliente
+    // reabrir a sala, se ainda estiver travada.
+    console.error(
+      '[multiplayerService] falha ao virar a sala para PLAYING após reservar o assento:',
+      error,
+    );
   }
 
   attachPresence(code, 'player2');

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { chooseCpuCardPlay, playCPUTurn, type CpuActions } from '@/engine/ai/cpu';
+import { chooseCpuCardPlay, chooseCpuMove, playCPUTurn, type CpuActions } from '@/engine/ai/cpu';
 import { createTestState } from '@/engine/testHelpers';
-import type { Board, InteractionSelection } from '@/engine/rules';
+import { PLACEMENT_COST, type Board, type InteractionSelection } from '@/engine/rules';
 
 function boardWith(entries: Partial<Record<number, NonNullable<Board[number]>>>): Board {
   const board: Board = Array(9).fill(null);
@@ -19,6 +19,7 @@ function trackedActions(): {
   const actions: CpuActions = {
     placeMark: () => {
       calls.placeMark += 1;
+      return true; // sucesso, por padrão — ver o teste dedicado pra recusa em `playCPUTurn — placeMark recusado...`
     },
     playCard: () => false,
     endTurn: () => {
@@ -135,6 +136,72 @@ describe('playCPUTurn — REBOBINAR (machinePlacementBlocked), primeiro teste de
   });
 });
 
+describe('chooseCpuMove — energia insuficiente pra colocar (PLACEMENT_COST, Fase 8b)', () => {
+  it('devolve null quando a CPU não tem energia suficiente', () => {
+    const state = createTestState({ turn: 'MACHINE', machineEnergy: 0 });
+    expect(chooseCpuMove(state)).toBeNull();
+  });
+
+  it('com energia exatamente igual ao custo, decide normalmente', () => {
+    const state = createTestState({ turn: 'MACHINE', machineEnergy: PLACEMENT_COST });
+    expect(chooseCpuMove(state)).not.toBeNull();
+  });
+});
+
+describe('playCPUTurn — CPU sem energia pra colocar (mesmo formato do teste de machinePlacementBlocked)', () => {
+  it('sem energia: chama endTurn e NUNCA placeMark', async () => {
+    const state = createTestState({ turn: 'MACHINE', machineEnergy: 0 });
+    const { actions, calls } = trackedActions();
+
+    const decision = await playCPUTurn(state, actions, {
+      getState: () => state,
+      minDelay: 0,
+      maxDelay: 0,
+    });
+
+    expect(decision).toBeNull();
+    expect(calls.placeMark).toBe(0);
+    expect(calls.endTurn).toBe(1);
+  });
+});
+
+describe('playCPUTurn — placeMark recusado apesar de chooseCpuMove ter decidido (defensivo, achado A.4 da Fase 8a)', () => {
+  it('trava o CONTRATO da função — inalcançável hoje, mas se placeMark devolver false, não trava: chama endTurn e devolve null', async () => {
+    // `chooseCpuMove` já filtra REBOBINAR e energia insuficiente antes de
+    // decidir — não há caminho real de chamada que chegue aqui com uma
+    // decisão que `placeMark` recuse de verdade. Este teste trava o
+    // CONTRATO da função (o tipo `boolean` de `CpuActions.placeMark`,
+    // corrigido nesta fase — antes era `void` e uma recusa passava em
+    // silêncio), não o caminho de chamada de hoje.
+    const state = createTestState({ turn: 'MACHINE' });
+    const calls = { placeMark: 0, endTurn: 0, resolveInteraction: 0 };
+    const actions: CpuActions = {
+      placeMark: () => {
+        calls.placeMark += 1;
+        return false; // recusa inesperada
+      },
+      playCard: () => false,
+      endTurn: () => {
+        calls.endTurn += 1;
+      },
+      resolveInteraction: () => {
+        calls.resolveInteraction += 1;
+        return false;
+      },
+    };
+
+    const decision = await playCPUTurn(state, actions, {
+      getState: () => state,
+      minDelay: 0,
+      maxDelay: 0,
+    });
+
+    expect(decision).toBeNull();
+    expect(calls.placeMark).toBe(1);
+    expect(calls.endTurn).toBe(1);
+  });
+});
+
 describe('playCPUTurn — resolve a própria pendingInteraction (Fase 4, Achado 3: SAQUE/SABOTAGEM não travam mais)', () => {
   it('resolve a interação pendente da própria CPU e continua até colocar peça, sem travar', async () => {
     // Simula a 2ª chamada da sequência real (ver comentário em cpu.ts): a CPU
@@ -160,6 +227,7 @@ describe('playCPUTurn — resolve a própria pendingInteraction (Fase 4, Achado 
     const actions: CpuActions = {
       placeMark: () => {
         calls.placeMark += 1;
+        return true;
       },
       playCard: () => false,
       endTurn: () => {
@@ -509,7 +577,7 @@ describe('playCPUTurn — resolve PICK_BOARD_CELL (2º passo de DESLIZAR, carta 
 
     let resolvedSelection: InteractionSelection | null = null;
     const actions: CpuActions = {
-      placeMark: () => {},
+      placeMark: () => true,
       playCard: () => false,
       endTurn: () => {},
       resolveInteraction: (selection) => {
@@ -542,7 +610,7 @@ describe('playCPUTurn — resolve PICK_BOARD_CELL (2º passo de DESLIZAR, carta 
 
     const captured: { selection: InteractionSelection | null } = { selection: null };
     const actions: CpuActions = {
-      placeMark: () => {},
+      placeMark: () => true,
       playCard: () => false,
       endTurn: () => {},
       resolveInteraction: (selection) => {
