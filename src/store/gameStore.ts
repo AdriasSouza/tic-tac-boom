@@ -1330,19 +1330,23 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // decide o CUSTO — `canPlaceAt` já isenta pelo mesmo motivo (ver o
     // comentário lá), então esta dedução tem que concordar, senão a guarda
     // libera a jogada e a dedução cobra por algo que a guarda disse ser
-    // grátis. `keepsTurn` continua sendo só sobre a 1ª colocação (decide o
-    // regen também, mais abaixo); `placementCostWaived` cobre as DUAS.
+    // grátis.
+    //
+    // `keepsTurn` é só sobre passar a vez/regen (decide `nextTurnInfo` mais
+    // abaixo) — MINA e TURNO_EXTRA usam `extraTurnPending` igualmente pra
+    // isso, sem mudança nesta fase. `placementCostWaived` é INDEPENDENTE
+    // (Fase 8b.1): só olha `extraTurnCostWaived`, que só TURNO_EXTRA seta —
+    // MINA nunca isenta o próprio custo (ver `BOMB_TRAP.effect`,
+    // `registry.ts`, e o JSDoc do campo em `rules.ts`).
     const keepsTurn = state.extraTurnPending === owner;
-    const placementCostWaived = keepsTurn || state.extraTurnCostWaived === owner;
-    // Próximo valor de `extraTurnCostWaived`: liga pra owner quando ESTA é a
-    // 1ª colocação (a 2ª que vem a seguir também precisa ser isenta), desliga
-    // quando ESTA é a 2ª (acabou de consumir a isenção), inalterado em
-    // qualquer outra colocação normal.
-    const nextExtraTurnCostWaived: Combatant | null = keepsTurn
-      ? owner
-      : state.extraTurnCostWaived === owner
-        ? null
-        : state.extraTurnCostWaived;
+    const placementCostWaived = state.extraTurnCostWaived === owner;
+    // Próximo valor de `extraTurnCostWaived`: só muda quando ESTA colocação
+    // PASSA a vez de verdade (`!keepsTurn`) E ainda segurava a isenção — ou
+    // seja, é a 2ª colocação de TURNO_EXTRA consumindo o que a carta setou
+    // no próprio `effect()`. A 1ª (`keepsTurn === true`) não mexe aqui: o
+    // valor que a carta setou continua vivo pra 2ª achar.
+    const nextExtraTurnCostWaived: Combatant | null =
+      !keepsTurn && state.extraTurnCostWaived === owner ? null : state.extraTurnCostWaived;
     // Computado uma vez, mesclado nos DOIS `set()` abaixo (fecha a rodada OU
     // continua) — mesmo padrão de `energySpend` que `resolveCardPlay` já usa
     // pra cartas. Os DOIS precisam: `startNextRound` lê `state.playerEnergy`/

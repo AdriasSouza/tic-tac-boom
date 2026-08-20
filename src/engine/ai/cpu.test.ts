@@ -165,6 +165,80 @@ describe('playCPUTurn — CPU sem energia pra colocar (mesmo formato do teste de
   });
 });
 
+describe('MINA detonada (extraTurnPending sem extraTurnCostWaived) — não isenta o custo (Fase 8b.1)', () => {
+  it('chooseCpuMove: sem energia suficiente, devolve null mesmo com extraTurnPending setado', () => {
+    // Simula o estado logo após MINA detonar contra a CPU: extraTurnPending
+    // aponta pra ela (mesmo campo que TURNO_EXTRA usa), mas NENHUMA carta
+    // setou extraTurnCostWaived — MINA nunca toca nesse campo, de propósito
+    // (ver `BOMB_TRAP.effect`, `registry.ts`).
+    const state = createTestState({ turn: 'MACHINE', extraTurnPending: 'MACHINE', machineEnergy: 0 });
+    expect(chooseCpuMove(state)).toBeNull();
+  });
+
+  it('playCPUTurn: mesmo caminho de REBOBINAR/energia zero — chama endTurn e NUNCA placeMark', async () => {
+    const state = createTestState({ turn: 'MACHINE', extraTurnPending: 'MACHINE', machineEnergy: 0 });
+    const { actions, calls } = trackedActions();
+
+    const decision = await playCPUTurn(state, actions, {
+      getState: () => state,
+      minDelay: 0,
+      maxDelay: 0,
+    });
+
+    expect(decision).toBeNull();
+    expect(calls.placeMark).toBe(0);
+    expect(calls.endTurn).toBe(1);
+  });
+});
+
+describe('TURNO_EXTRA — 2ª colocação nunca acontece por falta de célula livre (Fase 8b.1, gap 3b)', () => {
+  it('tabuleiro sem nenhuma célula legal pra 2ª colocação: playCPUTurn cai em endTurn, não trava', async () => {
+    // Estado montado já DEPOIS da 1ª colocação da sequência: `extraTurnPending`
+    // já foi consumido (é null), `extraTurnCostWaived` continua vivo (só a
+    // 2ª colocação o consome) — e o tabuleiro está cheio, sem nenhuma célula
+    // disponível pra essa 2ª colocação acontecer. `chooseCpuMove` cai em
+    // "sem jogada legal" pelo MESMO motivo que qualquer tabuleiro cheio cairia
+    // (`legalMoves` vazio) — nada específico de turno extra nessa checagem.
+    const board = boardWith({
+      0: { owner: 'MACHINE', mark: 'O', turnPlaced: 1 },
+      1: { owner: 'PLAYER', mark: 'X', turnPlaced: 2 },
+      2: { owner: 'MACHINE', mark: 'O', turnPlaced: 3 },
+      3: { owner: 'PLAYER', mark: 'X', turnPlaced: 4 },
+      4: { owner: 'MACHINE', mark: 'O', turnPlaced: 5 },
+      5: { owner: 'PLAYER', mark: 'X', turnPlaced: 6 },
+      6: { owner: 'MACHINE', mark: 'O', turnPlaced: 7 },
+      7: { owner: 'PLAYER', mark: 'X', turnPlaced: 8 },
+      8: { owner: 'MACHINE', mark: 'O', turnPlaced: 9 },
+    });
+    const state = createTestState({
+      turn: 'MACHINE',
+      board,
+      extraTurnPending: null,
+      extraTurnCostWaived: 'MACHINE',
+      machineEnergy: 0,
+    });
+    const { actions, calls } = trackedActions();
+
+    const decision = await playCPUTurn(state, actions, {
+      getState: () => state,
+      minDelay: 0,
+      maxDelay: 0,
+    });
+
+    expect(decision).toBeNull();
+    expect(calls.placeMark).toBe(0);
+    expect(calls.endTurn).toBe(1);
+    // A limpeza de fato de `extraTurnCostWaived` mora em `endTurn` na store
+    // REAL (`gameStore.ts:1820-1824`) — `trackedActions()` usa uma ação falsa
+    // de propósito (mantém este arquivo independente da store), então essa
+    // parte é coberta em `gameStore.test.ts`, não aqui. `endTurn` limpa o
+    // campo incondicionalmente por combatente, sem perguntar POR QUE foi
+    // chamado — a mesma chamada cobre "escolheu passar" e "sem célula livre"
+    // pelo mesmo código, então provar a limpeza uma vez já cobre as duas
+    // entradas.
+  });
+});
+
 describe('playCPUTurn — placeMark recusado apesar de chooseCpuMove ter decidido (defensivo, achado A.4 da Fase 8a)', () => {
   it('trava o CONTRATO da função — inalcançável hoje, mas se placeMark devolver false, não trava: chama endTurn e devolve null', async () => {
     // `chooseCpuMove` já filtra REBOBINAR e energia insuficiente antes de

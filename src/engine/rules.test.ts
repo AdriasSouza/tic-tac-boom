@@ -134,19 +134,29 @@ describe('canPlaceAt — custo de energia (PLACEMENT_COST, Fase 8b)', () => {
     expect(canPlaceAt(state, 0, 'MACHINE')).toBe(false);
   });
 
-  it('TURNO_EXTRA/MINA: a 1ª colocação da sequência (extraTurnPending) é isenta do custo', () => {
+  it('MINA (Fase 8b.1): extraTurnPending SOZINHO não isenta — MINA nunca seta extraTurnCostWaived, então a colocação bônus paga normal', () => {
     const state = createTestState({ turn: 'MACHINE', machineEnergy: 0, extraTurnPending: 'MACHINE' });
-    expect(canPlaceAt(state, 0, 'MACHINE')).toBe(true);
+    expect(canPlaceAt(state, 0, 'MACHINE')).toBe(false);
   });
 
-  it('TURNO_EXTRA/MINA: a 2ª colocação da sequência (extraTurnCostWaived) também é isenta', () => {
-    const state = createTestState({
+  it('TURNO_EXTRA: extraTurnCostWaived (setado pela própria carta, cobrindo as 2 colocações) isenta — com ou sem extraTurnPending ainda vivo', () => {
+    // 1ª colocação da sequência: os dois campos ainda estão como a carta deixou.
+    const first = createTestState({
       turn: 'MACHINE',
       machineEnergy: 0,
-      extraTurnPending: null, // já consumida pela 1ª colocação
+      extraTurnPending: 'MACHINE',
       extraTurnCostWaived: 'MACHINE',
     });
-    expect(canPlaceAt(state, 0, 'MACHINE')).toBe(true);
+    expect(canPlaceAt(first, 0, 'MACHINE')).toBe(true);
+
+    // 2ª colocação: extraTurnPending já foi consumido pela 1ª, só extraTurnCostWaived sobrevive.
+    const second = createTestState({
+      turn: 'MACHINE',
+      machineEnergy: 0,
+      extraTurnPending: null,
+      extraTurnCostWaived: 'MACHINE',
+    });
+    expect(canPlaceAt(second, 0, 'MACHINE')).toBe(true);
   });
 
   it('a isenção de turno extra é só pra ESTE combatente — o outro lado paga normal', () => {

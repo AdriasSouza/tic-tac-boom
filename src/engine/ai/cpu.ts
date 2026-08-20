@@ -498,7 +498,17 @@ export function chooseCpuMove(state: GameState, positionalBias = true): CpuDecis
   // colocar não é uma decisão disponível — mesmo tratamento do guard acima,
   // cai no mesmo "sem jogada legal" que `playCPUTurn` já sabe resolver
   // chamando `endTurn` em vez de travar (achado A.4 da Fase 8a).
-  if (state[energyKeyFor(CPU)] < PLACEMENT_COST) return null;
+  //
+  // `extraTurnCostWaived` (Fase 8b.1): espelha exatamente a isenção que
+  // `canPlaceAt` já aplica (`rules.ts`) — só TURNO_EXTRA seta este campo.
+  // Sem checar aqui, a CPU jogando TURNO_EXTRA ficaria com energia 0 (a
+  // carta custa o teto) e este guard recusaria uma colocação que na
+  // verdade É isenta — a CPU chamaria `endTurn` achando que não pode pagar,
+  // desperdiçando as duas colocações que a própria carta concedeu (achado
+  // da Fase 8b.1: bug pré-existente desde a Fase 8b, nunca exercitado por
+  // teste até este ponto).
+  const placementCostWaived = state.extraTurnCostWaived === CPU;
+  if (!placementCostWaived && state[energyKeyFor(CPU)] < PLACEMENT_COST) return null;
 
   const moves = legalMoves(state);
   if (moves.length === 0) return null;

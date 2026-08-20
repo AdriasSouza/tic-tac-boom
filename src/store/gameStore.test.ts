@@ -224,6 +224,85 @@ describe('TURNO_EXTRA — segunda colocação sem refil de energia', () => {
   });
 });
 
+describe('extraTurnCostWaived — ciclo do campo, leitura direta (Fase 8b.1)', () => {
+  it('setado pela CARTA ao jogar TURNO_EXTRA, sobrevive à 1ª colocação, limpo ao fim da 2ª', () => {
+    useGameStore.setState({
+      machineHand: [{ uid: 't', cardId: 'TURNO_EXTRA' }],
+      machineEnergy: 3,
+      turn: 'MACHINE',
+    });
+
+    useGameStore.getState().playMachineCard('t');
+    useGameStore.getState().acknowledgePending();
+    // Setado pelo `effect()` da própria carta (registry.ts), não inferido
+    // por `placeMark` depois — a prova é que já está aqui ANTES de qualquer
+    // colocação acontecer.
+    expect(useGameStore.getState().extraTurnCostWaived).toBe('MACHINE');
+
+    useGameStore.getState().placeMark('MACHINE', 0); // 1ª colocação
+    // Sobrevive: `keepsTurn` (baseado em extraTurnPending) não mexe neste campo.
+    expect(useGameStore.getState().extraTurnCostWaived).toBe('MACHINE');
+
+    useGameStore.getState().placeMark('MACHINE', 3); // 2ª colocação, passa a vez de verdade
+    expect(useGameStore.getState().extraTurnCostWaived).toBeNull();
+  });
+
+  it('jogador chama endTurn() em vez de usar a concessão — o campo limpa (exercita gameStore.ts, não só leitura)', () => {
+    useGameStore.setState({
+      machineHand: [{ uid: 't', cardId: 'TURNO_EXTRA' }],
+      machineEnergy: 3,
+      turn: 'MACHINE',
+    });
+
+    useGameStore.getState().playMachineCard('t');
+    useGameStore.getState().acknowledgePending();
+    expect(useGameStore.getState().extraTurnCostWaived).toBe('MACHINE');
+
+    // Em vez de colocar a peça bônus, a MACHINE passa a vez — a concessão
+    // não pode sobrar pra reativar numa jogada futura sem relação nenhuma
+    // com esta (gameStore.ts:1820-1824).
+    const passed = useGameStore.getState().endTurn('MACHINE');
+    expect(passed).toBe(true);
+    expect(useGameStore.getState().extraTurnCostWaived).toBeNull();
+  });
+
+  it('startNextRound limpa o campo de verdade (mesma lição de forcedVanish, Fase 2 — não só ler o código)', () => {
+    useGameStore.setState({ extraTurnCostWaived: 'MACHINE' });
+    expect(useGameStore.getState().extraTurnCostWaived).toBe('MACHINE');
+
+    useGameStore.getState().startNextRound();
+    expect(useGameStore.getState().extraTurnCostWaived).toBeNull();
+  });
+});
+
+describe('MINA — as duas colocações concedidas pagam PLACEMENT_COST normal (Fase 8b.1, revisão da decisão original)', () => {
+  it('defensor com energia só pra 1 das 2: usa a 1ª, a 2ª é recusada — nunca trava', () => {
+    // Estado montado já no instante em que MINA acabou de detonar: dano já
+    // aplicado (fora do escopo deste teste), `extraTurnPending` aponta pro
+    // defensor, `extraTurnCostWaived` NUNCA foi tocado (MINA não seta —
+    // `BOMB_TRAP.effect`, registry.ts) e ele só tem 1⚡ — o suficiente pra
+    // UMA das duas colocações que a armadilha concede, não as duas.
+    useGameStore.setState({
+      turn: 'MACHINE',
+      extraTurnPending: 'MACHINE',
+      machineEnergy: 1,
+    });
+    expect(useGameStore.getState().extraTurnCostWaived).toBeNull(); // confirma a premissa
+
+    const firstPlaced = useGameStore.getState().placeMark('MACHINE', 0);
+    expect(firstPlaced).toBe(true);
+    const afterFirst = useGameStore.getState();
+    expect(afterFirst.machineEnergy).toBe(0); // pagou PLACEMENT_COST normal, sem isenção
+    expect(afterFirst.turn).toBe('MACHINE'); // ainda a mesma sequência (keepsTurn, via extraTurnPending)
+
+    // 2ª colocação: sem energia, sem isenção — canPlaceAt recusa.
+    const secondPlaced = useGameStore.getState().placeMark('MACHINE', 3);
+    expect(secondPlaced).toBe(false);
+    expect(useGameStore.getState().board[3]).toBeNull(); // nada mutou na tentativa recusada
+    expect(useGameStore.getState().turn).toBe('MACHINE'); // ainda esperando — não travou, só não colocou
+  });
+});
+
 describe('ANTIMAGIA — cobre também o ARMAR de outra armadilha, de ponta a ponta', () => {
   it('anula o armar de SHIELD_TRAP: a armadilha nova nunca chega à mesa, mas a carta é consumida', () => {
     useGameStore.setState({

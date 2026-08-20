@@ -1199,3 +1199,43 @@ altura do `<Board />`).
 **Multiplayer:** confirmado que `netPlaceMark`/`applyLoggedAction` (`syncBridge.ts`) chamam
 o mesmo `placeMark` — herdam o guard novo sem nenhuma mudança na camada de rede. Testado
 ponta a ponta em `syncBridge.test.ts` (reaproveitando a infra de mock da Fase 8-H).
+
+### Fase 8b.1 — decisão revisada: MINA não isenta, só TURNO_EXTRA
+
+A entrada acima descrevia a isenção de `PLACEMENT_COST` como "TURNO_EXTRA/MINA" — as duas
+cartas, igualmente. Achado durante a revisão: isso nunca foi uma decisão, foi efeito
+colateral de as duas cartas escreverem no MESMO campo (`extraTurnPending`,
+`patch: { extraTurnPending: caster }` nas duas, `registry.ts:1444`/`:1553`) e `placeMark`
+inferir a isenção genericamente dali, sem saber quem tinha setado. A justificativa "sobra
+sempre 0⚡, isentar é a única forma de a carta funcionar" — verdadeira pra TURNO_EXTRA (custo
+e benefício na mesma respiração) — **não vale pra MINA**: o custo dela foi pago ao ARMAR,
+turnos antes da detonação; a energia do defensor no momento do bônus é o que sobrou de regen
+normal desde então, sem relação nenhuma com aquele gasto.
+
+**Decisão do usuário:** MINA não ganha isenção nenhuma — as duas colocações que ela concede
+pagam `PLACEMENT_COST` normal, usando só o que der pra pagar (0, 1 ou 2). TURNO_EXTRA mantém
+a isenção nas duas, sem mudança de comportamento.
+
+**Mecanismo — desacoplado sem precisar de rastreamento de origem
+(`extraTurnGrantSource` ou similar foi cogitado e descartado):** `extraTurnPending` volta a
+ser SÓ sobre passar a vez/pular regen (`keepsTurn`, mecanismo pré-Fase-8b, compartilhado por
+MINA e TURNO_EXTRA como sempre foi). `extraTurnCostWaived` vira um campo que **só TURNO_EXTRA
+escreve**, direto no próprio `effect()` (`registry.ts`), cobrindo as duas colocações de uma
+vez, no instante em que a carta resolve — não é mais inferido por `placeMark` placement a
+placement. `canPlaceAt`/`placeMark`/`chooseCpuMove` passam a isentar custo checando SÓ
+`extraTurnCostWaived`, nunca `extraTurnPending`.
+
+**Achado extra durante a correção:** `chooseCpuMove` (`cpu.ts`) tinha um bug pré-existente
+desde a Fase 8b original, nunca exercitado por teste — o guard de energia não sabia de
+NENHUMA isenção (nem a antiga, nem esta), então a CPU jogando TURNO_EXTRA ficaria com
+`machineEnergy: 0` e o guard recusaria uma colocação LEGÍTIMA (isenta), desperdiçando as duas
+colocações que a própria carta concedeu. Corrigido junto, espelhando `canPlaceAt`.
+
+**Testes novos:** ciclo completo de `extraTurnCostWaived` com leitura direta do campo (setado
+pela carta, sobrevive à 1ª colocação, limpo na 2ª); os dois casos de "2ª colocação nunca
+acontece" (`endTurn()` explícito e "sem célula livre", os dois exercitando a limpeza real em
+`gameStore.ts`, não só leitura de código); `startNextRound` limpando o campo de verdade
+(mesma lição que `forcedVanish` já ensinou na Fase 2); MINA com energia pra só 1 das 2
+colocações, provando "usa só o que consegue pagar" com um número concreto; regressão
+explícita confirmando que TURNO_EXTRA continua idêntica (o teste e2e já existente não mudou
+de asserção, só de mecanismo interno).

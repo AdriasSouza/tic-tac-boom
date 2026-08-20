@@ -1441,7 +1441,12 @@ const EXTRA_TURN: CardDefinition = {
   canPlay: ({ state, caster }) => state.extraTurnPending !== caster,
 
   effect: ({ caster }) => ({
-    patch: { extraTurnPending: caster },
+    // `extraTurnCostWaived` (Fase 8b.1): as DUAS colocações que esta carta
+    // concede ficam isentas de `PLACEMENT_COST`, setado aqui de uma vez —
+    // não é inferido de `extraTurnPending` por `placeMark` (isso é só
+    // turno/regen, compartilhado com MINA). Só esta carta escreve neste
+    // campo; MINA nunca toca.
+    patch: { extraTurnPending: caster, extraTurnCostWaived: caster },
     log: { code: 'CARD_TURNO_EXTRA', subject: caster },
   }),
 };
@@ -1544,6 +1549,13 @@ const BOMB_TRAP: CardDefinition = {
      * para o defensor. Marcar `extraTurnPending` no defensor faz a próxima
      * jogada dele não passar a vez — efeito líquido idêntico a o atacante ter
      * perdido um turno, sem inventar um segundo mecanismo de alternância.
+     *
+     * NÃO seta `extraTurnCostWaived` — decisão deliberada (Fase 8b.1): as
+     * duas colocações que isto concede ao defensor pagam `PLACEMENT_COST`
+     * normal, cada uma com a energia que ele tiver no momento (pode ser 0,
+     * 1 ou 2 colocações pagáveis). Diferente de TURNO_EXTRA, o custo desta
+     * carta foi pago faz turnos (ao ARMAR), não agora — não há "acabou de
+     * gastar tudo" a compensar aqui.
      */
     patch: { extraTurnPending: caster },
 

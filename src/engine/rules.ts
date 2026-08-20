@@ -600,25 +600,25 @@ export interface GameState {
   extraTurnPending: Combatant | null;
 
   /**
-   * Combatente cuja PRÓXIMA colocação (a 2ª da sequência de turno extra, a
-   * que de fato passa a vez) também está isenta de `PLACEMENT_COST` — Fase
-   * 8b. Setada por `placeMark` quando `extraTurnPending` é consumido (a 1ª
-   * colocação da sequência), consumida na colocação seguinte deste mesmo
-   * combatente.
+   * Combatente isento de `PLACEMENT_COST` agora — Fase 8b.1 (decisão
+   * revisada; a versão original da Fase 8b isentava as duas cartas que usam
+   * `extraTurnPending`, achado incorreto).
    *
-   * Campo PRÓPRIO, não reaproveita `extraTurnPending`, porque as duas
-   * colocações da sequência têm o campo de controle em ESTADOS diferentes: a
-   * 1ª lê `extraTurnPending !== null`, a 2ª já o encontra `null` (consumido
-   * pela 1ª) — sem um campo separado para "a próxima também é isenta", a 2ª
-   * colocação não teria como se identificar como parte da mesma sequência.
+   * **Só TURNO_EXTRA (`EXTRA_TURN.effect`, `registry.ts`) escreve aqui**,
+   * setando as DUAS colocações que ela concede de uma vez, no instante em
+   * que a carta resolve — não é inferido de `extraTurnPending` por
+   * `placeMark` placement a placement. MINA (`BOMB_TRAP.effect`) também usa
+   * `extraTurnPending` (mesmo mecanismo de "não passar a vez"/pular regen),
+   * mas DELIBERADAMENTE nunca toca este campo: a energia dela foi gasta ao
+   * ARMAR, turnos atrás — a energia do defensor no momento da detonação não
+   * tem relação nenhuma com aquele custo, então não há "acabou de gastar
+   * tudo" a compensar. As duas colocações que MINA concede pagam
+   * `PLACEMENT_COST` normal, cada uma com o que o defensor tiver na hora
+   * (pode dar 0, 1 ou 2 colocações pagáveis).
    *
-   * Por que as DUAS são isentas, não só a 1ª: entre elas não existe nenhum
-   * regen (`placeMark` pula o regen justamente na 1ª, de propósito — "concede
-   * uma colocação extra, não energia extra"), então a 2ª colocação nunca teria
-   * de onde tirar o `PLACEMENT_COST` — MINA/TURNO_EXTRA custam exatamente
-   * `ENERGY_CAP` (3), o teto, então sobra sempre 0⚡ depois de jogá-las, sem
-   * exceção. Cobrar a 2ª tornaria a concessão inteira da carta inutilizável
-   * na prática (decisão confirmada com o usuário, Fase 8b).
+   * Consumido pela SEGUNDA colocação de TURNO_EXTRA (a que de fato passa a
+   * vez) — a primeira, `keepsTurn === true`, não mexe, deixando o valor vivo
+   * pra segunda achar (ver `placeMark`, `gameStore.ts`).
    */
   extraTurnCostWaived: Combatant | null;
 
@@ -991,18 +991,15 @@ export function canPlaceAt(state: GameState, index: number, combatant: Combatant
   // `Cell.tsx`/CPU isoladamente, pelo mesmo motivo do bloqueio de REBOBINAR
   // logo acima: um guard de domínio só é de verdade se viver no motor.
   //
-  // EXCETO as duas colocações da sequência de turno extra (TURNO_EXTRA/MINA)
-  // — `extraTurnPending === combatant` cobre a 1ª, `extraTurnCostWaived ===
-  // combatant` cobre a 2ª (ver o campo, acima). "Concede uma colocação
-  // extra, não energia extra" (P11, `docs/CARTAS.md`) já valia pro regen
-  // (`placeMark`, `gameStore.ts`) e agora precisa valer pro CUSTO das DUAS:
-  // MINA/TURNO_EXTRA custam exatamente `ENERGY_CAP`, então sobra sempre 0⚡
-  // depois de jogá-las — sem a isenção nas duas, a concessão inteira da
-  // carta seria inutilizável na prática (decisão confirmada com o usuário,
-  // Fase 8b).
-  const placementCostWaived =
-    state.extraTurnPending === combatant || state.extraTurnCostWaived === combatant;
-  if (!placementCostWaived && state[energyKeyFor(combatant)] < PLACEMENT_COST) {
+  // EXCETO quando `extraTurnCostWaived === combatant` — só TURNO_EXTRA seta
+  // este campo (`registry.ts`, `EXTRA_TURN.effect`), cobrindo as DUAS
+  // colocações que ela concede de uma vez. Fase 8b.1, decisão revisada: NÃO
+  // é `extraTurnPending` que isenta — esse campo é só sobre passar a
+  // vez/regen (`placeMark`, `keepsTurn`), compartilhado com MINA, que
+  // TAMBÉM o seta ao detonar mas NUNCA isenta o custo (armou a trap faz
+  // turnos, a energia de agora não tem relação com aquele gasto — decisão
+  // deliberada, ver o comentário em `BOMB_TRAP.effect`).
+  if (state.extraTurnCostWaived !== combatant && state[energyKeyFor(combatant)] < PLACEMENT_COST) {
     return false;
   }
   if (index < 0 || index > 8) return false;

@@ -184,10 +184,10 @@ describe('CURA (HEAL_SELF) — regra confirmada: mantida sem mudança', () => {
 describe('TURNO EXTRA (TURNO_EXTRA) — regra confirmada: renomeada, mecânica idêntica', () => {
   const card = getCard('TURNO_EXTRA');
 
-  it('concede extraTurnPending pro próprio caster', () => {
+  it('concede extraTurnPending E extraTurnCostWaived pro próprio caster (Fase 8b.1: as duas colocações concedidas ficam isentas de PLACEMENT_COST)', () => {
     const state = createTestState();
     const result = card.effect({ caster: 'PLAYER', state, uid: 'x', rng });
-    expect(result?.patch).toEqual({ extraTurnPending: 'PLAYER' });
+    expect(result?.patch).toEqual({ extraTurnPending: 'PLAYER', extraTurnCostWaived: 'PLAYER' });
   });
 
   it('canPlay: não empilha — falso se já pendente pro mesmo caster', () => {
