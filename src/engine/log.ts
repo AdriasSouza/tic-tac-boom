@@ -27,6 +27,12 @@ export type LogCode =
   | 'ROUND_WIN'
   /** `subject` passou a vez sem colocar peça (botão ou REBOBINAR). */
   | 'TURN_PASSED'
+  /**
+   * `subject` comprou 1 carta nativamente (`drawCardNatively`, Fase 8c —
+   * fora de efeito de carta, botão dedicado). `value` = custo pago em ⚡
+   * (escalona por compra dentro do mesmo turno: 1ª=1, 2ª=2, ...).
+   */
+  | 'NATIVE_DRAW'
 
   /* --- Caos --------------------------------------------------------------- */
   /** Regra caótica entrou em vigor. `value` = `ChaosRule`. */

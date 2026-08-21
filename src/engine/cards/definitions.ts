@@ -365,6 +365,16 @@ export interface CardDefinition {
    */
   weight: number;
   /**
+   * A carta participa do sorteio (`drawCardId`) e do garantido
+   * (`draftTieredCardIds`)? Omitido = `true` (comportamento de sempre) — só
+   * precisa ser escrito explicitamente em cartas retiradas do pool.
+   *
+   * NÃO afeta nada além da SELEÇÃO: uma carta com `active: false` que já
+   * esteja na mão de alguém continua jogável normalmente — isto só impede
+   * que ela seja sorteada de novo daqui pra frente (Fase 8d).
+   */
+  active?: boolean;
+  /**
    * Custo em ⚡ para jogar. Debitado da energia do `caster` em
    * `resolveCardPlay` ANTES de qualquer efeito rodar — uma carta sem energia
    * suficiente aborta como qualquer outra jogada inválida, sem consumir nada.

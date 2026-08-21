@@ -622,6 +622,23 @@ export interface GameState {
    */
   extraTurnCostWaived: Combatant | null;
 
+  /**
+   * Quantas compras nativas (`drawCardNatively`, Fase 8c) cada combatente já
+   * fez NA VEZ ATUAL — decide o custo escalonado (1ª compra 1⚡, 2ª compra
+   * 2⚡, ...): `custo = playerNativeDrawsThisTurn + 1`. Par por combatente,
+   * não campo único — os dois valores são INDEPENDENTES (mesmo critério da
+   * Fase 2.5 que já separou `playerPlacementBlocked`/`machinePlacementBlocked`
+   * — não competem pelo mesmo recurso, cada combatente conta as próprias
+   * compras).
+   *
+   * "Na vez atual" inclui uma sequência de turno extra inteira (TURNO_EXTRA/
+   * MINA, `keepsTurn` em `placeMark`) — zera só quando o turno REALMENTE
+   * passa (`placeMark` com `!keepsTurn`, ou `endTurn`), nunca no meio de uma
+   * sequência onde `turn` não muda. Zerado também em `startNextRound`.
+   */
+  playerNativeDrawsThisTurn: number;
+  machineNativeDrawsThisTurn: number;
+
   status: MatchStatus;
   /** Quem venceu a rodada atual (resetado ao iniciar a próxima). */
   roundWinner: Combatant | null;
@@ -763,6 +780,19 @@ export const CARD_RULE_MIN_DURATION_TURNS = 2;
 export const AUTO_DRAW_INTERVAL_TURNS = 6;
 
 /**
+ * Liga/desliga a compra passiva de `tickGlobalClock` GLOBALMENTE — não é
+ * toggle por partida (ao contrário de `cardsEnabled`, Modo Clássico).
+ * Desligada nesta fase (Fase 8d): `drawCardNatively` (Fase 8c) deu ao
+ * jogador uma forma própria de comprar carta, pagando energia — a
+ * distribuição automática a cada `AUTO_DRAW_INTERVAL_TURNS` deixou de ser
+ * necessária. Constante fixa (não campo de `GameState`) de propósito: nunca
+ * varia em runtime, então não entra na auditoria de campo transitório
+ * (`startNextRound`/`startMatch`). Bloco mantido no código, só guardado por
+ * esta flag — reversível virando `true` de novo.
+ */
+export const PASSIVE_DRAW_ENABLED = false;
+
+/**
  * Cartas na mão inicial de cada lado, distribuídas por `startMatch`.
  *
  * Zero de propósito (era 2): começar sem cartas ensina o tabuleiro primeiro
@@ -855,6 +885,13 @@ export function energyOf(state: GameState, combatant: Combatant): number {
 /** Mesma ideia de `handKeyFor`, para o escudo de BATERIA RESERVA. */
 export function shieldKeyFor(combatant: Combatant): 'playerShield' | 'machineShield' {
   return combatant === 'PLAYER' ? 'playerShield' : 'machineShield';
+}
+
+/** Mesma ideia de `handKeyFor`, para o contador de compras nativas do turno (Fase 8c). */
+export function nativeDrawsThisTurnKeyFor(
+  combatant: Combatant,
+): 'playerNativeDrawsThisTurn' | 'machineNativeDrawsThisTurn' {
+  return combatant === 'PLAYER' ? 'playerNativeDrawsThisTurn' : 'machineNativeDrawsThisTurn';
 }
 
 /**

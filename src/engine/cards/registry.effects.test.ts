@@ -1265,6 +1265,13 @@ describe('PROCRASTINAR II (CARD_DRAFT_TIERED) — distribuição garantida 2 com
     }
     expect(legendaryPositions.size).toBeGreaterThan(1);
   });
+
+  it('nunca oferece TURNO_EXTRA entre as 5 opções (Fase 8d, active:false — mesmo IDS_BY_RARITY de drawCardId)', () => {
+    for (let seed = 1; seed <= 50; seed++) {
+      const picks = draftTieredCardIds(createRng(seed));
+      expect(picks).not.toContain('TURNO_EXTRA');
+    }
+  });
 });
 
 /* -------------------------------------------------------------------------- */

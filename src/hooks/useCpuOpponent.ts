@@ -85,6 +85,7 @@ export function useCpuOpponent({
         endTurn: () => {
           useGameStore.getState().endTurn('MACHINE');
         },
+        drawCard: () => useGameStore.getState().drawCardNatively('MACHINE'),
         resolveInteraction: (selection) => useGameStore.getState().resolveInteraction('MACHINE', selection),
       },
       {

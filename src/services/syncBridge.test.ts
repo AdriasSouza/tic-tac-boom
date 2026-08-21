@@ -226,6 +226,38 @@ describe('consumeRemoteActions — PLACE_MARK replicado herda PLACEMENT_COST aut
   });
 });
 
+describe('consumeRemoteActions — DRAW_CARD_NATIVELY replicado herda os guards de drawCardNatively (Fase 8c)', () => {
+  it('ação remota contra um combatente sem energia suficiente é recusada localmente, mão intacta', () => {
+    // Mesmo racional do teste de PLACE_MARK acima: `netDrawCardNatively` e o
+    // `case 'DRAW_CARD_NATIVELY'` de `applyLoggedAction` chamam o MESMO
+    // `drawCardNatively(combatant)` — construir a ação à mão testa a guarda
+    // em si, não o caminho feliz de replicação.
+    useGameStore.setState({ turn: 'MACHINE', machineEnergy: 0, machineHand: [] });
+    const handBefore = useGameStore.getState().machineHand;
+
+    const hadDesync = consumeRemoteActions([
+      { id: 'a1', type: 'DRAW_CARD_NATIVELY', by: 'player2', at: Date.now() },
+    ]);
+
+    expect(hadDesync).toBe(true);
+    expect(useGameStore.getState().machineHand).toBe(handBefore); // nada mutou
+    expect(useGameStore.getState().machineHand.length).toBe(0);
+  });
+
+  it('ação remota aceita: aplica o mesmo custo escalonado localmente, sem payload extra', () => {
+    useGameStore.setState({ turn: 'MACHINE', machineEnergy: 3, machineHand: [] });
+
+    const hadDesync = consumeRemoteActions([
+      { id: 'a1', type: 'DRAW_CARD_NATIVELY', by: 'player2', at: Date.now() },
+    ]);
+
+    expect(hadDesync).toBe(false);
+    expect(useGameStore.getState().machineEnergy).toBe(2); // 3 - 1 (1ª compra da vez)
+    expect(useGameStore.getState().machineHand.length).toBe(1);
+    expect(useGameStore.getState().turn).toBe('MACHINE'); // não consome o turno
+  });
+});
+
 /**
  * Fora de escopo, deliberadamente: o caminho real de `joinRoom`/
  * `attachPresence`/`listenToRoom` contra o RTDB de verdade

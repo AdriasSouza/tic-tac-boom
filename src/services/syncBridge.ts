@@ -432,6 +432,22 @@ export function netEndTurn(): boolean {
 }
 
 /**
+ * Compra 1 carta nativamente (Fase 8c) e replica.
+ *
+ * Mesmo padrão de `netEndTurn`: aplica local primeiro (`drawCardNatively` já
+ * valida turno/status/pausa/confirmação/interação pendentes, energia e
+ * `HAND_LIMIT`), publica só se aceito. Sem payload extra — o outro lado
+ * recalcula o mesmo custo escalonado a partir do próprio contador dele.
+ */
+export function netDrawCardNatively(): boolean {
+  const played = useGameStore.getState().drawCardNatively(getLocalCombatant());
+  if (!played) return false;
+
+  broadcast((by) => ({ type: 'DRAW_CARD_NATIVELY', by, at: Date.now() }));
+  return true;
+}
+
+/**
  * Resolve o passo atual da interação pendente e replica.
  *
  * Mesmo padrão de `netPlaceMark`/`netPlayCard`/`netEndTurn`: aplica local
@@ -569,6 +585,14 @@ function applyLoggedAction(action: StoredAction): void {
           'foi recusado localmente. Turno local:',
           useGameStore.getState().turn,
         );
+      }
+      break;
+    }
+
+    case 'DRAW_CARD_NATIVELY': {
+      const drew = game.drawCardNatively(combatant);
+      if (!drew) {
+        reportDesync('a compra nativa remota de', combatant, 'foi recusada localmente.');
       }
       break;
     }

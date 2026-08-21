@@ -14,6 +14,7 @@ import {
   MARK_BY_COMBATANT,
   MAX_PIECES_PER_PLAYER,
   OPENING_HAND_SIZE,
+  PASSIVE_DRAW_ENABLED,
   PLACEMENT_COST,
   ROUND_DAMAGE,
   STARTING_ENERGY,
@@ -36,6 +37,7 @@ import {
   isHighlightedOldestValid,
   isLockedCellExpired,
   isValidTargetForCard,
+  nativeDrawsThisTurnKeyFor,
   opponentOf,
   pickFreeCell,
   placementBlockedKeyFor,
@@ -143,6 +145,7 @@ export {
   MARK_BY_COMBATANT,
   MAX_PIECES_PER_PLAYER,
   OPENING_HAND_SIZE,
+  PASSIVE_DRAW_ENABLED,
   PLACEMENT_COST,
   ROUND_DAMAGE,
   STARTING_ENERGY,
@@ -159,7 +162,7 @@ export {
   pickFreeCell,
 };
 
-export { WIN_LINES, occupiedIndexes, opponentOf } from '@/engine/rules';
+export { WIN_LINES, nativeDrawsThisTurnKeyFor, occupiedIndexes, opponentOf } from '@/engine/rules';
 
 export type {
   Board,
@@ -276,6 +279,21 @@ export interface GameActions {
    * pendente) — mesmo contrato de `placeMark`/`playCard`.
    */
   endTurn: (combatant: Combatant) => boolean;
+
+  /**
+   * Compra 1 carta nativamente — fora de qualquer efeito de carta, ação
+   * própria disparada pelo jogador (Fase 8c). NÃO consome o turno (`turn`/
+   * `turnCount` não mudam) — só `placeMark`/`endTurn` fazem isso. Custo
+   * escalona por compra DENTRO do mesmo turno: `custo = 1 + quantas compras
+   * nativas este combatente já fez nesta vez` (1ª = 1⚡, 2ª = 2⚡, ...) — ver
+   * `playerNativeDrawsThisTurn`/`machineNativeDrawsThisTurn`.
+   *
+   * Mesmos guards de `endTurn` (status/turno/pausa/confirmação/interação
+   * pendentes), na MESMA ordem, mais energia suficiente pro custo da compra
+   * ATUAL e `HAND_LIMIT` (mão cheia recusa a ação inteira, sem gastar ⚡).
+   * Devolve `true`/`false`, mesmo contrato de `placeMark`/`endTurn`.
+   */
+  drawCardNatively: (combatant: Combatant) => boolean;
 
   /**
    * Sorteia uma nova `ChaosRule` **caótica** (nunca `NORMAL`) pelo canal
@@ -458,6 +476,8 @@ const createInitialState = (): GameState => ({
   nextLogId: 0,
   extraTurnPending: null,
   extraTurnCostWaived: null,
+  playerNativeDrawsThisTurn: 0,
+  machineNativeDrawsThisTurn: 0,
   status: 'IDLE',
   roundWinner: null,
   winningLine: null,
@@ -609,7 +629,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
    *
    * Três responsabilidades independentes que só coincidem em serem
    * disparadas pelo mesmo evento:
-   * 1. distribuir 1 carta para cada lado a cada `AUTO_DRAW_INTERVAL_TURNS`;
+   * 1. distribuir 1 carta para cada lado a cada `AUTO_DRAW_INTERVAL_TURNS` —
+   *    DESLIGADA globalmente desde a Fase 8d (`PASSIVE_DRAW_ENABLED`), ver o
+   *    guard abaixo. Bloco mantido no código, não removido — reversível.
    * 2. reverter a regra caótica para NORMAL quando `ruleExpiresAtTurn` for
    *    alcançado (dura exatamente `CHAOS_RULE_DURATION_TURNS` turnos);
    * 3. sortear (`CHAOS_SURGE_CHANCE`, canal `RULES`) se um novo surto começa
@@ -622,11 +644,12 @@ export const useGameStore = create<GameStore>()((set, get) => {
    * sido oficialmente revertida neste mesmo tick.
    */
   function tickGlobalClock(nextTurnCount: number): void {
-    // Modo Clássico (`cardsEnabled: false`): nenhuma carta circula, nunca —
-    // nem a compra automática. O resto do relógio (trava de TRAVAR, reversão
-    // de regra caótica, sorteio de novo surto) é alheio a cartas e continua
-    // rodando normalmente, ver `GameState.cardsEnabled`.
-    if (get().cardsEnabled && isAutoDrawTurn(nextTurnCount)) {
+    // Modo Clássico (`cardsEnabled: false`) OU `PASSIVE_DRAW_ENABLED` (Fase
+    // 8d, desligado globalmente): sem compra passiva. O resto do relógio
+    // (trava de TRAVAR, reversão de regra caótica, sorteio de novo surto) é
+    // alheio a cartas e continua rodando normalmente — zero acoplamento de
+    // dado com este bloco (`docs/NOTAS_TECNICAS.md`, seção E).
+    if (PASSIVE_DRAW_ENABLED && get().cardsEnabled && isAutoDrawTurn(nextTurnCount)) {
       drawCardsFor('PLAYER', 1);
       drawCardsFor('MACHINE', 1);
     }
@@ -1462,6 +1485,12 @@ export const useGameStore = create<GameStore>()((set, get) => {
       ...nextTurnInfo.patch,
       extraTurnPending: keepsTurn ? null : state.extraTurnPending,
       extraTurnCostWaived: nextExtraTurnCostWaived,
+      // Contador de compras nativas (Fase 8c): zera quando o turno de `owner`
+      // REALMENTE passa (`!keepsTurn`) — sobrevive intacto durante uma
+      // sequência de turno extra, mesma lógica de `extraTurnCostWaived` acima.
+      [nativeDrawsThisTurnKeyFor(owner)]: keepsTurn
+        ? state[nativeDrawsThisTurnKeyFor(owner)]
+        : 0,
       // VIDENTE: sobrevive à 2ª colocação de TURNO_EXTRA (`keepsTurn` — é o
       // MESMO turno de `owner` ainda) e só limpa quando o turno de fato passa
       // adiante.
@@ -1741,6 +1770,8 @@ export const useGameStore = create<GameStore>()((set, get) => {
         lastVanishedIndex: null,
         extraTurnPending: null, // turno extra não atravessa rodadas
         extraTurnCostWaived: null, // mesma vida útil de `extraTurnPending`
+        playerNativeDrawsThisTurn: 0, // contador "na vez atual" — rodada nova é vez nova
+        machineNativeDrawsThisTurn: 0,
         // Interação pendente morre com a rodada — mesma flag de turno que
         // `extraTurnPending`. Nunca deveria estar setada aqui de qualquer
         // forma (`canPlaceAt` bloqueia `placeMark` enquanto ela existir, ver
@@ -1827,6 +1858,9 @@ export const useGameStore = create<GameStore>()((set, get) => {
       // pode sobrar para uma jogada futura sem relação nenhuma com esta.
       extraTurnCostWaived:
         state.extraTurnCostWaived === combatant ? null : state.extraTurnCostWaived,
+      // Turno de `combatant` termina aqui, incondicional (`endTurn` sempre
+      // passa a vez) — o contador de compras nativas da VEZ ATUAL zera junto.
+      [nativeDrawsThisTurnKeyFor(combatant)]: 0,
       // VIDENTE: o destaque de `combatant` só existe enquanto o turno DELE
       // não terminou — passar a vez é exatamente isso terminando.
       highlightedOldestFor:
@@ -1842,6 +1876,46 @@ export const useGameStore = create<GameStore>()((set, get) => {
     // chamava. Sem isto, qualquer turno que termina por "passar" em vez de
     // "colocar" pararia o relógio global nesse instante.
     tickGlobalClock(nextTurnCount);
+
+    return true;
+  },
+
+  drawCardNatively: (combatant) => {
+    const state = get();
+    // Mesma ordem de guards que `endTurn` — status/turno/pausa/confirmação/
+    // interação pendentes — antes de qualquer checagem específica desta ação.
+    if (state.status !== 'PLAYING') return false;
+    if (state.turn !== combatant) return false;
+    if (state.isPaused) return false;
+    if (state.pendingAcknowledgement !== null) return false;
+    if (state.pendingInteraction !== null) return false;
+
+    // Energia ANTES de `HAND_LIMIT` — mesma ordem que `resolveCardPlay` já
+    // segue (energia antes de `TRAP_LIMIT`/`canPlay`) e que `canPlaceAt` já
+    // segue (energia antes de célula ocupada/indisponível): o guard de
+    // RECURSO (posso pagar?) vem antes do guard de CAPACIDADE/específico da
+    // ação (tem onde isso caber?). Nenhuma das duas ordens muda o resultado
+    // de "zero efeito colateral" (as duas são checa-e-retorna, antes de
+    // qualquer `set()`) — a ordem aqui é sobre CONSISTÊNCIA com o padrão já
+    // estabelecido, escolha deliberada, não acidente de escrita.
+    const draws = state[nativeDrawsThisTurnKeyFor(combatant)];
+    const cost = draws + 1; // 1ª compra = 1⚡, 2ª = 2⚡, escalona linear
+    if (state[energyKeyFor(combatant)] < cost) return false;
+    if (state[handKeyFor(combatant)].length >= HAND_LIMIT) return false;
+
+    set({
+      [energyKeyFor(combatant)]: state[energyKeyFor(combatant)] - cost,
+      [nativeDrawsThisTurnKeyFor(combatant)]: draws + 1,
+    });
+
+    // Reaproveita o mecanismo já existente (compra automática, ESTUDAR/
+    // ESTUDAR II usam o mesmo): sorteio pelo canal `CARDS`, respeita
+    // `HAND_LIMIT` de novo internamente (no-op aqui, já garantido acima), e
+    // dispara o aviso "Você recebeu: ..." (`noticeCardsReceived`) sozinho —
+    // nenhuma UI nova precisa saber que uma carta chegou.
+    drawCardsFor(combatant, 1);
+
+    get().pushLog({ code: 'NATIVE_DRAW', subject: combatant, value: cost });
 
     return true;
   },

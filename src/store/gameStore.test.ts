@@ -275,6 +275,209 @@ describe('extraTurnCostWaived — ciclo do campo, leitura direta (Fase 8b.1)', (
   });
 });
 
+describe('drawCardNatively — guards de domínio, mesma ordem/prova de endTurn/placeMark (Fase 8c)', () => {
+  it('recusa fora de PLAYING, sem nenhum efeito colateral', () => {
+    useGameStore.setState({ turn: 'PLAYER', status: 'ROUND_OVER' });
+    const before = useGameStore.getState();
+    const drew = useGameStore.getState().drawCardNatively('PLAYER');
+    const after = useGameStore.getState();
+
+    expect(drew).toBe(false);
+    expect(after).toBe(before);
+  });
+
+  it('recusa fora da vez do combatente, sem nenhum efeito colateral', () => {
+    useGameStore.setState({ turn: 'MACHINE' });
+    const before = useGameStore.getState();
+    const drew = useGameStore.getState().drawCardNatively('PLAYER');
+    const after = useGameStore.getState();
+
+    expect(drew).toBe(false);
+    expect(after).toBe(before);
+  });
+
+  it('recusa com o jogo pausado, sem nenhum efeito colateral', () => {
+    useGameStore.setState({ turn: 'PLAYER', isPaused: true });
+    const before = useGameStore.getState();
+    const drew = useGameStore.getState().drawCardNatively('PLAYER');
+    const after = useGameStore.getState();
+
+    expect(drew).toBe(false);
+    expect(after).toBe(before);
+  });
+
+  it('recusa com uma confirmação pendente (pendingAcknowledgement), sem nenhum efeito colateral', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      pendingAcknowledgement: {
+        code: 'CARD_PLAYED' as const,
+        kind: 'INFO' as const,
+        subject: 'PLAYER' as const,
+        revealedCards: [],
+        id: 0,
+      },
+    });
+    const before = useGameStore.getState();
+    const drew = useGameStore.getState().drawCardNatively('PLAYER');
+    const after = useGameStore.getState();
+
+    expect(drew).toBe(false);
+    expect(after).toBe(before);
+  });
+
+  it('recusa com uma interação pendente, sem nenhum efeito colateral', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      pendingInteraction: {
+        kind: 'PICK_ONE_FROM_HAND',
+        caster: 'PLAYER',
+        cardId: 'HAND_RAID',
+        cardUid: 'x',
+        handIndex: 0,
+        priorSelections: [],
+        source: 'MACHINE',
+        optionUids: ['a', 'b'],
+      },
+    });
+    const before = useGameStore.getState();
+    const drew = useGameStore.getState().drawCardNatively('PLAYER');
+    const after = useGameStore.getState();
+
+    expect(drew).toBe(false);
+    expect(after).toBe(before);
+  });
+
+  it('recusa com energia insuficiente para o custo da compra ATUAL, sem nenhum efeito colateral', () => {
+    useGameStore.setState({ turn: 'PLAYER', playerEnergy: 0 });
+    const before = useGameStore.getState();
+    const drew = useGameStore.getState().drawCardNatively('PLAYER');
+    const after = useGameStore.getState();
+
+    expect(drew).toBe(false);
+    expect(after).toBe(before);
+  });
+
+  it('recusa com a mão cheia (HAND_LIMIT) MESMO com energia de sobra — zero desconto parcial', () => {
+    useGameStore.setState({
+      turn: 'PLAYER',
+      playerEnergy: 3,
+      playerHand: Array.from({ length: 5 }, (_, i) => ({ uid: `c${i}`, cardId: 'TURNO_EXTRA' as const })),
+    });
+    const before = useGameStore.getState();
+    const drew = useGameStore.getState().drawCardNatively('PLAYER');
+    const after = useGameStore.getState();
+
+    expect(drew).toBe(false);
+    expect(after).toBe(before);
+    expect(after.playerEnergy).toBe(3); // energia intacta — a recusa é INTEIRA, não parcial
+  });
+
+  it('custo escalona dentro do MESMO turno: 1ª compra custa 1⚡, 2ª custa 2⚡', () => {
+    useGameStore.setState({ turn: 'PLAYER', playerEnergy: 3, playerHand: [] });
+
+    const firstDrew = useGameStore.getState().drawCardNatively('PLAYER');
+    expect(firstDrew).toBe(true);
+    expect(useGameStore.getState().playerEnergy).toBe(2); // 3 - 1
+    expect(useGameStore.getState().playerHand.length).toBe(1);
+    expect(useGameStore.getState().turn).toBe('PLAYER'); // não consome o turno
+
+    const secondDrew = useGameStore.getState().drawCardNatively('PLAYER');
+    expect(secondDrew).toBe(true);
+    expect(useGameStore.getState().playerEnergy).toBe(0); // 2 - 2
+    expect(useGameStore.getState().playerHand.length).toBe(2);
+    expect(useGameStore.getState().turn).toBe('PLAYER');
+
+    // 3ª compraria por 3⚡ — sem energia, recusa por completo.
+    const before = useGameStore.getState();
+    const thirdDrew = useGameStore.getState().drawCardNatively('PLAYER');
+    expect(thirdDrew).toBe(false);
+    expect(useGameStore.getState()).toBe(before);
+  });
+
+  it('não consome o turno — colocar peça continua disponível depois de comprar', () => {
+    useGameStore.setState({ turn: 'PLAYER', playerEnergy: 3, playerHand: [] });
+
+    const turnCountBefore = useGameStore.getState().turnCount;
+    useGameStore.getState().drawCardNatively('PLAYER');
+    expect(useGameStore.getState().turn).toBe('PLAYER');
+    expect(useGameStore.getState().turnCount).toBe(turnCountBefore); // não muda — não consome o turno
+
+    const placed = useGameStore.getState().placeMark('PLAYER', 0);
+    expect(placed).toBe(true);
+  });
+});
+
+describe('playerNativeDrawsThisTurn/machineNativeDrawsThisTurn — ciclo do contador (Fase 8c, mesmo padrão de extraTurnCostWaived)', () => {
+  it('nasce em 0 e incrementa a cada compra bem-sucedida', () => {
+    useGameStore.setState({ turn: 'PLAYER', playerEnergy: 3, playerHand: [] });
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(0);
+
+    useGameStore.getState().drawCardNatively('PLAYER');
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(1);
+
+    useGameStore.getState().drawCardNatively('PLAYER');
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(2);
+  });
+
+  it('sobrevive a uma colocação que MANTÉM o turno (keepsTurn, sequência de TURNO_EXTRA)', () => {
+    useGameStore.setState({
+      machineHand: [{ uid: 't', cardId: 'TURNO_EXTRA' }],
+      machineEnergy: 3,
+      turn: 'MACHINE',
+    });
+
+    useGameStore.getState().playMachineCard('t');
+    useGameStore.getState().acknowledgePending();
+    expect(useGameStore.getState().extraTurnPending).toBe('MACHINE');
+
+    // Compra nativa ANTES da 1ª colocação da sequência de turno extra.
+    useGameStore.setState({ machineEnergy: 3 });
+    useGameStore.getState().drawCardNatively('MACHINE');
+    expect(useGameStore.getState().machineNativeDrawsThisTurn).toBe(1);
+
+    useGameStore.getState().placeMark('MACHINE', 0); // 1ª colocação — keepsTurn
+    expect(useGameStore.getState().turn).toBe('MACHINE');
+    expect(useGameStore.getState().machineNativeDrawsThisTurn).toBe(1); // sobrevive
+
+    useGameStore.getState().placeMark('MACHINE', 3); // 2ª colocação — turno passa de verdade
+    expect(useGameStore.getState().turn).toBe('PLAYER');
+    expect(useGameStore.getState().machineNativeDrawsThisTurn).toBe(0); // zera
+  });
+
+  it('zera quando o turno passa de verdade via placeMark normal (sem turno extra)', () => {
+    useGameStore.setState({ turn: 'PLAYER', playerEnergy: 3, playerHand: [] });
+    useGameStore.getState().drawCardNatively('PLAYER');
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(1);
+
+    useGameStore.getState().placeMark('PLAYER', 0); // sem extraTurnPending — turno passa
+    expect(useGameStore.getState().turn).toBe('MACHINE');
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(0);
+  });
+
+  it('zera em endTurn()', () => {
+    useGameStore.setState({ turn: 'PLAYER', playerEnergy: 3, playerHand: [] });
+    useGameStore.getState().drawCardNatively('PLAYER');
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(1);
+
+    useGameStore.getState().endTurn('PLAYER');
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(0);
+  });
+
+  it('zera em startNextRound, para os dois combatentes', () => {
+    useGameStore.setState({ playerNativeDrawsThisTurn: 2, machineNativeDrawsThisTurn: 1 });
+    useGameStore.getState().startNextRound();
+
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(0);
+    expect(useGameStore.getState().machineNativeDrawsThisTurn).toBe(0);
+  });
+
+  it('startMatch nasce com os dois combatentes em 0', () => {
+    useGameStore.getState().startMatch(2);
+    expect(useGameStore.getState().playerNativeDrawsThisTurn).toBe(0);
+    expect(useGameStore.getState().machineNativeDrawsThisTurn).toBe(0);
+  });
+});
+
 describe('MINA — as duas colocações concedidas pagam PLACEMENT_COST normal (Fase 8b.1, revisão da decisão original)', () => {
   it('defensor com energia só pra 1 das 2: usa a 1ª, a 2ª é recusada — nunca trava', () => {
     // Estado montado já no instante em que MINA acabou de detonar: dano já
@@ -1541,7 +1744,12 @@ describe('Modo Clássico (cardsEnabled) — cartas totalmente fora de jogo', () 
     expect(state.machineHand).toEqual([]);
   });
 
-  it('com cardsEnabled=true (padrão), auto-draw continua funcionando ao cruzar o mesmo turno — não regrediu', () => {
+  it('compra passiva desligada globalmente (Fase 8d, PASSIVE_DRAW_ENABLED): cardsEnabled=true não liga mais o auto-draw', () => {
+    // Antes da Fase 8d este teste provava o oposto ("continua funcionando,
+    // não regrediu") — a mudança AQUI é intencional: `PASSIVE_DRAW_ENABLED`
+    // desliga o bloco 1 de `tickGlobalClock` pra TODOS os modos, não só pro
+    // Modo Clássico. `cardsEnabled=true` continua sendo o padrão, só não
+    // liga mais compra automática nenhuma.
     useGameStore.getState().startMatch(1, false, true);
     useGameStore.setState({ turnCount: 5, playerHand: [], machineHand: [] });
 
@@ -1549,8 +1757,8 @@ describe('Modo Clássico (cardsEnabled) — cartas totalmente fora de jogo', () 
 
     const state = useGameStore.getState();
     expect(state.turnCount).toBe(6);
-    expect(state.playerHand).toHaveLength(1);
-    expect(state.machineHand).toHaveLength(1);
+    expect(state.playerHand).toEqual([]);
+    expect(state.machineHand).toEqual([]);
   });
 
   it('resolveCardPlay (playCard/playMachineCard) recusa qualquer jogada com cardsEnabled=false — mesmo se a mão não estiver vazia', () => {
@@ -1570,6 +1778,43 @@ describe('Modo Clássico (cardsEnabled) — cartas totalmente fora de jogo', () 
     const snapshot = { ...useGameStore.getState(), cardsEnabled: false };
     useGameStore.getState().resumeMatch(snapshot);
     expect(useGameStore.getState().cardsEnabled).toBe(false);
+  });
+});
+
+describe('tickGlobalClock — blocos 2-3 continuam funcionando com a compra passiva desligada (Fase 8d, regressão)', () => {
+  it('trava de TRAVAR expira E regra caótica reverte na MESMA jogada que cruza AUTO_DRAW_INTERVAL_TURNS, sem nenhuma carta comprada', () => {
+    // Neutraliza o bloco 4 (sorteio de NOVO surto, `CHAOS_SURGE_CHANCE`):
+    // sem isto, o sorteio rodaria LOGO depois da reversão do bloco 3 (mesmo
+    // tick) e um surto sorteado de propósito quebraria a asserção de
+    // `activeRule === 'NORMAL'` de forma aleatória — mesmo raciocínio de
+    // isolamento que `installFixtureTraps` já usa neste arquivo, aplicado ao
+    // canal `RULES` em vez do registry.
+    vi.spyOn(getChannel('RULES'), 'chance').mockReturnValue(false);
+
+    useGameStore.setState({
+      turnCount: 5, // próxima jogada cruza o turno 6 — mesmo gatilho da compra passiva
+      playerHand: [],
+      machineHand: [],
+      lockedCell: 8,
+      lockedCellExpiresAtTurn: 6, // expira exatamente no turno alcançado
+      activeRule: 'BLOCKED_CELL',
+      blockedCell: 4,
+      ruleExpiresAtTurn: 6, // idem, pra reversão de regra
+    });
+
+    useGameStore.getState().placeMark('PLAYER', 0);
+
+    const state = useGameStore.getState();
+    expect(state.turnCount).toBe(6);
+    // Bloco 1 (compra passiva) permanece desligado — confirmação cruzada com
+    // o teste acima, agora no mesmo cenário que exercita os outros blocos.
+    expect(state.playerHand).toEqual([]);
+    expect(state.machineHand).toEqual([]);
+    // Bloco 2: trava de TRAVAR expirou.
+    expect(state.lockedCell).toBeNull();
+    expect(state.lockedCellExpiresAtTurn).toBeNull();
+    // Bloco 3: regra caótica reverteu para NORMAL.
+    expect(state.activeRule).toBe('NORMAL');
   });
 });
 

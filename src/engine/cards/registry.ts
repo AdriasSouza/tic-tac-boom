@@ -1435,6 +1435,11 @@ const EXTRA_TURN: CardDefinition = {
   targeting: 'NONE',
   rarity: 'EPIC',
   weight: 3,
+  // Fase 8d: fora do sorteio (drawCardId/draftTieredCardIds) — se já estiver
+  // na mão de alguém, continua jogável normalmente. Não mexe em
+  // extraTurnCostWaived nem em nada que MINA compartilha via
+  // extraTurnPending, só a SELEÇÃO muda.
+  active: false,
   cost: 3,
 
   // Não empilha: jogar duas seguidas desperdiçaria a segunda.
@@ -2212,8 +2217,16 @@ export function getCard(id: CardId): CardDefinition {
 /*                              SORTEIO PONDERADO                              */
 /* -------------------------------------------------------------------------- */
 
-/** Ids agrupados por faixa de raridade. Montado uma vez, na carga do módulo. */
-const IDS_BY_RARITY = CARD_IDS.reduce(
+/**
+ * Ids agrupados por faixa de raridade. Montado uma vez, na carga do módulo.
+ *
+ * `active !== false` (não `=== true`): omitir o campo continua incluindo a
+ * carta — só uma exclusão EXPLÍCITA (`active: false`, ex.: TURNO_EXTRA desde
+ * a Fase 8d) tira da faixa. Ponto único de estrangulamento — tanto
+ * `drawCardId` quanto `draftTieredCardIds` partem daqui, então uma carta
+ * excluída sai dos dois sorteios de uma vez.
+ */
+const IDS_BY_RARITY = CARD_IDS.filter((id) => CARD_REGISTRY[id].active !== false).reduce(
   (acc, id) => {
     acc[CARD_REGISTRY[id].rarity].push(id);
     return acc;

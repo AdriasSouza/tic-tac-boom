@@ -105,6 +105,7 @@ function buildActions(decidingSide: Combatant, cardPlays: CardPlayRecord[]): Cpu
     endTurn: () => {
       useGameStore.getState().endTurn(decidingSide);
     },
+    drawCard: () => useGameStore.getState().drawCardNatively(decidingSide),
     resolveInteraction: (selection) => useGameStore.getState().resolveInteraction(decidingSide, selection),
   };
 }

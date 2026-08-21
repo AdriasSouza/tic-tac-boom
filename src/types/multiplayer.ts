@@ -110,6 +110,10 @@ export interface RoomRecord {
  * - `PLAY_CARD`   ➜ `playCard(uid, targetIndex)`
  * - `END_TURN`     ➜ `endTurn(combatant)` — `by` é quem passou a vez (REBOBINAR ou o
  *                    botão "passar a vez"), sem payload extra.
+ * - `DRAW_CARD_NATIVELY` ➜ `drawCardNatively(combatant)` (Fase 8c) — botão dedicado de
+ *                    compra, fora de efeito de carta; sem payload extra, o custo
+ *                    escalonado é recalculado em CADA aparelho a partir do próprio
+ *                    contador local (`playerNativeDrawsThisTurn`/`machineNativeDrawsThisTurn`).
  * - `RESOLVE_INTERACTION` ➜ `resolveInteraction(combatant, selection)` — cobre os 5
  *                    `kind`s de `PendingInteraction` com uma ação só; `selection`
  *                    já carrega o próprio `kind` (ver `InteractionSelection`,
@@ -144,6 +148,7 @@ export type MultiplayerAction =
       targetIndex: number | null;
     }
   | MultiplayerActionBase & { type: 'END_TURN' }
+  | MultiplayerActionBase & { type: 'DRAW_CARD_NATIVELY' }
   | MultiplayerActionBase & { type: 'RESOLVE_INTERACTION'; selection: InteractionSelection }
   | MultiplayerActionBase & { type: 'CANCEL_INTERACTION' }
   | MultiplayerActionBase & { type: 'ACKNOWLEDGE' }

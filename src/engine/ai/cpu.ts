@@ -58,6 +58,13 @@ export interface CpuActions {
   /** Passa a vez sem colocar peça — plano B quando `chooseCpuMove` não decide nada. */
   endTurn: () => void;
   /**
+   * Compra 1 carta nativamente (`drawCardNatively`, Fase 8c) — disponível pra
+   * CPU chamar, mas SEM heurística ainda decidindo QUANDO usar (decisão de IA
+   * registrada como fora de escopo desta fase). Devolve `boolean`, mesmo
+   * contrato do `drawCardNatively` real da store.
+   */
+  drawCard: () => boolean;
+  /**
    * Resolve o passo atual de uma `pendingInteraction` da PRÓPRIA CPU (SAQUE/
    * SABOTAGEM, Fase 4 — ver `resolveCpuInteraction`). Nunca chamada para uma
    * interação de outro combatente.

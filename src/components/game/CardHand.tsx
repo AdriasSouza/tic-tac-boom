@@ -23,6 +23,7 @@ import { selectMultiplayerStatus, useMultiplayerStore } from '@/store/multiplaye
 import { colors } from '@/theme/colors';
 import { getCard } from '@/engine/cards/registry';
 import {
+  HAND_LIMIT,
   selectCanUseCard,
   selectEnergy,
   selectHandOf,
@@ -137,8 +138,13 @@ export function CardHand({ style }: CardHandProps) {
     if (!canPlayCards) return 'NÃO É SUA VEZ';
     if (isChaosRouletteSpinning) return 'AGUARDE O GIRO TERMINAR';
     if (getCard(focusedEntry.cardId).cost > currentEnergy) return 'ENERGIA INSUFICIENTE';
+    // Achado C.6 (Fase 8c): cartas de compra (ESTUDAR/ESTUDAR II/PROCRASTINAR)
+    // recusadas só por `HAND_LIMIT` (`canPlay` interno) caíam no fallback
+    // genérico abaixo, sem dizer por quê — mesma mensagem que o botão de
+    // compra nativa (`DrawCardButton`) herda.
+    if (hand.length >= HAND_LIMIT) return 'MÃO CHEIA';
     return 'CONDIÇÃO DA CARTA NÃO ATENDIDA';
-  }, [canConfirmFocused, focusedEntry, canPlayCards, isChaosRouletteSpinning, currentEnergy]);
+  }, [canConfirmFocused, focusedEntry, canPlayCards, isChaosRouletteSpinning, currentEnergy, hand.length]);
 
   const handleFocusCard = useCallback(
     (uid: string) => {

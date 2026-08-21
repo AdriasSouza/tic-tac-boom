@@ -96,6 +96,9 @@ export function formatLogEntry(entry: LogPayload, p: LogPerspective): string {
     case 'TURN_PASSED':
       return `turno :: ${who} passou a vez sem colocar peça`;
 
+    case 'NATIVE_DRAW':
+      return `compra :: ${who} comprou 1 carta (${entry.value}⚡)`;
+
     case 'CHAOS_RULE':
       return CHAOS_RULE_TEXT[entry.value as ChaosRule] ?? 'caos :: regra alterada';
 

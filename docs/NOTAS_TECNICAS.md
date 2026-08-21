@@ -1239,3 +1239,104 @@ acontece" (`endTurn()` explícito e "sem célula livre", os dois exercitando a l
 colocações, provando "usa só o que consegue pagar" com um número concreto; regressão
 explícita confirmando que TURNO_EXTRA continua idêntica (o teste e2e já existente não mudou
 de asserção, só de mecanismo interno).
+
+## Fase 8c — compra nativa de carta (`drawCardNatively`), custo escalonado 1⚡/2⚡
+
+Implementação seguindo o molde de `endTurn` mapeado na Fase 8a (seção C): ação nova da store
+(não efeito de carta), botão humano, consumidor CPU, facade de rede + tipo de ação, mensagem
+de mão cheia. Ação nova (`gameStore.ts`) — NÃO consome o turno (`turn`/`turnCount` intactos);
+custo escalona por compra DENTRO do mesmo turno via par `playerNativeDrawsThisTurn`/
+`machineNativeDrawsThisTurn` (`custo = draws + 1`): 1ª compra 1⚡, 2ª 2⚡, e assim por diante.
+Par por combatente (não campo único — mesmo critério da Fase 2.5, os dois valores são
+independentes). "Turno atual" inclui uma sequência de turno extra inteira: o contador
+sobrevive a uma colocação `keepsTurn` (mesma lógica que `extraTurnCostWaived`, Fase 8b.1) e só
+zera quando o turno REALMENTE passa (`placeMark` com `!keepsTurn`, ou `endTurn`) — zerado
+também em `startNextRound`. O sorteio em si reaproveita `drawCardsFor` (RNG, `HAND_LIMIT`,
+aviso "Você recebeu") sem duplicar mecanismo.
+
+**Ordem de guards — correção em relação ao plano original:** o rascunho do plano checava
+`HAND_LIMIT` antes de energia, por raciocínio informal ("uma compra fadada ao fracasso não
+deveria custar nada"). Pedido explícito de confirmação levou a reler o código de verdade em
+vez de assumir: `resolveCardPlay` checa energia (linha ~1104) ANTES de `TRAP_LIMIT`/`canPlay`
+(que embute `HAND_LIMIT` pra cartas de compra); `canPlaceAt` checa `PLACEMENT_COST` ANTES de
+célula ocupada/indisponível. Precedente único e consistente: energia/recurso vem antes de
+capacidade/limite em todo o codebase, nunca o contrário. `drawCardNatively` foi implementada
+com essa ordem (energia → `HAND_LIMIT`), corrigindo o rascunho — as duas ordens dão a mesma
+prova de "zero efeito colateral" (ambas checa-e-retorna antes de qualquer `set()`), a escolha
+aqui é sobre consistência com o padrão estabelecido, não sobre correção funcional.
+
+**UI:** `DrawCardButton.tsx`, mesmo molde visual de `EndTurnButton.tsx` (caixa `22×20`,
+opacidade habilitado/desabilitado/pressionado, sempre montado) mas SEM modal de confirmação —
+comprar carta não é irreversível como passar a vez. Terceiro filho na `styles.actions` de
+`GameHeader.tsx`, mesmo tamanho dos outros dois. Medido empiricamente (Playwright headless,
+`expo start --web`, rota `/game/cpu`) que o terceiro botão não altera o `{boardSize, cellSize}`
+resolvido pelo `<Board />`: 390×844 continua `outer:270, cellSize:80`; 1440×900 continua
+`outer:476, cellSize:149` — idêntico ao valor pré-existente nos dois casos. Fluxo clicado ponta
+a ponta no navegador: 1ª compra custou 1⚡ e a 2ª 2⚡, como esperado, sem erro de console.
+
+Achado C.6 (Fase 8a) corrigido de forma geral: `CardHand.tsx`'s `focusDisabledReason` ganhou um
+`if (hand.length >= HAND_LIMIT) return 'MÃO CHEIA'` entre a checagem de energia e o fallback
+genérico — antes, qualquer carta recusada só por `HAND_LIMIT` (ESTUDAR/ESTUDAR II/
+PROCRASTINAR com a mão cheia) caía no texto genérico "CONDIÇÃO DA CARTA NÃO ATENDIDA". O botão
+novo herda a mesma mensagem por reaproveitar a mesma cadeia de motivos. Não automatizável como
+teste neste projeto — `vitest.config.mts` só coleta `src/**/*.test.ts`, nenhum harness de
+componente React existe — verificado manualmente/visualmente.
+
+## Nota — `OPENING_HAND_SIZE = 0` é decisão deliberada, não pressuposto (confirmado antes da Fase 8d)
+
+Registrado aqui porque a Fase 8d desliga a compra passiva (`tickGlobalClock`) para TODOS os
+modos, e com `OPENING_HAND_SIZE = 0` (mão inicial vazia, `rules.ts`) isso deixa
+`drawCardNatively` (Fase 8c) como a ÚNICA fonte de cartas novas em partida — uma combinação
+fácil de confundir com regressão numa auditoria futura. **Não é.** `OPENING_HAND_SIZE = 0` foi
+decisão de design tomada numa sessão anterior, fora do histórico desta (o comentário já
+existente em `rules.ts` — "começar sem cartas ensina o tabuleiro primeiro" — documenta a
+motivação original). Confirmado de novo pelo usuário nesta sessão, antes da Fase 8d: a
+combinação "mão inicial vazia + compra passiva desligada + compra nativa paga energia" é o
+resultado pretendido, não um efeito colateral não examinado.
+
+## Fase 8d — duas desativações reversíveis: compra passiva + TURNO_EXTRA fora do sorteio
+
+Implementação direta dos achados E e F da Fase 8a — sem investigação nova, as duas mudanças já
+estavam mapeadas por completo. Zero acoplamento entre as duas partes.
+
+**Parte 1 — compra passiva desligada globalmente.** `PASSIVE_DRAW_ENABLED = false`
+(`rules.ts`), constante fixa (não campo de `GameState`) — desligamento é GLOBAL, não por
+partida como `cardsEnabled`, então não precisa da auditoria de campo transitório que um campo
+novo exigiria. `tickGlobalClock` (`gameStore.ts`) ganhou o guard extra no bloco 1
+(`PASSIVE_DRAW_ENABLED && get().cardsEnabled && isAutoDrawTurn(...)`); bloco mantido no código,
+não removido — reversível virando a constante `true` de novo. Blocos 2-4 (trava de TRAVAR,
+reversão de regra caótica, sorteio de surto) intocados, confirmando na prática o "zero
+acoplamento de dado" que a Fase 8a já tinha mapeado.
+
+Um teste existente precisou ser REESCRITO, não só complementado: "com cardsEnabled=true
+(padrão), auto-draw continua funcionando... não regrediu" afirmava o oposto do comportamento
+novo. Renomeado para deixar explícito que a mudança é intencional, não uma regressão
+silenciosa. Teste novo de regressão confirma que os blocos 2-3 continuam disparando na MESMA
+jogada que cruza `AUTO_DRAW_INTERVAL_TURNS`, sem nenhuma carta comprada — teve que neutralizar
+o bloco 4 (`vi.spyOn` no canal `RULES`, `chance` forçado a `false`) porque um sorteio de surto
+verdadeiro rodando logo depois da reversão do bloco 3 tornaria a asserção de `activeRule ===
+'NORMAL'` aleatoriamente flaky (~25% de chance por rodada de teste).
+
+**Parte 2 — TURNO_EXTRA fora do sorteio (Opção A).** Campo `active?: boolean` novo em
+`CardDefinition` (`definitions.ts`), omitido = `true`. Filtro único em `IDS_BY_RARITY`
+(`registry.ts`: `CARD_IDS.filter((id) => CARD_REGISTRY[id].active !== false)`) — ponto de
+estrangulamento já confirmado pela Fase 8a como o único alimentador de `drawCardId` E
+`draftTieredCardIds`. `EXTRA_TURN` ganhou `active: false`; `effect()`, `extraTurnCostWaived` e
+o compartilhamento de `extraTurnPending` com MINA não foram tocados — só a seleção no sorteio
+muda, a carta continua com o mecanismo inteiro se já estiver na mão de alguém.
+
+**Achado extra, não pedido explicitamente mas consequência direta do ponto único de
+estrangulamento:** `IDS_BY_RARITY` tem um 3º consumidor além dos dois mapeados pela Fase 8a —
+o Altar de Sacrifício (`registry.ts:2099`, `rng.pick(IDS_BY_RARITY[resultRarity])`, invocação
+da carta nova ao fundir duas). Filtrar no choke point também tira TURNO_EXTRA dos prêmios
+possíveis do Altar, sem código extra — coerente com "fora do pool de sorteio" ser uma regra
+geral, não específica de `drawCardId`. EPIC mantém 9 cartas depois da exclusão (era 10), sem
+risco de faixa vazia em nenhum dos 3 consumidores.
+
+**Testes novos:** `drawCardId` nunca sorteia `'TURNO_EXTRA'` em 50 000 amostras
+(`registry.test.ts`, mesma escala do teste de distribuição já existente); `draftTieredCardIds`
+nunca oferece `'TURNO_EXTRA'` entre as 5 opções, em 50 seeds (`registry.effects.test.ts`, ao
+lado do teste de embaralhamento da Fase 7a).
+
+**Verificação:** `npx tsc --noEmit` e `npm run test` limpos. 415 passed / 1 skipped / 14
+arquivos (baseline ao fechar 8c: 412/1/14 — 3 testes novos, 1 reescrito).

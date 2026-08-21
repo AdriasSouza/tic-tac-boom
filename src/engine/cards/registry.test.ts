@@ -51,3 +51,10 @@ describe('drawCardId — distribuição de raridade', () => {
     }
   });
 });
+
+describe('drawCardId — TURNO_EXTRA fora do sorteio (Fase 8d, active:false)', () => {
+  it('nunca sorteia TURNO_EXTRA em 50 000 amostras', () => {
+    const draws = drawMany(SEED, 50_000);
+    expect(draws).not.toContain('TURNO_EXTRA');
+  });
+});

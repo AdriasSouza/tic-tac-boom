@@ -58,6 +58,8 @@ export function createTestState(overrides: Partial<GameState> = {}): GameState {
     nextLogId: 0,
     extraTurnPending: null,
     extraTurnCostWaived: null,
+    playerNativeDrawsThisTurn: 0,
+    machineNativeDrawsThisTurn: 0,
     status: 'PLAYING',
     roundWinner: null,
     winningLine: null,

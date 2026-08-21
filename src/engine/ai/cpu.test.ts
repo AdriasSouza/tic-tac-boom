@@ -25,6 +25,7 @@ function trackedActions(): {
     endTurn: () => {
       calls.endTurn += 1;
     },
+    drawCard: () => false,
     resolveInteraction: () => {
       calls.resolveInteraction += 1;
       return false;
@@ -258,6 +259,7 @@ describe('playCPUTurn — placeMark recusado apesar de chooseCpuMove ter decidid
       endTurn: () => {
         calls.endTurn += 1;
       },
+      drawCard: () => false,
       resolveInteraction: () => {
         calls.resolveInteraction += 1;
         return false;
@@ -307,6 +309,7 @@ describe('playCPUTurn — resolve a própria pendingInteraction (Fase 4, Achado 
       endTurn: () => {
         calls.endTurn += 1;
       },
+      drawCard: () => false,
       resolveInteraction: (selection) => {
         calls.resolveInteraction += 1;
         expect(selection.kind).toBe('PICK_ONE_FROM_HAND');
@@ -654,6 +657,7 @@ describe('playCPUTurn — resolve PICK_BOARD_CELL (2º passo de DESLIZAR, carta 
       placeMark: () => true,
       playCard: () => false,
       endTurn: () => {},
+      drawCard: () => false,
       resolveInteraction: (selection) => {
         resolvedSelection = selection;
         state = { ...state, pendingInteraction: null };
@@ -687,6 +691,7 @@ describe('playCPUTurn — resolve PICK_BOARD_CELL (2º passo de DESLIZAR, carta 
       placeMark: () => true,
       playCard: () => false,
       endTurn: () => {},
+      drawCard: () => false,
       resolveInteraction: (selection) => {
         captured.selection = selection;
         state = { ...state, pendingInteraction: null };
