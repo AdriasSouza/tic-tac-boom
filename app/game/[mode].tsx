@@ -10,6 +10,8 @@ import { isOnlineMatch } from '@/services/syncBridge';
 import { selectError, useMultiplayerStore } from '@/store/multiplayerStore';
 import { colors } from '@/theme/colors';
 import ChaosTerminal from '@/components/game/ChaosTerminal';
+import DrawCardButton from '@/components/game/DrawCardButton';
+import EndTurnButton from '@/components/game/EndTurnButton';
 import GameHeader from '@/components/game/GameHeader';
 import HUD from '@/components/game/HUD';
 import Board, { type BoardResolvedSize } from '@/components/game/Board';
@@ -33,7 +35,12 @@ import ConnectionSyncBanner from '@/components/ui/ConnectionSyncBanner';
 import { useMatchPerspective } from '@/hooks/useMatchPerspective';
 import { useLayoutMode, type LayoutMode } from '@/hooks/useLayoutMode';
 import { GAME_MAX_WIDTH, useResponsiveLayout } from '@/hooks/useResponsiveLayout';
-import { BOARD_BOUNDS, MIN_PLAYABLE_BOARD, TRAP_ZONE_BOUNDS } from '@/theme/layout';
+import {
+  ACTION_BUTTON_ROW_HEIGHT,
+  BOARD_BOUNDS,
+  MIN_PLAYABLE_BOARD,
+  TRAP_ZONE_BOUNDS,
+} from '@/theme/layout';
 import { useGameStore } from '@/store/gameStore';
 import { useCpuOpponent } from '@/hooks/useCpuOpponent';
 import { useMultiplayerSync } from '@/hooks/useMultiplayerSync';
@@ -86,9 +93,16 @@ export default function GameScreen() {
    * um ponto fixo: aplicado uma vez, nunca precisa mudar de novo sozinho.
    */
   const [rowWidth, setRowWidth] = useState(0);
+  // `rowHeight` (Fase 8g) — mesmo `onLayout`, mesmo raciocínio de estabilidade
+  // de `rowWidth` acima, agora pro eixo vertical: decide o slot de ação dos
+  // botões (`verticalSlack`, abaixo). Ver o comentário ali sobre por que essa
+  // medição em particular teve que trocar de MECANISMO (não só reaproveitar
+  // o padrão de `insetPerSide`) para não se realimentar.
+  const [rowHeight, setRowHeight] = useState(0);
   const handleCombatRowLayout = useCallback((event: LayoutChangeEvent) => {
-    const { width } = event.nativeEvent.layout;
+    const { width, height } = event.nativeEvent.layout;
     setRowWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width));
+    setRowHeight((prev) => (Math.abs(prev - height) < 1 ? prev : height));
   }, []);
 
   /**
@@ -161,6 +175,59 @@ export default function GameScreen() {
 
     return clamp(target, 0, ceiling);
   }, [resolvedBoard, rowWidth, layoutMode]);
+
+  /**
+   * Slot dos botões de ação (comprar carta, passar a vez — Fase 8g).
+   *
+   * Investigação (Fase 8f) mediu quanto espaço vertical sobra hoje entre o
+   * board e a mão em 5 pontos (compact, os dois sub-regimes de `regular`,
+   * wide) e achou que NÃO é um espectro por `LayoutMode` — `regular` sozinho
+   * se comporta como `compact` (largura/teto governa, sobra dezenas a
+   * centenas de dp) OU como `wide` (altura governa, sobra ~0), dependendo só
+   * de orientação/proporção da tela. Daí o cálculo ser dinâmico
+   * (`verticalSlack`), nunca uma tabela por modo.
+   *
+   * **Por que isto NÃO reaproveita o padrão de `insetPerSide` acima, mesmo
+   * sendo a mesma família de problema** (medir com segurança sem a correção
+   * se realimentar): `insetPerSide` empurra margem nos FILHOS de `combatRow`
+   * (as `TrapZone`) sem nunca mudar quanto espaço a PRÓPRIA `combatRow`
+   * recebe — por isso medir `combatRow` ali é seguro e estável. Aqui, a
+   * primeira versão deste mecanismo tentava abrir espaço ENCOLHENDO a altura
+   * entregue a `combatRow` (liberando uma linha nova abaixo dela) — mas
+   * `combatRow` é a ÚNICA linha `flex:1` da coluna, então encolhê-la muda o
+   * que o PRÓXIMO `onLayout` mede, que muda o cálculo de novo: a mesma
+   * classe de auto-referência que o comentário de `insetPerSide` já descreve
+   * acima, só que no eixo vertical. A correção não foi medir outra coisa
+   * (não existe candidato estável — a altura de `combatRow` depende do
+   * conteúdo de `HUD`, que não é uma fórmula fixa) — foi os botões nunca
+   * ENTRAREM no cálculo de flex de ninguém: `combatRow`/`boardArea`/
+   * `TrapZone`/`CardHand` são medidos e dimensionados exatamente como se os
+   * botões não existissem, em todo render — ver onde `verticalSlack` é
+   * consumido, abaixo (o slot vertical é `position:'absolute'` dentro de
+   * `boardArea`; o lateral é uma coluna de largura CONSTANTE — nenhuma das
+   * duas altera `rowHeight`).
+   *
+   * `verticalSlack` é literalmente a mesma quantidade que `insetPerSide` já
+   * usa como "quanto dá pra tirar de `combatRow` sem `boardSize` ser
+   * afetado" (o `ceiling` ali, na dimensão perpendicular) — reaproveitada,
+   * não uma conta nova. Piso de `MIN_PLAYABLE_BOARD` idêntico ao de
+   * `insetPerSide`, mesma segunda precondição descoberta em 926×428: um
+   * board já abaixo do piso jogável é categoria degradada, não ganha slot
+   * nenhum (nem vertical, nem tentativa de abrir mais espaço).
+   */
+  const verticalSlack = useMemo(() => {
+    if (!resolvedBoard || rowHeight <= 0) return 0;
+    if (resolvedBoard.boardSize < MIN_PLAYABLE_BOARD) return 0;
+
+    const { GUTTER } = BOARD_BOUNDS[layoutMode];
+    return Math.max(0, rowHeight - resolvedBoard.boardSize - GUTTER);
+  }, [resolvedBoard, rowHeight, layoutMode]);
+
+  // Cabe o slot vertical (dentro de `boardArea`, no espaço que já sobra
+  // abaixo do board) só se ele comportar o tamanho-alvo CHEIO dos botões
+  // (`ACTION_BUTTON_ROW_HEIGHT`) — não um valor arbitrário menor. Abaixo
+  // disso, os botões vão pro slot lateral (coluna nova ao lado da mão).
+  const useVerticalActionSlot = verticalSlack >= ACTION_BUTTON_ROW_HEIGHT;
 
   // Quem é "eu" e quem é "ele" nesta tela. Nos modos offline resolve para
   // PLAYER/MACHINE, que é o comportamento de sempre.
@@ -302,16 +369,72 @@ export default function GameScreen() {
 
           <View style={styles.boardArea}>
             <Board onResolvedSize={handleBoardResolvedSize} />
+
+            {/* Slot vertical dos botões de ação (Fase 8g) — só quando
+                `verticalSlack` mediu espaço de sobra pro tamanho-alvo cheio
+                (ver o cálculo acima). `position:'absolute'` de propósito:
+                desenha por CIMA do espaço que já sobra abaixo do board hoje,
+                sem participar do cálculo de `flex`/centralização de
+                `boardArea` — o board continua centralizado exatamente como
+                sem este bloco, pixel a pixel. */}
+            {useVerticalActionSlot && (
+              <View
+                style={[styles.verticalActionSlot, { bottom: BOARD_BOUNDS[layoutMode].GUTTER }]}
+              >
+                {!isClassic && <DrawCardButton />}
+                <EndTurnButton />
+              </View>
+            )}
           </View>
 
           <TrapZone owner={remoteCombatant} style={{ marginRight: insetPerSide }} />
         </View>
 
-        {/* ── LINHA 3 · MÃO INTERATIVA ───────────────────────────────────────
+        {/* ── LINHA 3 · MÃO INTERATIVA (+ slot lateral dos botões de ação
+            quando não há espaço vertical, Fase 8g) ─────────────────────────
             As cartas de verdade, em leque. Ver `<CardHand />`/`<CardItem />`.
             Modo Clássico: a mão fica vazia pra sempre (`cardsEnabled: false`)
-            — some a fileira inteira em vez de mostrar "MÃO VAZIA" pra sempre. */}
-        {!isClassic && <CardHand />}
+            — some a fileira inteira em vez de mostrar "MÃO VAZIA" pra sempre.
+
+            `CardHand` mora dentro de um wrapper `flex:1` próprio (nunca
+            recebe a coluna lateral como irmã direta) — o mesmo padrão que
+            `boardArea` já usa ao redor do `<Board />`: `CardHand` resolve a
+            própria centralização (`width:'100%'`) contra QUALQUER largura
+            que o wrapper lhe der, sem precisar saber se há coluna lateral ao
+            lado ou não. A coluna lateral tem largura CONSTANTE
+            (`TRAP_ZONE_BOUNDS[layoutMode].sidebarWidth`, a mesma que
+            `TrapZone` já usa — alinha visualmente por baixo dela) — nunca
+            medida, então não há realimentação possível. Fica do lado LOCAL
+            (mesmo lado da `TrapZone` do jogador): as duas ações são do
+            jogador local, não faz sentido dividir uma de cada lado como a
+            `TrapZone` faz por dono. */}
+        {(!isClassic || !useVerticalActionSlot) && (
+          <View style={styles.handRow}>
+            {!useVerticalActionSlot && (
+              <View
+                style={[
+                  styles.lateralActionSlot,
+                  // `sidebarWidth` sozinho não basta pra alinhar embaixo da
+                  // `TrapZone` local: a POSIÇÃO dela na tela também inclui
+                  // `insetPerSide` (A2.1, a margem que aproxima a sidebar do
+                  // board) — sem reaproveitar o MESMO valor aqui, esta coluna
+                  // renderiza `insetPerSide` dp mais pra fora do que a
+                  // `TrapZone` de cima (medido em 1440×900: sem isto, a
+                  // coluna caía em x=225 contra x=358 da `TrapZone`).
+                  { width: TRAP_ZONE_BOUNDS[layoutMode].sidebarWidth, marginLeft: insetPerSide },
+                ]}
+              >
+                {!isClassic && <DrawCardButton />}
+                <EndTurnButton />
+              </View>
+            )}
+            {!isClassic && (
+              <View style={styles.handFlexWrapper}>
+                <CardHand />
+              </View>
+            )}
+          </View>
+        )}
       </View>
 
       {multiplayerError !== null && (
@@ -393,6 +516,9 @@ const HUG_GAP: Record<LayoutMode, number> = {
   regular: 16,
   wide: 24,
 };
+
+/** Espaço entre os dois botões de ação (comprar carta, passar a vez), nos dois slots — Fase 8g. */
+const ACTION_BUTTON_GAP = 10;
 
 /**
  * A tela tem duas camadas: a raiz (tela cheia, fundo preto) e o **game
@@ -479,6 +605,63 @@ const styles = StyleSheet.create({
     alignSelf: 'stretch',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+
+  /**
+   * Slot vertical dos botões de ação (Fase 8g) — `position:'absolute'`
+   * DELIBERADO, ver o comentário de `verticalSlack` acima sobre por que
+   * (nunca participa do cálculo de `flex` de `boardArea`/`combatRow`).
+   * `left:0, right:0` + `alignItems:'center'` em vez de `alignSelf:'center'`
+   * no próprio nó: Yoga resolve centralização horizontal de nós absolutos de
+   * forma mais previsível quando o próprio nó já ocupa a largura toda do pai
+   * e centraliza o CONTEÚDO dele, em vez de depender de `alignSelf` num nó
+   * sem `left`/`right` definidos.
+   */
+  verticalActionSlot: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: ACTION_BUTTON_GAP,
+  },
+
+  /**
+   * Linha 3 · mão + (condicional) coluna lateral dos botões de ação.
+   * `alignItems:'stretch'` (padrão do Yoga, declarado aqui por clareza,
+   * mesmo raciocínio de `combatRow` acima): a coluna lateral herda a altura
+   * de `handFlexWrapper` (dessa a de `<CardHand />`, intrínseca — não é
+   * `flex:1`, então não compete por espaço com `combatRow`) e centraliza o
+   * próprio conteúdo dentro dela, mesmo padrão que `<TrapZone />` já usa.
+   */
+  handRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  /**
+   * `<CardHand />` nunca recebe a coluna lateral como IRMÃ direta — mora
+   * dentro deste wrapper `flex:1` próprio, mesmo padrão que `boardArea` já
+   * usa ao redor do `<Board />`. `CardHand` resolve a própria centralização
+   * (`width:'100%'`, `CardHand.tsx`) contra a largura que ESTE wrapper lhe
+   * dá, sem precisar saber se há coluna lateral ao lado ou não — nenhuma
+   * medição nova, nenhum risco de `CardHand` competir por largura com a
+   * coluna lateral (que é `width` CONSTANTE, nunca medida).
+   */
+  handFlexWrapper: {
+    flex: 1,
+  },
+  /**
+   * Largura reaproveitada de `TRAP_ZONE_BOUNDS[layoutMode].sidebarWidth` —
+   * mesma coluna que `<TrapZone />` já usa, alinha visualmente por baixo
+   * dela. Constante (nunca medida), por isso segura como filho de `flex`
+   * normal — ver o comentário de `verticalSlack` acima.
+   */
+  lateralActionSlot: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: ACTION_BUTTON_GAP,
   },
 
   /**

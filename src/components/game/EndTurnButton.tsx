@@ -16,6 +16,7 @@ import {
   useGameStore,
 } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
+import { ACTION_BUTTON_SIZE } from '@/theme/layout';
 
 /**
  * Botão "passar a vez" — dá ao humano um consumidor real para `endTurn`
@@ -29,12 +30,16 @@ import { colors } from '@/theme/colors';
  * `TrapZone`/`CardHand`) em vez de subir estado para `[mode].tsx` — passar a
  * vez não tem estado de tela como o pause tem (`pauseVisible`), é ação pura.
  *
- * Passar a vez é IRREVERSÍVEL, e este ícone fica ao lado do pause — que é
- * inofensivo (só abre um menu) — sem exigir confirmação um toque acidental
+ * Passar a vez é IRREVERSÍVEL — sem exigir confirmação um toque acidental
  * entregaria o turno inteiro. Por isso o toque abre um modal de confirmação
  * (mesmo padrão visual de `PauseModal`/`AcknowledgementModal`: `Modal`
  * transparente + `PixelPanel` + `PixelButton`) em vez de chamar `netEndTurn()`
  * direto.
+ *
+ * Montado por `[mode].tsx` (Fase 8g), não mais por `GameHeader.tsx` — saiu do
+ * header (pequeno demais, escondido ao lado do pause) pro slot de ação
+ * dentro da própria linha de combate. Ver `ACTION_BUTTON_SIZE`
+ * (`theme/layout.ts`) para a origem do tamanho.
  */
 function EndTurnButtonComponent() {
   const [confirmVisible, setConfirmVisible] = useState(false);
@@ -81,7 +86,7 @@ function EndTurnButtonComponent() {
         accessibilityState={{ disabled: !canEndTurn }}
         hitSlop={10}
       >
-        <Ionicons name="play-skip-forward" size={12} color={colors.text} />
+        <Ionicons name="play-skip-forward" size={18} color={colors.text} />
       </Pressable>
 
       <Modal
@@ -131,13 +136,12 @@ export const EndTurnButton = memo(EndTurnButtonComponent);
 export default EndTurnButton;
 
 const styles = StyleSheet.create({
-  // Mesmo tamanho do `pauseButton` de `GameHeader.tsx` de propósito: um
-  // segundo botão do MESMO tamanho ao lado dele não muda a altura da linha —
-  // o máximo entre os filhos não sobe, e é essa altura que consome o
-  // orçamento do `<Board />` (AGENTS.md).
+  // `ACTION_BUTTON_SIZE` (Fase 8g) — decidido junto de `DrawCardButton` e do
+  // slot que os hospeda em `[mode].tsx` (`theme/layout.ts`), não um número
+  // solto aqui.
   button: {
-    width: 22,
-    height: 20,
+    width: ACTION_BUTTON_SIZE,
+    height: ACTION_BUTTON_SIZE,
     borderWidth: 2,
     borderColor: colors.textDim,
     alignItems: 'center',

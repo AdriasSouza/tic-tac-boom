@@ -82,3 +82,22 @@ export const TRAP_ZONE_BOUNDS: Record<LayoutMode, { sidebarWidth: number; slotSi
   regular: { sidebarWidth: 56, slotSize: 46, hitSlop: 0 },
   wide: { sidebarWidth: 72, slotSize: 60, hitSlop: 0 },
 };
+
+/**
+ * Botões de ação do jogador — comprar carta e passar a vez (Fase 8g:
+ * saíram do header, pequenos demais pra ações que viraram centrais desde a
+ * Fase 8b/8c, e passaram a viver dentro da própria linha de combate, no
+ * espaço que já sobra ao redor do board).
+ *
+ * `ACTION_BUTTON_SIZE` decidido PRIMEIRO (dentro da faixa 36-40dp aprovada —
+ * o alvo de toque confortável é ~44dp, a caixa antiga de 22×20 ficava bem
+ * abaixo disso); `ACTION_BUTTON_ROW_HEIGHT` é DERIVADO dele, não escolhido em
+ * paralelo — só faz sentido caber o slot vertical se ele comportar o
+ * tamanho-alvo CHEIO dos botões, não um valor arbitrário à parte.
+ * `ACTION_BUTTON_ROW_PADDING` reaproveita o `gap:6` que `[mode].tsx`'s
+ * `wrapper` já usa entre linhas — não é um respiro novo, é o mesmo já
+ * estabelecido no resto da tela.
+ */
+export const ACTION_BUTTON_SIZE = 38;
+export const ACTION_BUTTON_ROW_PADDING = 6;
+export const ACTION_BUTTON_ROW_HEIGHT = ACTION_BUTTON_SIZE + 2 * ACTION_BUTTON_ROW_PADDING;

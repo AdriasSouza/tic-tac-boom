@@ -3,8 +3,6 @@ import * as Haptics from 'expo-haptics';
 import { memo, useCallback } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import DrawCardButton from './DrawCardButton';
-import EndTurnButton from './EndTurnButton';
 import { playSound } from '@/audio/soundEngine';
 import { colors } from '@/theme/colors';
 
@@ -37,15 +35,11 @@ function GameHeaderComponent({ onPause }: GameHeaderProps) {
         TIC TAC <Text style={styles.logoBoom}>BOOM</Text>
       </Text>
 
-      {/* Grupo da direita: comprar carta + passar a vez + pause, lado a lado.
-          Mesmo tamanho (`width:22 height:20`) nos três — um filho a mais do
-          MESMO tamanho não muda a altura da linha, que é o que consome o
-          orçamento do `<Board />` (AGENTS.md). */}
+      {/* Só o pause continua aqui — comprar carta/passar a vez saíram pro slot
+          de ação dentro da linha de combate (Fase 8g): eram pequenos demais e
+          ficavam escondidos ao lado do pause, apesar de terem virado ações
+          estratégicas centrais desde a Fase 8b/8c. */}
       <View style={styles.actions}>
-        <DrawCardButton />
-
-        <EndTurnButton />
-
         <Pressable
           onPress={handlePause}
           style={({ pressed }) => [styles.pauseButton, pressed && styles.pauseButtonPressed]}

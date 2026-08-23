@@ -18,11 +18,13 @@ import {
   useGameStore,
 } from '@/store/gameStore';
 import { colors } from '@/theme/colors';
+import { ACTION_BUTTON_SIZE } from '@/theme/layout';
 
 /**
  * Botão "comprar carta" — consumidor humano de `drawCardNatively` (`gameStore.ts`,
- * Fase 8c), mesmo molde visual de `EndTurnButton.tsx` (caixa `22×20`, opacidade
- * habilitado/desabilitado/pressionado, sempre montado — nunca desmontado).
+ * Fase 8c), mesmo molde de `EndTurnButton.tsx` (opacidade habilitado/pressionado,
+ * sempre montado — nunca desmontado). Montado por `[mode].tsx` (Fase 8g), não
+ * mais pelo header.
  *
  * Diferença deliberada: SEM modal de confirmação. Passar a vez é irreversível
  * (entrega a vez inteira); comprar carta não é — custa energia e pode encher a
@@ -30,6 +32,13 @@ import { colors } from '@/theme/colors';
  * `turnCount`). Um toque acidental aqui é reversível pelo próprio jogo (a
  * carta comprada senta na mão, sem efeito), então o toque chama
  * `netDrawCardNatively()` direto.
+ *
+ * Três estados visuais (Fase 8g, achado C.6/direção B da investigação): antes
+ * "sem energia" e "genuinamente indisponível" (fora da vez, mão cheia,
+ * interação pendente) caíam na MESMA opacidade reduzida — o jogador não tinha
+ * como distinguir "espera 1 turno" de "não vai rolar agora". `blockedByEnergy`
+ * reaproveita o padrão que `CardItem` já usa pra `canAfford` (borda/selo
+ * vermelho `colors.danger`) em vez de inventar um idioma novo.
  */
 function DrawCardButtonComponent() {
   const { localCombatant } = useMatchPerspective();
@@ -47,13 +56,18 @@ function DrawCardButtonComponent() {
   // `canPlayCardsNow`, mesmo sinal que `EndTurnButton` usa), mais o custo
   // escalonado da PRÓXIMA compra e `HAND_LIMIT`.
   const nextCost = nativeDrawsThisTurn + 1;
-  const canDraw =
+  const otherGuardsOk =
     canPlayCardsNow &&
     !isPaused &&
     pendingAcknowledgement === null &&
     pendingInteraction === null &&
-    hand.length < HAND_LIMIT &&
-    energy >= nextCost;
+    hand.length < HAND_LIMIT;
+  const canDraw = otherGuardsOk && energy >= nextCost;
+  // "Vai ficar disponível sozinho" — os outros guards já passam, só falta
+  // energia (que regenera a cada turno). Distinto de "genuinamente
+  // indisponível agora" (fora da vez, pausado, pendência aberta, mão cheia),
+  // que não se resolve esperando.
+  const blockedByEnergy = otherGuardsOk && energy < nextCost;
 
   const handlePress = useCallback(() => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -68,14 +82,15 @@ function DrawCardButtonComponent() {
       style={({ pressed }) => [
         styles.button,
         pressed && canDraw && styles.buttonPressed,
-        !canDraw && styles.buttonDisabled,
+        !canDraw && !blockedByEnergy && styles.buttonDisabled,
+        blockedByEnergy && styles.buttonEnergyBlocked,
       ]}
       accessibilityRole="button"
       accessibilityLabel="Comprar carta"
       accessibilityState={{ disabled: !canDraw }}
       hitSlop={10}
     >
-      <Ionicons name="download-outline" size={12} color={colors.text} />
+      <Ionicons name="download-outline" size={18} color={colors.text} />
     </Pressable>
   );
 }
@@ -84,12 +99,11 @@ export const DrawCardButton = memo(DrawCardButtonComponent);
 export default DrawCardButton;
 
 const styles = StyleSheet.create({
-  // Mesmo tamanho de `EndTurnButton`/`pauseButton` (`GameHeader.tsx`) de
-  // propósito: um terceiro filho do MESMO tamanho na mesma fileira não muda a
-  // altura dela — o máximo entre os filhos não sobe (AGENTS.md).
+  // `ACTION_BUTTON_SIZE` (Fase 8g) — decidido junto de `EndTurnButton` e do
+  // slot que os hospeda em `[mode].tsx` (`theme/layout.ts`).
   button: {
-    width: 22,
-    height: 20,
+    width: ACTION_BUTTON_SIZE,
+    height: ACTION_BUTTON_SIZE,
     borderWidth: 2,
     borderColor: colors.textDim,
     alignItems: 'center',
@@ -98,7 +112,16 @@ const styles = StyleSheet.create({
   buttonPressed: {
     opacity: 0.6,
   },
+  // Genuinamente indisponível agora (fora da vez, pausado, pendência aberta,
+  // mão cheia) — mesma opacidade reduzida de sempre.
   buttonDisabled: {
     opacity: 0.3,
+  },
+  // Só falta energia — borda vermelha (mesma cor de `canAfford` em
+  // `CardItem`), opacidade mais alta que `buttonDisabled`: comunica "quase
+  // dá", não "esqueça".
+  buttonEnergyBlocked: {
+    borderColor: colors.danger,
+    opacity: 0.55,
   },
 });

@@ -1340,3 +1340,190 @@ lado do teste de embaralhamento da Fase 7a).
 
 **Verificação:** `npx tsc --noEmit` e `npm run test` limpos. 415 passed / 1 skipped / 14
 arquivos (baseline ao fechar 8c: 412/1/14 — 3 testes novos, 1 reescrito).
+
+## Fase 8f — investigação: reposicionamento de EndTurnButton/DrawCardButton (sem implementação)
+
+**Pedido:** os dois botões ficaram pequenos e escondidos ao lado do pause no header, apesar de
+terem virado ações estratégicas centrais desde a Fase 8b/8c. Investigar (medir, não estimar)
+se há espaço real pra reposicioná-los — mobile: abrir espaço entre board e mão, SEM encolher
+`boardSize`; desktop: sidebar ao lado da mão. Nenhum código mudou nesta fase.
+
+**Método:** Playwright headless contra `expo start --web`, rota `/game/cpu`, 390×844 e
+1440×900 — mesmo mecanismo da medição empírica da Fase 8c. Além do log `[Board] layout`, medi
+`getBoundingClientRect()` de cada linha do `wrapper` (`[mode].tsx`) e dos filhos de
+`combatRow` (`TrapZone` local/remota, `boardArea`, moldura real do board) via script Node com
+`playwright` instalado isolado no scratchpad da sessão (não é dependência do projeto).
+
+### 1. `availableW`/`availableH` atuais (log `[Board] layout`)
+
+- **390×844:** `availableW: 286, availableH: 442` → `outer: 270, cellSize: 80`.
+- **1440×900:** `availableW: 524, availableH: 508` → `outer: 476, cellSize: 149`.
+
+Confirma o já sabido: em `compact` a LARGURA governa (`286 < 442`); em `wide` a ALTURA governa
+(`508 < 524`) — é essa assimetria que faz as duas propostas do usuário (vertical no mobile,
+lateral no desktop) fazerem sentido tecnicamente, não só por preferência visual.
+
+### 2. Mobile (390×844) — espaço vertical entre board e mão
+
+Medido via DOM (`combatRow`/`boardArea`/moldura real do board/`CardHand`), não só o log:
+
+| elemento | y | height | nota |
+|---|---|---|---|
+| `combatRow` | 240 | 442 | = `availableH` |
+| moldura real do board | 327 | 268 | centralizada dentro de `boardArea` |
+| `CardHand` (linha da mão) | 688 | 156 | — |
+
+Board ocupa y=327→595. `combatRow` vai até y=682 (240+442). `CardHand` começa em y=688 (gap de
+6dp = `wrapper`'s `gap:6`, igual entre TODAS as linhas). **Espaço vazio real entre o rodapé do
+board (595) e o topo da mão (688): 93dp — já existe HOJE, gasto em nada.** Se divide em 87dp
+"dentro" de `combatRow` (a `boardArea` centraliza o board verticalmente numa caixa mais alta do
+que ele precisa, porque é a LARGURA que governa `boardSize` aqui) + 6dp do gap entre linhas já
+existente.
+
+Não vem de deslocar o board reduzindo a margem que hoje o separa do header — o header/terminal/
+HUD acima de `combatRow` não mudam. Vem de `boardArea` parar de CENTRALIZAR o board dentro da
+própria caixa (`justifyContent:'center'` hoje) e alinhá-lo mais para cima — a caixa (`combatRow`,
+442dp) já é mais alta do que o board (270dp) por construção, sobra fica hoje dividida
+simetricamente acima/abaixo e pode passar a ficar toda abaixo.
+
+**Teto teórico, calculado (não só os 93dp já ociosos):** `boardSize` só é afetado quando
+`availableH` cai abaixo de `availableW` (286) — até lá, quem governa continua sendo a largura,
+sem mudança nenhuma no board. `combatRow` poderia perder até `442 − 286 = 156dp` de altura
+(não só realinhar conteúdo, também reduzir a alocação de flex da própria linha) sem `boardSize`
+encostar no piso. 93dp (realinhamento puro, zero risco, zero mudança de flex) já é ~4× a altura
+de um botão de 20-22dp — sobra de longe para os dois lado a lado sem precisar do teto de 156dp.
+
+### 3. Desktop (1440×900) — espaço lateral na linha da mão
+
+**Vertical, para descartar a tentação de repetir o truque do mobile:** moldura real do board em
+y=247→722; `combatRow` vai até y=738; `CardHand` começa em y=744. Sobra real: `744 − 722 = 22dp`
+— quase toda ela É o `GUTTER[wide]=32` (respiro deliberado da moldura, não excedente):
+`(508−476)/2 ≈ 16dp` de cada lado, valor que bate com o cálculo, não com folga real. **Confirma
+por medição, não só por leitura de código, que NÃO existe alavanca vertical utilizável no
+desktop** — a proposta do usuário de ir lateral em vez de vertical aqui está tecnicamente
+certa, não é só estética.
+
+**Lateral, com cartas de verdade em mão** (2 cartas compradas via `drawCardNatively` — 3⚡
+iniciais dão pra isso): cada carta mede 95×129dp, espaçamento de 50dp entre início de cartas
+(medido, bate exato com `fanSpacing = round(cardWidth·48/84)` calculado por
+`useResponsiveLayout`). `CardHand`'s `root`/`fan` (`CardHand.tsx`) são `width:'100%'` com
+conteúdo CENTRALIZADO — a fileira inteira (1024dp, mesma largura do `wrapper`) está disponível,
+só o leque de cartas ocupa uma fatia central.
+
+Extrapolando pra `HAND_LIMIT=5` cartas com a MESMA proporção medida (`cardWidth +
+(N−1)·fanSpacing`): `95 + 4·50 = 295dp`, centralizado em 1024dp → margem de `(1024−295)/2 ≈
+365dp` de CADA lado, mesmo na mão CHEIA (a fórmula só comprime se não coubesse, e 295 ≪ 1024
+não aciona a compressão — ver comentário de `fanSpacing` em `useResponsiveLayout.ts`).
+
+**Sem conflito com o que já existe:** as colunas de `TrapZone` (Parte A) ficam em x:358→430
+(local) e x:1010→1082 (remota) — MESMO eixo X de uma sidebar nova na linha da mão alinharia
+visualmente por baixo delas. A borda do leque de 5 cartas fica em x≈572/867 (bem mais pro
+centro) — 142dp de folga entre a borda direita da `TrapZone` (430) e onde o leque de cartas
+começa (572), mesmo na mão cheia. Não é preciso invadir espaço nenhum já ocupado.
+
+### 4. `boardSize` — restrição de sempre
+
+Não é impossível em NENHUM dos dois modos — o oposto do pior caso hipotético do pedido. Mobile
+tem 93dp já ociosos (zero risco) e até 156dp de teto teórico. Desktop não precisa de espaço
+vertical (a rota lateral não toca a geometria do board de jeito nenhum — `TrapZone`/`CardHand`
+já são sidebars/linha própria, nunca competem pela altura que `combatRow` reserva pro board).
+
+### 5. Tamanho/estilo dos botões — 3 direções, sem decidir
+
+Hoje: caixa `22×20dp`, borda `colors.textDim`, opacidade `0.3`/`0.6`/`1` (habilitado/
+pressionado/desabilitado) — MESMO peso visual do botão de pause, que é uma ação secundária rara.
+Desde a Fase 8b (custo de colocar peça) e 8c (compra escalonada), as duas ações competem por
+atenção a cada turno, não só ocasionalmente. Três direções possíveis, para decisão do usuário:
+
+- **A — só reposicionar, manter tamanho/estilo.** Zero mudança visual, só posição/visibilidade
+  via espaço aberto (mobile) ou sidebar nova (desktop). Risco mínimo, mas não resolve
+  "comunicar estado desabilitado com clareza" — continua só opacidade genérica.
+- **B — manter tamanho, diferenciar a RAZÃO do desabilitado.** Hoje "sem energia" e
+  "genuinamente indisponível" (fora da vez, mão cheia, interação pendente) usam a MESMA
+  opacidade reduzida — o jogador não sabe se é "espera" ou "nunca agora". Ex.: selo/cor
+  diferente quando o motivo é só energia insuficiente (mesmo padrão que `CardItem` já usa pra
+  `canAfford`, achado do `focusDisabledReason` da Fase 8c) vs. cinza neutro pros outros motivos.
+- **C — aumentar o tamanho da caixa**, além de reposicionar. Ganha legibilidade/alvo de toque
+  de graça (22×20 já está abaixo do alvo confortável de ~44dp), mas precisa orçamento de espaço
+  próprio — o espaço achado no mobile (93dp) e no desktop (sidebar nova) comporta um aumento
+  moderado sem reabrir o cálculo, mas não é ilimitado.
+
+B e C não são excludentes entre si (nem com A) — dá pra combinar "um pouco maior" + "cor
+diferente por motivo". A escolha de direção fica para quem aprova, antes do plano de
+implementação.
+
+**Nenhum código foi alterado nesta fase.** Screenshots e script de medição ficaram no
+scratchpad da sessão (fora do repo).
+
+## Fase 8g — reposicionamento de EndTurnButton/DrawCardButton (implementação)
+
+Implementação da Fase 8f, depois de duas rodadas de correção pedidas antes de codificar:
+medir `regular` de verdade (não presumir interpolação entre compact/wide) e garantir que
+`TrapZone` não desalinha do board quando o board deixa de ficar centralizado.
+
+**`regular` confirmado como DOIS regimes, não um.** Medido em 3 pontos extras (768×1024,
+820×1180, 926×428) além dos 2 já medidos na Fase 8f: `regular` portrait (768×1024, 820×1180)
+se comporta como `compact` — largura/teto (`MAX_BOARD`) governa, sobra vertical real de 77dp e
+233dp respectivamente. `regular` forçado por altura curta (926×428, o mesmo caso já citado em
+`insetPerSide`) se comporta como `wide` — altura governa, sobra ~0. `LayoutMode` sozinho NÃO
+distingue os dois sub-regimes; a fórmula (`verticalSlack`, abaixo) sim.
+
+**Mecanismo — trocado no meio do plano, por um motivo real.** A primeira versão tentava abrir
+espaço ENCOLHENDO a altura entregue a `combatRow` (a única linha `flex:1` da coluna), liberando
+uma linha nova. Isso tem exatamente a mesma classe de auto-referência que `insetPerSide` (A2.1)
+já resolveu uma vez: encolher `combatRow` muda o que o PRÓXIMO `onLayout` mede, que muda o
+cálculo de novo — risco real de oscilação perto da fronteira entre os dois regimes, mesmo que
+nenhum dos 5 pontos medidos caia exatamente nela. **Resolvido por construção, não por
+histerese**: os botões passaram a nunca participar do cálculo de `flex` de ninguém.
+- **Slot vertical** (`verticalSlack ≥ ACTION_BUTTON_ROW_HEIGHT`): os dois botões como filho
+  `position:'absolute'` de `boardArea`, `bottom: GUTTER[layoutMode]`, desenhando por cima do
+  espaço que já sobra hoje abaixo do board — `boardArea`/`combatRow`/`TrapZone` são medidos e
+  dimensionados exatamente como se os botões não existissem, em todo render.
+- **Slot lateral** (caso contrário): coluna nova de largura `TRAP_ZONE_BOUNDS[layoutMode].
+  sidebarWidth` (CONSTANTE, nunca medida — sem risco de realimentação) ao lado da mão, do lado
+  LOCAL.
+
+`verticalSlack = alturaMedidaDeCombatRow − resolvedBoard.boardSize − GUTTER[layoutMode]` — a
+MESMA quantidade que `insetPerSide` já chama de "quanto dá pra tirar sem `boardSize` ser
+afetado", só na dimensão perpendicular. Mesmo piso de `MIN_PLAYABLE_BOARD` que `insetPerSide`
+já usa (926×428 cai nele — categoria degradada, zero slot).
+
+**Achado real durante a verificação (não hipotético):** a 1ª implementação do slot lateral
+alinhava a coluna nova só pelo `sidebarWidth` de `TrapZone`, sem reaproveitar `insetPerSide` — a
+posição de tela de `TrapZone` inclui os dois (largura fixa + a margem dinâmica que A2.1 aplica
+pra aproximar a sidebar do board). Medido em 1440×900: a coluna nova caía em x=225 contra x=358
+da `TrapZone` — 133dp de desalinhamento visual real, seria facilmente perdido numa checagem só
+de "o código compila". Corrigido reaproveitando o MESMO `insetPerSide` já computado (nenhuma
+conta nova, nenhum risco de realimentação — é um valor estável, só reutilizado num segundo
+lugar). Depois da correção, medido de novo: coluna em x=375 (botão centralizado dentro da
+coluna de 72dp que começa em x=358) — alinhada.
+
+**Tamanho do botão** — decidido primeiro, resto derivado (não em paralelo): `ACTION_BUTTON_SIZE
+= 38` (dentro de 36-40 aprovado), `ACTION_BUTTON_ROW_PADDING = 6` (reaproveita o `gap:6` que o
+`wrapper` já usa entre linhas), `ACTION_BUTTON_ROW_HEIGHT = 38 + 2·6 = 50` (também o limiar de
+troca entre os dois slots — mesmo valor, não dois números escolhidos à parte).
+
+**Terceiro estado visual (`DrawCardButton`):** `canDraw` binário virou 3 estados —
+habilitado / `blockedByEnergy` (só falta ⚡, os outros guards já passam — borda `colors.danger`,
+opacidade 0.55) / genuinamente indisponível (opacidade 0.3, como antes). Reaproveita o padrão
+de `canAfford` que `CardItem` já usa, confirmado em tela (screenshot com energia zerada mostra
+a borda vermelha). `EndTurnButton` só ganhou o tamanho novo — nunca depende de energia.
+
+**Verificação — 5 pontos medidos (Playwright headless, mesmo mecanismo da Fase 8c/8f):**
+`boardSize`/`cellSize` IDÊNTICOS ao valor pré-Fase-8g nos 5 casos (270/80, 520/164, 520/164,
+140/37, 476/149) — prova de que nada de flex/alinhamento do board mudou. `TrapZone` na mesma
+posição de sempre nos 5 casos. Botões no slot certo em cada caso (vertical nos 3 primeiros,
+lateral nos 2 últimos), alinhados sob a `TrapZone` local quando lateral.
+
+**Duas confirmações visuais pedidas antes de fechar:**
+1. 820×1180 (folga mais generosa, 233dp): botões ancoram perto do fundo do board
+   (`bottom:GUTTER`), não flutuam soltos no meio do espaço — confirmado por screenshot.
+2. `CardHand` com a coluna lateral ao lado (1440×900): testado com 2 cartas reais (limite do
+   que a energia inicial permite comprar sem depender de um loop de turnos automatizado
+   confiável em headless) — o leque recentraliza corretamente dentro do wrapper mais estreito
+   (802dp em vez de 1024dp), espaçamento entre cartas idêntico (50dp, sem compressão). Mão de 5
+   cartas (295dp, medido na Fase 8f) fica bem abaixo dos 802dp disponíveis — mesma margem de
+   sobra, extrapolação seguindo a fórmula já validada, não um número novo assumido.
+
+`npx tsc --noEmit`/`npm run test` limpos — 415 passed / 1 skipped / 14 arquivos, idêntico ao
+baseline (mudança é só de UI/layout, sem lógica de domínio nova).
